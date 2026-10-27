@@ -2,6 +2,7 @@
 
 #include "medicon/gui/GuiContext.hpp"
 #include "medicon/gui/GuiMath.hpp"
+#include "medicon/gui/NativeFileDialog.hpp"
 #include "medicon/gui/SocialChat.hpp"
 #include "medicon/gui/SocialFonts.hpp"
 #include "medicon/gui/SocialWidgets.hpp"
@@ -74,6 +75,10 @@ public:
     SocialRect admin_dll_rect() const noexcept { return admin_dll_rect_; }
     bool admin_attach_dll() const noexcept { return admin_attach_dll_; }
     SocialTextInput& admin_dll_path() noexcept { return admin_dll_path_; }
+    // The Admin DLL is chosen through the native "Open" dialog. Preview scenarios
+    // and tests turn that off so a click never pops a real OS dialog; they fill
+    // the path with admin_dll_path().set_text(...) instead.
+    void set_dll_picker_enabled(bool enabled) noexcept { dll_picker_enabled_ = enabled; }
     // Title, Version (empty while News hides it) and Text, as last drawn.
     SocialRect admin_field_rect(std::size_t index) const noexcept {
         return index < admin_field_rects_.size() ? admin_field_rects_[index] : SocialRect{};
@@ -137,6 +142,8 @@ private:
     void draw_friend_list(Context& context, const SocialRect& area, float scale, float alpha);
     void draw_confirm(Context& context, const SocialRect& panel, float scale);
     void draw_admin(Context& context, const SocialRect& area, float scale);
+    // Opens the native "Open" dialog for the Admin DLL, modal to the host window.
+    void open_dll_dialog();
     // One line of a news body; Change Log lines starting "+ ", "- " or "* " get a coloured mark.
     void draw_body_line(Context& context, const social::NewsItem& item, const SocialFonts::Line& span, float x, float top,
                         float alpha) const;
@@ -212,10 +219,15 @@ private:
     SocialTextInput admin_version_{32};
     SocialTextInput admin_body_{4000};
     // Change Log only: attach a Core DLL so posting also publishes the update
-    // (docs/auto-update.md). The path is typed/pasted; the net side reads it.
+    // (docs/auto-update.md). The path is chosen in the native "Open" dialog; the
+    // net side reads the file.
     bool admin_attach_dll_ = false;
     SocialTextInput admin_dll_path_{520};
     SocialRect admin_dll_rect_{};
+    // The native file picker for the DLL, run off the render thread. On by
+    // default; preview scenarios and tests turn it off (set_dll_picker_enabled).
+    NativeFileDialog admin_dll_dialog_;
+    bool dll_picker_enabled_ = true;
     bool confirm_post_ = false;
     bool posting_ = false;
     std::string admin_status_;

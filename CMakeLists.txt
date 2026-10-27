@@ -155,6 +155,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/KeyNames.cpp
         src/gui/Log.cpp
         src/gui/MainMenu.cpp
+        src/gui/NativeFileDialog.cpp
         src/gui/Overlay.cpp
         src/gui/Shadow.cpp
         src/gui/SocialBackground.cpp
@@ -167,7 +168,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/Toasts.cpp)
     medicon_target(medicon_gui)
     target_include_directories(medicon_gui PRIVATE "${MEDICON_EMBEDDED_FONTS_DIR}")
-    target_link_libraries(medicon_gui PUBLIC medicon_core medicon_social_core medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32)
+    target_link_libraries(medicon_gui PUBLIC medicon_core medicon_social_core medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32)
 
     # Social networking (spec 4.2): WinHTTP REST/WebSocket, DPAPI license, notification sound.
     add_library(medicon_social_net STATIC

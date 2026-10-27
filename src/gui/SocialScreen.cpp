@@ -269,7 +269,7 @@ SocialTextInput* SocialScreen::focused_input() noexcept {
     if (key_input_.focused()) return &key_input_;
     if (view_ == SocialView::Friends && search_input_.focused()) return &search_input_;
     if (view_ == SocialView::Home && admin_tab_) {
-        for (auto* input : {&admin_title_, &admin_version_, &admin_body_, &admin_dll_path_})
+        for (auto* input : {&admin_title_, &admin_version_, &admin_body_})
             if (input->focused()) return input;
     }
     if (view_ == SocialView::Global || view_ == SocialView::Dm) {
@@ -1209,6 +1209,19 @@ void SocialScreen::draw_body_line(Context& context, const social::NewsItem& item
                text.substr(1));
 }
 
+void SocialScreen::open_dll_dialog() {
+    // The dialog is modal to the host game window, found through ImGui's viewport.
+    void* owner = nullptr;
+    if (const ImGuiViewport* viewport = ImGui::GetMainViewport()) owner = viewport->PlatformHandleRaw;
+    // A double-null filter list: the Core DLL first, then every file.
+    std::wstring filter;
+    for (const wchar_t* part : {L"Core DLL (*.dll)", L"*.dll", L"All files (*.*)", L"*.*"}) {
+        filter.append(part);
+        filter.push_back(L'\0');
+    }
+    admin_dll_dialog_.open(owner, L"Choose the Core DLL to publish", std::move(filter));
+}
+
 void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s) {
     auto* list = context.list;
     auto& fonts = context.fonts;
@@ -1251,7 +1264,12 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
     }
     // Change Log can carry a Core DLL: posting then also publishes the update.
     if (admin_kind_ == NewsKind::Changelog) {
-        const char* label = "Attach DLL";
+        // A file chosen in the native dialog (run off the render thread) arrives
+        // here; an empty path means it was cancelled, so the choice is unchanged.
+        if (std::wstring picked; admin_dll_dialog_.poll(picked) && !picked.empty())
+            admin_dll_path_.set_text(picked);
+        const bool busy = admin_dll_dialog_.busy();
+        const char* label = busy ? "Choosing\xE2\x80\xA6" : "Attach DLL";
         const float w = fonts.measure(SocialText::Title, label) + 28.0F * s, h = 28.0F * s;
         const SocialRect pill{{x, y}, {x + w, y + h}};
         admin_dll_rect_ = pill;
@@ -1265,9 +1283,16 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         draw_glass_plate(list, pill.min, pill.max, h * 0.5F, plate);
         draw_centered(list, fonts, SocialText::Title, pill,
                       to_u32(admin_attach_dll_ ? style::heading : style::text_secondary), label);
-        if (input_.click(id_admin_dll, pill)) {
-            admin_attach_dll_ = !admin_attach_dll_;
-            if (!admin_attach_dll_ && admin_dll_path_.focused()) admin_dll_path_.set_focused(false);
+        if (input_.click(id_admin_dll, pill) && !busy && !posting_) {
+            if (admin_attach_dll_) {
+                // Turn attaching off and forget the chosen file.
+                admin_attach_dll_ = false;
+                admin_dll_path_.clear();
+            } else {
+                // Turn attaching on and open the native picker to choose the DLL.
+                admin_attach_dll_ = true;
+                if (dll_picker_enabled_) open_dll_dialog();
+            }
         }
     } else {
         admin_attach_dll_ = false;
@@ -1285,7 +1310,7 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
     // One field owns the keyboard. focused_input() takes the first focused field,
     // so focusing only the clicked one left every key in Title once it was used.
     const auto focus = [this](SocialTextInput& field) {
-        for (auto* input : {&admin_title_, &admin_version_, &admin_body_, &admin_dll_path_}) input->set_focused(input == &field);
+        for (auto* input : {&admin_title_, &admin_version_, &admin_body_}) input->set_focused(input == &field);
     };
     const SocialRect title{{x0, y}, {x1 - version_w - gap, y + field_h}};
     admin_field_rects_[0] = title;
@@ -1303,13 +1328,15 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
     }
     y += field_h + 12.0F * s;
     const bool attach = changelog && admin_attach_dll_;
-    if (!attach && admin_dll_path_.focused()) admin_dll_path_.set_focused(false);
     if (attach) {
         fonts.draw(list, SocialText::Small, x0 + 4.0F * s, y, to_u32(style::text_secondary), "DLL FILE");
         y += small + 4.0F * s;
         const SocialRect field{{x0, y}, {x1, y + field_h}};
-        if (input_.click(id_admin_dll_path, field)) focus(admin_dll_path_);
-        admin_dll_path_.draw(list, fonts, field, s, 1.0F, "C:\\path\\to\\MediconCore.dll", !posting_, now, &context.shadows);
+        // Read-only: the path is chosen in the native dialog, not typed. Clicking
+        // the field (re)opens the picker.
+        if (dll_picker_enabled_ && !admin_dll_dialog_.busy() && !posting_ && input_.click(id_admin_dll_path, field))
+            open_dll_dialog();
+        admin_dll_path_.draw(list, fonts, field, s, 1.0F, "Click to choose a DLL file", !posting_, now, &context.shadows);
         y += field_h + 12.0F * s;
     }
 

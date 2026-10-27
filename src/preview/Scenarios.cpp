@@ -881,6 +881,9 @@ void social_admin_dll(ScenarioHost& host, bool capture) {
     screen.admin_title().set_text(L"Medicon 1.0.5");
     screen.admin_version().set_text(L"1.0.5");
     screen.admin_body().set_text(L"+ Added auto update\n* Fixed Scaffold");
+    // Scripted run: the toggle must not pop a real OS dialog; the path below
+    // stands in for what the native picker would return.
+    screen.set_dll_picker_enabled(false);
     social_settle(host);
     wait_frames(host, 0.3F);
     const auto toggle = screen.admin_dll_rect();
