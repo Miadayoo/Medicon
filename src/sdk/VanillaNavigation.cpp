@@ -3,6 +3,7 @@
 #include <winver.h>
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
@@ -71,7 +72,7 @@ bool exact_host(std::string& diagnostic) {
     }
     return true;
 }
-bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>& executable) {
+bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>& executable, std::string& diagnostic) {
     // Inspect only headers/section metadata, avoiding a second full .text copy.
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     IMAGE_DOS_HEADER dos{};
@@ -86,7 +87,20 @@ bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>
         (nt.OptionalHeader.ImageBase != 0x140000000ULL && nt.OptionalHeader.ImageBase != base) ||
         nt.OptionalHeader.SizeOfImage != 0x12C02000 ||
         nt.OptionalHeader.CheckSum != 0x128DA293 || nt.FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64) ||
-        !nt.FileHeader.NumberOfSections || nt.FileHeader.NumberOfSections > 96) return false;
+        !nt.FileHeader.NumberOfSections || nt.FileHeader.NumberOfSections > 96) {
+        // The same FileVersion can ship as a differently packaged executable
+        // (the inspected one carries a launcher-added .levildr section). Log the
+        // observed header so a report from another PC names the differing field.
+        char text[320]{};
+        std::snprintf(text,sizeof text,"Native menu PE header mismatch (e_lfanew=0x%lX TimeDateStamp=0x%08lX "
+            "ImageBase=0x%llX SizeOfImage=0x%lX CheckSum=0x%08lX sections=%u; inspected 0x78/0x6AB54E37/"
+            "0x12C02000/0x128DA293); navigation disabled.",static_cast<unsigned long>(dos.e_lfanew),
+            static_cast<unsigned long>(nt.FileHeader.TimeDateStamp),static_cast<unsigned long long>(nt.OptionalHeader.ImageBase),
+            static_cast<unsigned long>(nt.OptionalHeader.SizeOfImage),static_cast<unsigned long>(nt.OptionalHeader.CheckSum),
+            static_cast<unsigned>(nt.FileHeader.NumberOfSections));
+        diagnostic=text;
+        return false;
+    }
     image = {base,nt.OptionalHeader.SizeOfImage};
     const auto sections = base + dos.e_lfanew + offsetof(IMAGE_NT_HEADERS64,OptionalHeader) + nt.FileHeader.SizeOfOptionalHeader;
     executable.clear();
@@ -222,7 +236,7 @@ bool VanillaNavigation::initialize(std::string& diagnostic) noexcept {
         diagnostic.clear();
         if (initialized_) {diagnostic=terminal_diagnostic_;return ready_.load(std::memory_order_acquire);}
         initialized_=true;
-        if (!exact_host(diagnostic) || !loaded_image(image_,executable_regions_) || !profile(true)) {
+        if (!exact_host(diagnostic) || !loaded_image(image_,executable_regions_,diagnostic) || !profile(true)) {
             if (diagnostic.empty()) diagnostic="Native menu PE/code/table profile mismatch; navigation disabled.";
             terminal_diagnostic_=diagnostic;
             return false;

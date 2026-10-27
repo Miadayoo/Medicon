@@ -309,6 +309,11 @@ public:
     bool input_open() const noexcept {
         return gui_open.load(std::memory_order_acquire) || menu_visible.load(std::memory_order_acquire);
     }
+    // Resolved by the bootstrap worker before Present is hooked, so the first
+    // frame already knows whether the replacement menu can navigate.
+    bool navigation_usable() const noexcept {
+        return navigation_ready.load(std::memory_order_acquire) && navigation.ready();
+    }
     InputCapture input_capture() const noexcept {
         const auto epoch = menu_epoch.load(std::memory_order_acquire);
         const bool menu = menu_visible.load(std::memory_order_acquire);
@@ -409,7 +414,17 @@ public:
         }
         std::string diagnostic;
         sdk::MenuSessionIdentity session;
-        const auto screen = bedrock_menu.poll(client, diagnostic, &session);
+        auto screen = bedrock_menu.poll(client, diagnostic, &session);
+        // The replacement blocks native input, and only the native route makes
+        // its buttons do anything. Detection alone accepts executables the
+        // navigation profile rejects (same FileVersion, different packaging),
+        // which left a menu where no button responded. Keep the vanilla title.
+        if (screen == sdk::MenuScreenState::main_menu && !navigation_usable()) {
+            screen = sdk::MenuScreenState::other;
+            session = {};
+            diagnostic = "Main Menu replacement withheld: native navigation is unavailable; "
+                         "the vanilla title screen keeps its input.";
+        }
         if (diagnostic != menu_diagnostic) {
             if (!diagnostic.empty()) report("MainMenu: " + diagnostic);
             menu_diagnostic = std::move(diagnostic);
@@ -1475,6 +1490,10 @@ std::uint32_t hook_main_menu_update(void* controller) {
         if (!state.menu_visible.load(std::memory_order_acquire) ||
             !state.window_focused_cached.load(std::memory_order_acquire)) {
             state.navigation.cancel();
+            // Once per request: cancel() clears the pending flag checked above.
+            state.report(state.menu_visible.load(std::memory_order_acquire) ?
+                "MainMenu navigation: request cancelled; the game window is not focused." :
+                "MainMenu navigation: request cancelled; the replacement menu is hidden.");
             return result;
         }
         // The original update can itself push a popup or leave Main Menu.
