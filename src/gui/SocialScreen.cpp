@@ -1241,13 +1241,24 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
     fonts.draw(list, SocialText::Small, x0 + 4.0F * s, y, to_u32(style::text_secondary), "TITLE");
     if (changelog) fonts.draw(list, SocialText::Small, x1 - version_w + 4.0F * s, y, to_u32(style::text_secondary), "VERSION");
     y += small + 4.0F * s;
+    // One field owns the keyboard. focused_input() takes the first focused field,
+    // so focusing only the clicked one left every key in Title once it was used.
+    const auto focus = [this](SocialTextInput& field) {
+        for (auto* input : {&admin_title_, &admin_version_, &admin_body_}) input->set_focused(input == &field);
+    };
     const SocialRect title{{x0, y}, {x1 - version_w - gap, y + field_h}};
-    if (input_.click(id_admin_title, title)) admin_title_.set_focused(true);
+    admin_field_rects_[0] = title;
+    if (input_.click(id_admin_title, title)) focus(admin_title_);
     admin_title_.draw(list, fonts, title, s, 1.0F, "Title", !posting_, now, &context.shadows);
     if (changelog) {
         const SocialRect version{{x1 - version_w, y}, {x1, y + field_h}};
-        if (input_.click(id_admin_version, version)) admin_version_.set_focused(true);
+        admin_field_rects_[1] = version;
+        if (input_.click(id_admin_version, version)) focus(admin_version_);
         admin_version_.draw(list, fonts, version, s, 1.0F, "Version (optional)", !posting_, now, &context.shadows);
+    } else {
+        // News hides the version; it must not keep typing into a field nobody sees.
+        admin_field_rects_[1] = {};
+        admin_version_.set_focused(false);
     }
     y += field_h + 12.0F * s;
 
@@ -1272,7 +1283,8 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
     }
     y += small + 4.0F * s;
     const SocialRect body{{x0, y}, {split, bottom}};
-    if (input_.click(id_admin_body, body)) admin_body_.set_focused(true);
+    admin_field_rects_[2] = body;
+    if (input_.click(id_admin_body, body)) focus(admin_body_);
     admin_body_.draw(list, fonts, body, s, 1.0F, changelog ? "+ Added Killaura" : "Write the post here", !posting_, now,
                      &context.shadows);
     // Preview: the card as it will appear, colours included.

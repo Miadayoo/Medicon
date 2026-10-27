@@ -788,6 +788,40 @@ void social_admin(ScenarioHost& host, bool capture) {
     host.log("milestone admin_posted");
 }
 
+// Typing follows the clicked Admin field. Title used to keep every key once used.
+void social_admin_focus(ScenarioHost& host, bool capture) {
+    auto& channel = social_mock(host, true, false);
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User", social::Rank::Owner}, 0});
+    auto& screen = host.overlay().social().screen();
+    host.overlay().social().open_screen();
+    screen.open_admin();
+    screen.set_admin_kind(social::NewsKind::Changelog);
+    social_settle(host);
+    wait_frames(host, 0.5F);
+    if (!screen.admin_tab()) throw std::runtime_error("the Admin tab is not shown to an owner");
+    const auto type_into = [&](std::size_t field, const std::wstring& text) {
+        const auto rect = screen.admin_field_rect(field);
+        social_click(host, (rect.min.x + rect.max.x) * 0.5F, (rect.min.y + rect.max.y) * 0.5F);
+        type_text(host, text);
+    };
+    type_into(0, L"T");
+    type_into(1, L"V");
+    type_into(2, L"B");
+    type_into(0, L"t");
+    if (screen.admin_title().text() != L"Tt" || screen.admin_version().text() != L"V" ||
+        screen.admin_body().text() != L"B")
+        throw std::runtime_error("typing did not follow the clicked Admin field");
+    // News hides the version field; its keys go nowhere unseen.
+    type_into(1, L"2");
+    screen.set_admin_kind(social::NewsKind::News);
+    wait_frames(host, 0.1F);
+    type_text(host, L"x");
+    if (screen.admin_version().text() != L"V2" || screen.focused_input() == &screen.admin_version())
+        throw std::runtime_error("the hidden version field kept the keyboard");
+    if (capture) host.capture("");
+    host.log("milestone admin_focus");
+}
+
 // A Change Log whose lines start with +, - and *, shown with coloured marks.
 void social_changelog_marks(ScenarioHost& host, bool capture) {
     auto& channel = social_mock(host, true, false);
@@ -1037,6 +1071,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_login_states", social_login_states},
         {"social_live_chat", social_live_chat},
         {"social_admin", social_admin},
+        {"social_admin_focus", social_admin_focus},
         {"social_changelog_marks", social_changelog_marks},
         {"social_global", social_global},
         {"social_dm", social_dm},
