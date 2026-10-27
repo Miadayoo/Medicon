@@ -43,6 +43,9 @@ public:
     bool apply(const Event& event);
 
     ConnectionState state() const noexcept { return state_; }
+    // The net side reported a state at least once. Until then state() is the
+    // NoLicense default, not an observation.
+    bool state_known() const noexcept { return state_known_; }
     const std::string& state_reason() const noexcept { return state_reason_; }
     const std::optional<UserRef>& me() const noexcept { return me_; }
     // Newest first.
@@ -91,6 +94,7 @@ private:
     bool merge_news(NewsKind kind, const NewsItem& item);
 
     ConnectionState state_ = ConnectionState::NoLicense;
+    bool state_known_ = false;
     std::string state_reason_;
     std::optional<UserRef> me_;
     std::array<std::vector<NewsItem>, news_kind_count> news_{};

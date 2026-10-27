@@ -192,6 +192,8 @@ void Overlay::render() {
         splash_.render(list, fonts_, {frame_.client_w, frame_.client_h});
         return;
     }
+    // After the intro: a client without a working key shows only the sign-in panel.
+    social_.update_sign_in_gate();
     const PointerInput pointer = read_pointer_input();
     if (const auto* settings = dynamic_cast<const ClickGuiModule*>(modules_.find(ClickGuiModule::module_id)))
         social_.set_input_animation(settings->input_animation.get<bool>());

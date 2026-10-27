@@ -236,6 +236,13 @@ void test_backoff() {
 void test_store() {
     SocialStore store;
     check(store.state() == ConnectionState::NoLicense && !store.me(), "initial state");
+    check(!store.state_known(), "the NoLicense default is not an observation");
+    {
+        // The first report may repeat the default; it still makes the state known.
+        SocialStore fresh;
+        check(!fresh.apply(StateChanged{ConnectionState::NoLicense, {}}) && fresh.state_known(),
+              "an unchanged first state is known");
+    }
     store.apply(SessionStarted{UserRef{9, "old"}, 0});
     check(store.apply(StateChanged{ConnectionState::NoLicense, {}}) && !store.me(),
           "logout clears account even if the connection state was already NoLicense");

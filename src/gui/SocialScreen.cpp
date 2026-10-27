@@ -323,7 +323,7 @@ void SocialScreen::key_event(int virtual_key, bool down) {
             confirm_post_ = false;
             return;
         }
-        close();
+        if (!locked_) close();
         return;
     }
     if (auto* input = focused_input()) input->key(virtual_key, ctrl_);
@@ -1487,18 +1487,20 @@ void SocialScreen::render(Context& context) {
             }
         }
         // Spec 4.6 closes with Esc only; outside clicks do nothing. A visible
-        // close button is added for the mouse.
-        const float size = metrics::close_size * s;
-        const float inset = 12.0F * s;
-        const SocialRect close_button{{panel.max.x - size - inset, panel.min.y + inset},
-                                      {panel.max.x - inset, panel.min.y + inset + size}};
-        const bool close_clicked = icon_button(context, id_close, close_button, false, s, 1.0F);
-        const ImVec2 c{(close_button.min.x + close_button.max.x) * 0.5F, (close_button.min.y + close_button.max.y) * 0.5F};
-        const float arm = size * 0.18F;
-        const float thickness = std::max(1.0F, 1.8F * s);
-        list->AddLine({c.x - arm, c.y - arm}, {c.x + arm, c.y + arm}, to_u32(style::icon), thickness);
-        list->AddLine({c.x - arm, c.y + arm}, {c.x + arm, c.y - arm}, to_u32(style::icon), thickness);
-        if (close_clicked) close();
+        // close button is added for the mouse. The sign-in gate has neither.
+        if (!locked_) {
+            const float size = metrics::close_size * s;
+            const float inset = 12.0F * s;
+            const SocialRect close_button{{panel.max.x - size - inset, panel.min.y + inset},
+                                          {panel.max.x - inset, panel.min.y + inset + size}};
+            const bool close_clicked = icon_button(context, id_close, close_button, false, s, 1.0F);
+            const ImVec2 c{(close_button.min.x + close_button.max.x) * 0.5F, (close_button.min.y + close_button.max.y) * 0.5F};
+            const float arm = size * 0.18F;
+            const float thickness = std::max(1.0F, 1.8F * s);
+            list->AddLine({c.x - arm, c.y - arm}, {c.x + arm, c.y + arm}, to_u32(style::icon), thickness);
+            list->AddLine({c.x - arm, c.y + arm}, {c.x + arm, c.y - arm}, to_u32(style::icon), thickness);
+            if (close_clicked) close();
+        }
         if (popup && !login) {
             input_.set_blocked(false);
             draw_confirm(context, panel, s);
