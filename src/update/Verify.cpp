@@ -7,7 +7,9 @@
 #include <array>
 #include <vector>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "bcrypt.lib")
+#endif
 
 // SHA-256 and RSA-PSS verification with CNG. The public key is embedded
 // (ReleasePublicKey.hpp); the private half never leaves the release server.
@@ -28,8 +30,15 @@ std::string to_hex(const std::array<std::uint8_t, 32>& digest) {
 bool sha256(std::string_view data, std::array<std::uint8_t, 32>& out) {
     BCRYPT_ALG_HANDLE alg = nullptr;
     if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != k_success) return false;
-    bool ok = BCryptHash(alg, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
-                         static_cast<ULONG>(data.size()), out.data(), static_cast<ULONG>(out.size())) == k_success;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    bool ok = BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == k_success;
+    while (ok && !data.empty()) {
+        const auto count = static_cast<ULONG>(data.size() > 1048576 ? 1048576 : data.size());
+        ok = BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())), count, 0) == k_success;
+        data.remove_prefix(count);
+    }
+    if (ok) ok = BCryptFinishHash(hash, out.data(), static_cast<ULONG>(out.size()), 0) == k_success;
+    if (hash) BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(alg, 0);
     return ok;
 }
