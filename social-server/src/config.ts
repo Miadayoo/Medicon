@@ -15,6 +15,18 @@ const envSchema = z.object({
   DB_PATH: z.string().min(1).default('./data/social.db'),
   ADMIN_SECRET: z.string().min(16, 'ADMIN_SECRET は16文字以上にしてください'),
   BACKUP_DIR: z.string().min(1).default('./backups'),
+  // Core DLL releases for MediconLoader. Publishing needs both a signing key
+  // (a PEM file outside the repository) and the public https base URL.
+  RELEASES_DIR: z.string().min(1).default('./releases'),
+  RELEASE_SIGNING_KEY: z.string().optional().transform((value) => (value?.trim() ? value.trim() : undefined)),
+  PUBLIC_BASE_URL: z
+    .string()
+    .optional()
+    .transform((value) => (value?.trim() ? value.trim().replace(/\/+$/, '') : undefined))
+    .refine((value) => value === undefined || /^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/i.test(value), {
+      message: 'PUBLIC_BASE_URL は https://host の形にしてください（パスなし）',
+    }),
+  RELEASE_MCBE_VERSION: z.string().regex(/^\d+\.\d+\.\d+$/).default('1.26.52'),
 })
 
 export interface Config {
@@ -23,6 +35,10 @@ export interface Config {
   dbPath: string
   adminSecret: string
   backupDir: string
+  releasesDir: string
+  releaseSigningKey: string | undefined
+  publicBaseUrl: string | undefined
+  mcbeVersion: string
 }
 
 // Values already set in the environment win over .env (process.loadEnvFile never overrides).
@@ -44,6 +60,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: resolvePath(values.DB_PATH),
     adminSecret: values.ADMIN_SECRET,
     backupDir: resolvePath(values.BACKUP_DIR),
+    releasesDir: resolvePath(values.RELEASES_DIR),
+    releaseSigningKey: values.RELEASE_SIGNING_KEY === undefined ? undefined : resolvePath(values.RELEASE_SIGNING_KEY),
+    publicBaseUrl: values.PUBLIC_BASE_URL,
+    mcbeVersion: values.RELEASE_MCBE_VERSION,
   }
 }
 

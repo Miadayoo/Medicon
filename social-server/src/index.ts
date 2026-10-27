@@ -6,6 +6,7 @@ import { createContext } from './context.ts'
 import { startBackups } from './db/backup.ts'
 import { openDb } from './db/db.ts'
 import { log } from './log.ts'
+import { loadSigningKey, ReleaseStore } from './services/releases.ts'
 import { CLOSE } from './ws/protocol.ts'
 
 // Never 0.0.0.0: the outside world reaches this server only through Cloudflare Tunnel.
@@ -21,8 +22,25 @@ try {
   process.exit(1)
 }
 
+let releases: ReleaseStore | null = null
+if (config.releaseSigningKey !== undefined && config.publicBaseUrl !== undefined) {
+  try {
+    releases = new ReleaseStore({
+      dir: config.releasesDir,
+      publicBaseUrl: config.publicBaseUrl,
+      signingKey: loadSigningKey(config.releaseSigningKey),
+      mcbeVersion: config.mcbeVersion,
+    })
+    log.info(`Core releases enabled (latest ${releases.latestVersion() ?? 'none'})`)
+  } catch (err) {
+    log.error('Core releases disabled: the signing key could not be loaded', err instanceof Error ? err.message : err)
+  }
+} else {
+  log.info('Core releases disabled (set RELEASE_SIGNING_KEY and PUBLIC_BASE_URL to publish)')
+}
+
 const db = openDb(config.dbPath)
-const ctx = createContext(db)
+const ctx = createContext(db, { releases })
 const app = createApp(ctx)
 const admin = createAdminApp(ctx, config.adminSecret)
 

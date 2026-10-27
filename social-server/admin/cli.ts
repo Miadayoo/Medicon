@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { loadConfig, loadEnvFile } from '../src/config.ts'
+import { buildReleaseUpload, RELEASE_CONTENT_TYPE } from '../src/services/releases.ts'
 
 const USAGE = `使い方: npm run admin -- <コマンド> [オプション]
 
@@ -13,7 +14,9 @@ const USAGE = `使い方: npm run admin -- <コマンド> [オプション]
   user:rank --name <name> --rank <owner|user>
                                  ランクを変更（owner は Social の Admin タブから投稿できる）
   news:post --kind <news|changelog> --title <title> --body-file <path> [--version <v>]
-                                 お知らせ／Change Logを投稿して全接続に配信`
+                                 お知らせ／Change Logを投稿して全接続に配信
+  release:publish --file <MediconCore.dll> --version <x.y.z> --title <title> --body-file <path>
+                                 Core DLL を署名付きで公開し、同じ内容の Change Log を投稿`
 
 // Errors meant for the operator: printed without a stack trace.
 class CliError extends Error {}
@@ -41,6 +44,7 @@ async function main(): Promise<void> {
       rank: { type: 'string' },
       title: { type: 'string' },
       'body-file': { type: 'string' },
+      file: { type: 'string' },
       version: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -126,6 +130,30 @@ async function main(): Promise<void> {
       console.log(`${kind === 'news' ? 'お知らせ' : 'Change Log'}を投稿しました (id=${result.item.id})`)
       break
     }
+    case 'release:publish': {
+      const file = resolve(process.env.INIT_CWD ?? process.cwd(), required(values.file, '--file'))
+      let dll: Buffer
+      try {
+        dll = readFileSync(file)
+      } catch {
+        throw new CliError(`DLL を読めません: ${file}`)
+      }
+      const upload = buildReleaseUpload(
+        {
+          version: required(values.version, '--version'),
+          title: required(values.title, '--title'),
+          body: readBody(required(values['body-file'], '--body-file')),
+        },
+        dll,
+      )
+      const result = await admin.raw<{ manifest: { version: string; sha256: string; size: number } }>(
+        '/releases',
+        upload,
+        RELEASE_CONTENT_TYPE,
+      )
+      console.log(`Core ${result.manifest.version} を公開しました (${result.manifest.size} bytes, sha256 ${result.manifest.sha256})`)
+      break
+    }
     default:
       throw new CliError(`不明なコマンドです: ${command}\n\n${USAGE}`)
   }
@@ -147,14 +175,17 @@ function readBody(path: string): string {
 }
 
 function adminClient(port: number, secret: string) {
-  const request = async <T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> => {
+  const request = async <T>(method: 'GET' | 'POST', path: string, body?: unknown, raw?: { bytes: Buffer; type: string }): Promise<T> => {
     let response: Response
     try {
       response = await fetch(`http://127.0.0.1:${port}${path}`, {
         method,
-        headers:
-          body === undefined ? { 'X-Admin-Secret': secret } : { 'X-Admin-Secret': secret, 'Content-Type': 'application/json' },
-        body: body === undefined ? null : JSON.stringify(body),
+        headers: raw
+          ? { 'X-Admin-Secret': secret, 'Content-Type': raw.type }
+          : body === undefined
+            ? { 'X-Admin-Secret': secret }
+            : { 'X-Admin-Secret': secret, 'Content-Type': 'application/json' },
+        body: raw ? new Uint8Array(raw.bytes) : body === undefined ? null : JSON.stringify(body),
       })
     } catch {
       throw new CliError(`管理ポート 127.0.0.1:${port} に接続できません。サーバーが起動しているか確認してください。`)
@@ -166,6 +197,7 @@ function adminClient(port: number, secret: string) {
   return {
     get: <T>(path: string) => request<T>('GET', path),
     post: <T>(path: string, body: unknown) => request<T>('POST', path, body),
+    raw: <T>(path: string, bytes: Buffer, type: string) => request<T>('POST', path, undefined, { bytes, type }),
   }
 }
 
@@ -178,6 +210,12 @@ function describeError(status: number, data: unknown): string {
       return 'そのユーザーは存在しません。'
     case 'bad_request':
       return '入力が不正です。usernameは3〜16文字の英数字と _ です。'
+    case 'releases_disabled':
+      return 'Core の公開が無効です。.env の RELEASE_SIGNING_KEY と PUBLIC_BASE_URL を設定して再起動してください。'
+    case 'version_conflict':
+      return 'そのバージョンは公開済みか、最新より古いです。最新より大きい x.y.z を指定してください。'
+    case 'bad_release':
+      return 'DLL かバージョンが不正です。x64 の DLL と x.y.z 形式のバージョンを指定してください。'
     default:
       return `サーバーエラー: HTTP ${status} ${code}`
   }

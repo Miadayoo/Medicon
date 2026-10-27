@@ -174,6 +174,40 @@ HttpResponse HttpClient::request(const Endpoint& endpoint, const wchar_t* method
     return response;
 }
 
+HttpResponse HttpClient::upload(const Endpoint& endpoint, std::string_view path, std::string_view content_type,
+                               const void* body, std::size_t size, std::string_view bearer) const {
+    HttpResponse response;
+    if (!session_) {
+        response.error = ERROR_INVALID_HANDLE;
+        return response;
+    }
+    Handle connect(WinHttpConnect(session_.get(), widen(endpoint.host).c_str(), endpoint.port, 0));
+    if (!connect) {
+        response.error = GetLastError();
+        return response;
+    }
+    const std::wstring target = widen(endpoint.base_path) + widen(path);
+    Handle request(WinHttpOpenRequest(connect.get(), L"POST", target.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, endpoint.secure ? WINHTTP_FLAG_SECURE : 0));
+    if (!request) {
+        response.error = GetLastError();
+        return response;
+    }
+    std::wstring headers = L"Content-Type: " + widen(content_type) + L"\r\n";
+    if (!bearer.empty()) headers += L"Authorization: Bearer " + widen(bearer) + L"\r\n";
+    // A multi-megabyte upload needs longer than the default send timeout.
+    WinHttpSetTimeouts(request.get(), 15000, 15000, 60000, 120000);
+    if (!WinHttpSendRequest(request.get(), headers.c_str(), static_cast<DWORD>(-1), const_cast<void*>(body),
+                            static_cast<DWORD>(size), static_cast<DWORD>(size), 0) ||
+        !WinHttpReceiveResponse(request.get(), nullptr)) {
+        response.error = GetLastError();
+        return response;
+    }
+    response.status = status_code(request.get());
+    if (!read_body(request.get(), response.body, response.error)) response.body.clear();
+    return response;
+}
+
 HttpClient::Upgrade HttpClient::open_websocket(const Endpoint& endpoint, std::string_view path,
                                                std::string_view bearer) const {
     Upgrade upgrade;

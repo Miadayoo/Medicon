@@ -14,6 +14,7 @@
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/BedrockMenu.hpp>
 #include <medicon/sdk/VanillaNavigation.hpp>
+#include <medicon/update/HostApi.h>
 #include <medicon/social/Service.hpp>
 #include <backends/imgui_impl_win32.h>
 #include <d3d11.h>
@@ -165,6 +166,9 @@ public:
     MainMenuUpdateFn main_menu_update{};
     std::atomic<DWORD> navigation_thread{0};
     std::string menu_diagnostic;
+    // Set by Medicon_Initialize when MediconLoader hosts the Core: the version
+    // that was just downloaded, so Social greets with an "updated" notice.
+    std::string update_version;
     sdk::MenuScreenState cached_menu_screen_{sdk::MenuScreenState::unknown};
     sdk::MenuSessionIdentity cached_menu_session_{};
     void* cached_menu_client_{};
@@ -1269,6 +1273,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         if (social) {
             client->overlay().set_social(&social->channel(), &social::play_notification_sound);
             client->overlay().social().set_startup_sign_in(true);
+            if (!update_version.empty()) client->overlay().social().set_update_notice(update_version);
         }
         client->overlay().set_ime(&ime);
         if (!client->start()) { report(client->last_error(), true); status = 4; return false; }
@@ -2053,6 +2058,29 @@ int MediconStartOverlay() {
     if (!state.worker) { state.status = 4; state.stopping = true; state.report("Cannot start overlay worker.", true); return 0; }
     return 1;
 }
+
+// The C ABI MediconLoader uses (medicon/update/HostApi.h). When the loader
+// hosts the Core, it calls Medicon_Initialize instead of relying on the DllMain
+// auto-start (which is suppressed by MEDICON_LOADER); both reuse the same worker.
+extern "C" MEDICON_API uint32_t Medicon_GetAPIVersion(void) { return 1; }
+
+extern "C" MEDICON_API int Medicon_Initialize(const MediconHostAPI* host) {
+    using namespace medicon::platform;
+    auto& state = runtime();
+    if (host && host->size >= sizeof(MediconHostAPI) && host->api_version == 1 && host->core_version) {
+        std::lock_guard lock(state.lifecycle_mutex);
+        // state 1 == MEDICON_UPDATE_UPDATED: a newer Core was downloaded this launch.
+        if (host->update_state == 1) {
+            const auto* version = host->core_version;
+            std::string utf8;
+            for (const wchar_t* c = version; *c && *c < 128; ++c) utf8.push_back(static_cast<char>(*c));
+            state.update_version = utf8;
+        }
+    }
+    return MediconStartOverlay();
+}
+
+extern "C" MEDICON_API void Medicon_Shutdown(void) { MediconStopOverlay(); }
 
 uint32_t MediconOverlayStatus() { return medicon::platform::runtime().status.load(); }
 uint32_t MediconOverlayLastError(char* buffer, uint32_t capacity) {

@@ -15,3 +15,7 @@ export type ErrorCode =
   | 'bad_request'
   | 'forbidden'
   | 'internal'
+  // Core DLL releases (docs/auto-update.md).
+  | 'releases_disabled'
+  | 'version_conflict'
+  | 'bad_release'

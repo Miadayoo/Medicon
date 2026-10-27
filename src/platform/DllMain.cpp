@@ -18,7 +18,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
         name = name ? name + 1 : executable;
         // Explicit C API users and tests retain their existing lifecycle. The
         // worker cannot run until loader notifications finish; never join here.
-        if (_wcsicmp(name, L"Minecraft.Windows.exe") == 0) {
+        // MediconLoader sets MEDICON_LOADER before LoadLibraryExW and then calls
+        // Medicon_Initialize itself, so the Core must not also auto-start here.
+        if (_wcsicmp(name, L"Minecraft.Windows.exe") == 0 && GetEnvironmentVariableW(L"MEDICON_LOADER", nullptr, 0) == 0) {
             if (HANDLE thread = CreateThread(nullptr, 0, bootstrap, nullptr, 0, nullptr)) CloseHandle(thread);
         }
     }

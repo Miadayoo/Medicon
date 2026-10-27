@@ -218,6 +218,14 @@ void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_
                 toast.title = "Medicon Social";
                 toast.body = one_line("Welcome to " + value.me.name);
                 notify(std::move(toast), fonts, in_menu, true);
+                // Right after a loader update, say so once, after auth succeeded.
+                if (!update_version_.empty() && !std::exchange(update_notified_, true)) {
+                    Toast updated;
+                    updated.kind = ToastKind::System;
+                    updated.title = "Medicon";
+                    updated.body = one_line("Updated to " + update_version_);
+                    notify(std::move(updated), fonts, in_menu, true);
+                }
             }
             // Spec 2.6: reload what the views show after every (re)connect: news,
             // friends, and the newest 50 of every conversation already loaded

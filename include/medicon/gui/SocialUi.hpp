@@ -34,6 +34,9 @@ public:
     // a key is accepted, and every sign-in greets with "Welcome to {name}".
     // Off in Preview scenarios unless they ask for it.
     void set_startup_sign_in(bool enabled) noexcept { startup_sign_in_ = enabled; }
+    // MediconLoader downloaded this Core version this launch: after the first
+    // sign-in, a one-time "Updated to {version}" notification is shown.
+    void set_update_notice(std::string version) noexcept { update_version_ = std::move(version); }
     // Once per frame after the intro (Overlay::render).
     void update_sign_in_gate();
     bool sign_in_gate_active() const noexcept { return gate_; }
@@ -108,6 +111,8 @@ private:
     bool gate_ = false;
     // A sign-in was already greeted; reconnects keep it, losing the account resets it.
     bool welcomed_ = false;
+    std::string update_version_;  // non-empty only when the loader just updated
+    bool update_notified_ = false;
     double backdrop_time_ = 0.0;
     ImeBridge* ime_ = nullptr;
     std::vector<social::Event> scratch_;

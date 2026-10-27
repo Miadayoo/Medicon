@@ -1,6 +1,12 @@
 #include "SocialApi.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <Windows.h>
+
 #include <algorithm>
+#include <array>
+#include <cstdint>
 
 namespace medicon::social::detail {
 
@@ -125,6 +131,73 @@ void SocialApi::fetch(const FetchFriends&) {
         }
     }
     core_->channel().events.push(std::move(loaded));
+}
+
+namespace {
+
+// Reads the DLL for a release upload, bounded. Win32 so a wide path works
+// without relying on a toolchain's wide ifstream extension.
+bool read_release_dll(const std::wstring& path, std::string& out) {
+    constexpr std::uint64_t max_bytes = 64ull * 1024 * 1024;
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    bool ok = GetFileSizeEx(file, &size) && size.QuadPart > 0 && static_cast<std::uint64_t>(size.QuadPart) <= max_bytes;
+    if (ok) {
+        out.resize(static_cast<std::size_t>(size.QuadPart));
+        std::size_t offset = 0;
+        while (offset < out.size()) {
+            DWORD read = 0;
+            const DWORD want = static_cast<DWORD>(std::min<std::uint64_t>(out.size() - offset, 1u << 20));
+            if (!ReadFile(file, out.data() + offset, want, &read, nullptr) || read == 0) { ok = false; break; }
+            offset += read;
+        }
+    }
+    CloseHandle(file);
+    if (!ok) out.clear();
+    return ok;
+}
+
+// "MDCR", u32le metadata length, UTF-8 JSON {version,title,body}, DLL bytes.
+std::string build_release_upload(const PublishRelease& request, std::string_view dll) {
+    const nlohmann::json metadata{{"version", request.version}, {"title", request.title}, {"body", request.body}};
+    const std::string json = metadata.dump();
+    std::string out;
+    out.reserve(8 + json.size() + dll.size());
+    const std::uint32_t magic = 0x5243444d; // "MDCR"
+    const auto length = static_cast<std::uint32_t>(json.size());
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((magic >> (i * 8)) & 0xFF));
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((length >> (i * 8)) & 0xFF));
+    out.append(json);
+    out.append(dll);
+    return out;
+}
+
+} // namespace
+
+void SocialApi::fetch(const PublishRelease& request) {
+    const auto fail = [&](std::string error) {
+        core_->channel().events.push(RequestFinished{request.nonce, false, std::move(error), std::nullopt});
+    };
+    const auto endpoint = core_->endpoint();
+    const auto token = core_->token_snapshot();
+    if (!endpoint || token.value.empty()) return fail("offline");
+    std::string dll;
+    if (!read_release_dll(request.dll_path, dll)) return fail("dll_unreadable");
+    const std::string upload = build_release_upload(request, dll);
+    const auto response =
+        core_->http().upload(*endpoint, "/releases", "application/vnd.medicon.release", upload.data(), upload.size(), token.value);
+    if (response.status == 200) {
+        core_->report("Social: published Core " + request.version + " (" + std::to_string(dll.size()) + " bytes).");
+        core_->channel().events.push(RequestFinished{request.nonce, true, {}, std::nullopt});
+        return;
+    }
+    std::string error = parse_error_code(response.body);
+    if (error.empty()) error = response.status == 403 ? "forbidden" : "release_failed";
+    core_->report("Social: publishing Core " + request.version + " failed (" +
+                  describe_failure(response.status, response.error) + ").");
+    fail(std::move(error));
 }
 
 void SocialApi::fetch(const SearchUsers& request) {
