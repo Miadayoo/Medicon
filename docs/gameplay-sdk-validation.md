@@ -48,7 +48,7 @@
 
 GameMode は実行中にも vtable identity、player owner、実行可能領域、slot の関数 RVA と先頭 16 bytes を照合する。RVA は vtable から読んだ関数の識別だけに使い、固定アドレスへ直接 call しない。
 
-Scaffold は空気/液体の target と固体の支持 neighbor を確認し、その neighbor の face center を HitResult に設定してから buildBlock を呼ぶ。HitResult の **scalar prefix 0x38 bytes** を保存・復元し、後続の WeakEntityRef には触れない。inventory slot も同じ呼び出し内で復元する。サーバーによる設置・攻撃の受理はゲーム実行時の確認が必要。
+Scaffold は空気/液体の target と、空気・液体以外の支持 neighbor（Solstice の `getBlockPlaceFace` と同じ。ガラス・ハーフブロック・階段も含む）を確認し、その neighbor の face center を HitResult に設定してから buildBlock を呼ぶ。HitResult の **scalar prefix 0x38 bytes** を保存・復元し、後続の WeakEntityRef には触れない。Auto Select の slot は呼び出し内で戻さず、選択したまま次の試行で設置し、使わなくなって1秒後に元へ戻す（Solstice の既定 `Full` と同じ考え方）。サーバーによる設置・攻撃の受理はゲーム実行時の確認が必要。
 
 ## 描画と残る制約
 

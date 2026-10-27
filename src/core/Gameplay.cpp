@@ -22,4 +22,14 @@ bool world_to_screen(const GameplayFrame& frame, Vec3 world, Vec2 viewport, Vec2
     return true;
 }
 
+Vec3 camera_position(const GameplayFrame& frame) noexcept {
+    // view = R * (world - origin) + t is zero at world = origin - R^T * t.
+    const auto& m = frame.view_matrix;
+    const float tx = m[3], ty = m[7], tz = m[11];
+    const Vec3 camera{frame.camera.x - (m[0] * tx + m[4] * ty + m[8] * tz),
+                      frame.camera.y - (m[1] * tx + m[5] * ty + m[9] * tz),
+                      frame.camera.z - (m[2] * tx + m[6] * ty + m[10] * tz)};
+    return std::isfinite(camera.x) && std::isfinite(camera.y) && std::isfinite(camera.z) ? camera : frame.camera;
+}
+
 } // namespace medicon::sdk

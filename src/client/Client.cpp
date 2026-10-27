@@ -5,6 +5,7 @@
 #include <medicon/memory/module_view.hpp>
 #include <Windows.h>
 #include <ShlObj.h>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -93,7 +94,9 @@ bool Client::prepare_frame() {
 
 void Client::render() {
     if (!running_) return;
-    gui::render_gameplay_visuals(modules_, gameplay_frame_, elapsed_);
+    // How far this frame is between the last game tick and the next (20 per second).
+    const float partial_tick = std::clamp(gameplay_age_ / 0.05F, 0.0F, 1.0F);
+    gui::render_gameplay_visuals(modules_, gameplay_frame_, elapsed_, partial_tick);
     modules_.render();
     overlay_.render();
 }

@@ -2,6 +2,7 @@
 #include "medicon/sdk/Gameplay.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -116,6 +117,34 @@ bool same_block(sdk::BlockPos a, sdk::BlockPos b) noexcept {
     return a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
+// The level a bridge goes at: the highest cell whose top is at or just below
+// the feet. Between levels (jumping, a slab, the first moment of a fall) the
+// cell around the feet would intersect the player and the game refuses it.
+// Same as Solstice's startY = position.y - 2.62 (eye height 1.62, minus one).
+bool support_level(float feet, int& level) noexcept {
+    if (!std::isfinite(feet)) return false;
+    const double value = std::floor(static_cast<double>(feet) + 0.01) - 1.0;
+    if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) return false;
+    level = static_cast<int>(value);
+    return true;
+}
+
+// Places `target`, or else a cell beside it that has a support face so the
+// next attempt can reach it (diagonal steps leave the target on an edge only).
+// The beside cells are tried nearest the player first, as Solstice does.
+void place_or_support(sdk::GameplayAccess& game, sdk::BlockPos target, sdk::Vec3 feet, bool auto_select) {
+    if (game.place_block(target, auto_select)) return;
+    std::array<sdk::BlockPos, 4> beside{{{target.x + 1, target.y, target.z}, {target.x - 1, target.y, target.z},
+                                         {target.x, target.y, target.z + 1}, {target.x, target.y, target.z - 1}}};
+    const auto distance = [&](sdk::BlockPos cell) {
+        const float dx = static_cast<float>(cell.x) + 0.5F - feet.x, dz = static_cast<float>(cell.z) + 0.5F - feet.z;
+        return dx * dx + dz * dz;
+    };
+    std::sort(beside.begin(), beside.end(), [&](sdk::BlockPos a, sdk::BlockPos b) { return distance(a) < distance(b); });
+    for (const auto cell : beside)
+        if (game.replaceable(cell) && game.place_block(cell, auto_select)) return;
+}
+
 } // namespace
 
 DerpModule::DerpModule()
@@ -216,9 +245,10 @@ void ScaffoldModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) n
         if (cooldown_ > 0.00001F) return;
 
         const auto position = frame.local.position;
-        // A small downward inset chooses the supporting cell both at integer
-        // ground heights and while the player's feet are between block levels.
-        const float y = frame.local.bounds.min.y - 0.05F;
+        int level = 0;
+        if (!support_level(frame.local.bounds.min.y, level)) return;
+        // Cell centres of the level, so floor() below picks exactly that level.
+        const float y = static_cast<float>(level) + 0.5F;
         const auto velocity = frame.local.velocity;
         const float horizontal = finite(velocity) ? std::hypot(velocity.x, velocity.z) : 0.0F;
         const float reach = horizontal > 0.001F ? number(extend) : 0.0F;
@@ -238,7 +268,7 @@ void ScaffoldModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) n
             cooldown_ = number(delay) / 1000.0F;
             // The bridge validates a real supporting face, item and reach;
             // placement cannot create blocks in unsupported air.
-            game.place_block(block, auto_select.get<bool>());
+            place_or_support(game, block, {position.x, frame.local.bounds.min.y, position.z}, auto_select.get<bool>());
             break;
         }
     } catch (...) { cooldown_ = 0.25F; }

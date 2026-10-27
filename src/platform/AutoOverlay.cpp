@@ -143,7 +143,8 @@ public:
     const UINT cursor_message = RegisterWindowMessageW(L"Medicon.CursorPositionSync.8494B7C3");
     std::atomic_bool cursor_message_pending{};
     std::mutex lifecycle_mutex, queue_mutex, input_mutex, log_mutex, window_mutex, command_mutex, feedback_mutex;
-    std::recursive_mutex render_mutex;
+    // Timed so a game tick can wait out one Present instead of being skipped.
+    std::recursive_timed_mutex render_mutex;
     std::mutex feedback_dispatch_mutex;
     std::mutex mouse_mutex;
     std::mutex menu_mutex;
@@ -1397,6 +1398,10 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     if (client->overlay().main_menu().active() && !menu_visible.load(std::memory_order_acquire))
         client->overlay().set_main_menu_active(false);
     client->tick(ImGui::GetIO().DeltaTime);
+    // The camera moves every frame but game ticks come 20 times a second.
+    // Reread its plain fields so ESP and ChinaHat stay on the picture.
+    if (gameplay_ready.load(std::memory_order_acquire))
+        if (auto* view = client->gameplay_view()) gameplay.refresh_view(*view);
     client->render();
     set_open(client->gui().open() || client->overlay().social().screen_open());
     ImGui::Render();
@@ -1475,14 +1480,20 @@ void hook_base_tick(void* actor) {
     // Native mutations stay on this thread; Present only receives copied data.
     if (state.stopping || inside_gameplay || !state.gameplay_ready.load(std::memory_order_acquire)) return;
     FlagScope recursion(inside_gameplay);
-    std::unique_lock render(state.render_mutex, std::try_to_lock);
+    // Present holds this while it builds a frame. Skipping the tick then made
+    // Scaffold and Killaura miss ticks and ESP/ChinaHat go stale; a short,
+    // bounded wait keeps them on every tick without risking a deadlock.
+    std::unique_lock render(state.render_mutex, std::defer_lock);
+    (void)render.try_lock_for(std::chrono::milliseconds(4));
     if (!render.owns_lock() || !state.client || !state.bedrock_chat.is_local_player(actor)) return;
     bool wanted = false;
     for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
     }
-    if (!wanted) {
+    // A slot Scaffold's Auto Select switched to is put back by a later capture,
+    // also after every gameplay module was turned off.
+    if (!wanted && !state.gameplay.slot_restore_pending()) {
         state.client->clear_gameplay();
         state.gameplay.clear();
         state.last_game_tick = {};

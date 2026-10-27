@@ -47,6 +47,7 @@ public:
     bool rotate_result = true;
     bool attack_result = true;
     bool place_result = true;
+    std::set<Cell> refuse; // cells place_block fails for (no support face)
     bool throw_rotation = false;
     bool throw_attack = false;
     bool throw_place = false;
@@ -66,8 +67,9 @@ public:
     bool place_block(BlockPos position, bool auto_select) override {
         if (throw_place) throw std::runtime_error("place");
         placements.emplace_back(position, auto_select);
-        if (place_result) solid.insert(cell(position));
-        return place_result;
+        const bool placed = place_result && !refuse.contains(cell(position));
+        if (placed) solid.insert(cell(position));
+        return placed;
     }
     bool replaceable(BlockPos position) const override {
         if (throw_query) throw std::runtime_error("query");
@@ -348,14 +350,16 @@ void test_scaffold_stationary_failure_and_invalid_data() {
     ScaffoldModule scaffold;
     scaffold.set_enabled(true);
     game.place_result = false;
+    // One attempt is the target and, failing that, the four cells beside it.
+    constexpr std::size_t attempt = 5;
     scaffold.game_tick(game, 0.05F);
     scaffold.game_tick(game, 0.05F);
-    check(game.placements.size() == 1, "Scaffold retried a failed placement before the delay");
+    check(game.placements.size() == attempt, "Scaffold retried a failed placement before the delay");
     scaffold.game_tick(game, 0.05F);
-    check(game.placements.size() == 2, "Scaffold did not retry after a failed placement");
+    check(game.placements.size() == attempt * 2, "Scaffold did not retry after a failed placement");
     game.solid.insert(Cell{0, 63, 0});
     scaffold.game_tick(game, 0.25F);
-    check(game.placements.size() == 2, "Scaffold extended without horizontal movement");
+    check(game.placements.size() == attempt * 2, "Scaffold extended without horizontal movement");
 
     game.state.local.position.x = std::numeric_limits<float>::infinity();
     scaffold.game_tick(game, 0.25F);
@@ -364,7 +368,7 @@ void test_scaffold_stationary_failure_and_invalid_data() {
     game.state.local.position.x = 0.5F;
     game.state.local.bounds = {};
     scaffold.game_tick(game, 0.25F);
-    check(game.placements.size() == 2, "Scaffold converted invalid geometry to a block position");
+    check(game.placements.size() == attempt * 2, "Scaffold converted invalid geometry to a block position");
 
     game.state.local.bounds = {{0.2F, 64.0F, 0.2F}, {0.8F, 65.8F, 0.8F}};
     game.solid.clear();
@@ -372,9 +376,57 @@ void test_scaffold_stationary_failure_and_invalid_data() {
     scaffold.game_tick(game, 0.25F);
     game.throw_query = false;
     scaffold.game_tick(game, 0.01F);
-    check(game.placements.size() == 2, "Scaffold immediately retried a bridge exception");
+    check(game.placements.size() == attempt * 2, "Scaffold immediately retried a bridge exception");
     scaffold.game_tick(game, 0.25F);
-    check(game.placements.size() == 3, "Scaffold did not recover from a bridge exception");
+    check(game.placements.size() == attempt * 3, "Scaffold did not recover from a bridge exception");
+}
+
+// The cell under the feet between block levels, and the fallback support.
+void test_scaffold_level_and_support() {
+    {
+        MockGame game;
+        ScaffoldModule scaffold;
+        scaffold.set_enabled(true);
+        game.solid.insert(Cell{0, 63, 0});
+        // Mid-jump the cell around the feet would intersect the player.
+        game.state.local.bounds = {{0.2F, 64.45F, 0.2F}, {0.8F, 66.25F, 0.8F}};
+        scaffold.game_tick(game, 0.05F);
+        check(game.placements.empty(), "Scaffold placed into the cell the jumping player occupies");
+        // Above the next level (towering), the block goes under the feet.
+        game.state.local.bounds = {{0.2F, 65.1F, 0.2F}, {0.8F, 66.9F, 0.8F}};
+        scaffold.game_tick(game, 0.25F);
+        check(game.placements.size() == 1 && cell(game.placements.back().first) == Cell{0, 64, 0},
+              "Scaffold did not place under the feet while towering");
+        // Just below the bridge level at the start of a fall, catch one lower.
+        game.solid.clear();
+        game.state.local.bounds = {{0.2F, 63.8F, 0.2F}, {0.8F, 65.6F, 0.8F}};
+        scaffold.game_tick(game, 0.25F);
+        check(game.placements.size() == 2 && cell(game.placements.back().first) == Cell{0, 62, 0},
+              "Scaffold chose a cell intersecting a falling player");
+        // Standing a hair below an integer height still means that level.
+        game.solid.clear();
+        game.state.local.bounds = {{0.2F, 63.995F, 0.2F}, {0.8F, 65.795F, 0.8F}};
+        scaffold.game_tick(game, 0.25F);
+        check(game.placements.size() == 3 && cell(game.placements.back().first) == Cell{0, 63, 0},
+              "Scaffold rounded a resting player down a level");
+    }
+    {
+        MockGame game;
+        ScaffoldModule scaffold;
+        scaffold.set_enabled(true);
+        // A diagonal step: the target has no face to click, the cell nearest
+        // the player beside it does and becomes the support.
+        game.state.local.position = {0.9F, 65.62F, 0.5F};
+        game.refuse.insert(Cell{0, 63, 0});
+        scaffold.game_tick(game, 0.05F);
+        check(game.placements.size() == 2 && cell(game.placements.front().first) == Cell{0, 63, 0} &&
+              cell(game.placements.back().first) == Cell{1, 63, 0},
+              "Scaffold did not place a support beside an unsupported target");
+        game.refuse.clear();
+        scaffold.game_tick(game, 0.25F);
+        check(game.placements.size() == 3 && cell(game.placements.back().first) == Cell{0, 63, 0},
+              "Scaffold did not return to the target once supported");
+    }
 }
 
 } // namespace
@@ -389,6 +441,7 @@ int main() {
         test_killaura_failures_are_throttled();
         test_scaffold_floor_extension_and_delay();
         test_scaffold_stationary_failure_and_invalid_data();
+        test_scaffold_level_and_support();
         std::cout << "Gameplay module tests passed\n";
         return 0;
     } catch (const std::exception& error) {

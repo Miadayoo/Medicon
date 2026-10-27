@@ -741,6 +741,54 @@ void test_legacy_panel_layout() {
     }
 }
 
+// A layout saved while only Visual, Misc and Client had modules, then the
+// Movement and Player panels appear: they used to land on the saved panels.
+void test_new_categories_avoid_saved_panels() {
+    for (const bool stacked : {false, true}) {
+        ImGuiScope imgui;
+        ModuleManager modules;
+        register_builtin_modules(modules);
+        auto* cfg = dynamic_cast<ClickGuiModule*>(modules.find("clickgui"));
+        const auto save = [&](Category category, float x) {
+            cfg->panel(category).x->get<float>() = x;
+            cfg->panel(category).y->get<float>() = theme::metrics::start_y;
+        };
+        const float step = theme::metrics::panel_width + theme::metrics::panel_gap;
+        save(Category::Visual, theme::metrics::start_x);
+        save(Category::Misc, theme::metrics::start_x + step);
+        save(Category::Client, theme::metrics::start_x + step * 2.0F);
+        cfg->panel_order.get<std::string>() = "visual,misc,client";
+        if (stacked) {
+            // What the old placement then saved: the new panels on top.
+            save(Category::Movement, theme::metrics::start_x + step);
+            save(Category::Player, theme::metrics::start_x + step * 2.0F);
+            cfg->panel_order.get<std::string>() = "visual,misc,client,movement,player";
+        }
+        Overlay overlay(modules);
+        overlay.set_dpi_override(96.0F);
+        overlay.clock().set_fixed_step(1.0F / 60.0F);
+        int saves = 0;
+        overlay.set_save_handler([&] { ++saves; });
+        overlay.gui().set_open(true);
+        for (int i = 0; i < 3; ++i) imgui.frame(overlay);
+        const auto rects = overlay.gui().panel_rects();
+        check(rects.size() == category_count, "all five categories have a panel");
+        for (std::size_t i = 0; i < rects.size(); ++i) {
+            for (std::size_t j = i + 1; j < rects.size(); ++j) {
+                const auto& a = rects[i];
+                const auto& b = rects[j];
+                check(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h),
+                      std::string(category_name(a.category)) + " and " + category_name(b.category) +
+                      " panels overlap after new categories appeared");
+            }
+        }
+        check(cfg->panel(Category::Misc).x->get<float>() == theme::metrics::start_x + step &&
+              cfg->panel(Category::Client).x->get<float>() == theme::metrics::start_x + step * 2.0F,
+              "saved panels keep their positions");
+        check(saves == (stacked ? 1 : 0), "only a stacked layout is rewritten, once");
+    }
+}
+
 void test_wrapped_default_panels() {
     constexpr float width = 1280.0F, height = 720.0F;
     ImGuiScope imgui(width, height);
@@ -951,6 +999,7 @@ int main() {
         {"shadow mesh cache and profiles", test_shadow_mesh},
         {"panel clamp", test_panel_clamp},
         {"legacy panel layout", test_legacy_panel_layout},
+        {"new categories avoid saved panels", test_new_categories_avoid_saved_panels},
         {"wrapped default panels", test_wrapped_default_panels},
         {"config round trip", test_config},
         {"config compatibility", test_config_compat},

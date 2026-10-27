@@ -24,6 +24,11 @@ public:
     void tick(float delta_seconds);
     void game_tick(sdk::GameplayAccess& game, float delta_seconds, bool allow_actions = true);
     void clear_gameplay() noexcept;
+    // The copied frame the overlay draws, while it has a camera; a native host
+    // refreshes its camera fields every Present (BedrockGameplay::refresh_view).
+    [[nodiscard]] sdk::GameplayFrame* gameplay_view() noexcept {
+        return gameplay_frame_.ready && gameplay_frame_.projection_ready ? &gameplay_frame_ : nullptr;
+    }
     // Before ImGui::NewFrame(); true when the host must re-upload its font texture.
     bool prepare_frame();
     void render(); // An ImGui context and an active NewFrame() are required.
