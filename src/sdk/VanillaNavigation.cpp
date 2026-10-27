@@ -72,6 +72,19 @@ bool exact_host(std::string& diagnostic) {
     }
     return true;
 }
+// Two packagings of the same 1.26.52.3 link (identical TimeDateStamp). The
+// inspected LeviLauncher copy carries a launcher-added .levildr section; the
+// official install is one page smaller and has its own checksum (observed in a
+// user's inject.log). profile() still verifies every instruction and table this
+// feature reads or calls at the shared RVAs, so a shifted layout fails closed.
+struct Packaging { std::uint32_t image_size, checksum; };
+constexpr std::array packagings{
+    Packaging{0x12C02000,0x128DA293}, // LeviLauncher versions/1.26.52.03, inspected
+    Packaging{0x12C01000,0x128CD801}  // official Minecraft install, 8 sections
+};
+bool known_packaging(std::uint32_t image_size, std::uint32_t checksum) noexcept {
+    return std::ranges::any_of(packagings,[=](const Packaging& p){return p.image_size==image_size && p.checksum==checksum;});
+}
 bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>& executable, std::string& diagnostic) {
     // Inspect only headers/section metadata, avoiding a second full .text copy.
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
@@ -85,16 +98,15 @@ bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>
         // address. Accept that observed loaded form as well as the disk value;
         // timestamp, checksum, size and all loaded code/table checks still apply.
         (nt.OptionalHeader.ImageBase != 0x140000000ULL && nt.OptionalHeader.ImageBase != base) ||
-        nt.OptionalHeader.SizeOfImage != 0x12C02000 ||
-        nt.OptionalHeader.CheckSum != 0x128DA293 || nt.FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64) ||
+        !known_packaging(nt.OptionalHeader.SizeOfImage,nt.OptionalHeader.CheckSum) ||
+        nt.FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64) ||
         !nt.FileHeader.NumberOfSections || nt.FileHeader.NumberOfSections > 96) {
-        // The same FileVersion can ship as a differently packaged executable
-        // (the inspected one carries a launcher-added .levildr section). Log the
-        // observed header so a report from another PC names the differing field.
-        char text[320]{};
+        // Log the observed header so a report from another PC names the
+        // differing field.
+        char text[352]{};
         std::snprintf(text,sizeof text,"Native menu PE header mismatch (e_lfanew=0x%lX TimeDateStamp=0x%08lX "
-            "ImageBase=0x%llX SizeOfImage=0x%lX CheckSum=0x%08lX sections=%u; inspected 0x78/0x6AB54E37/"
-            "0x12C02000/0x128DA293); navigation disabled.",static_cast<unsigned long>(dos.e_lfanew),
+            "ImageBase=0x%llX SizeOfImage=0x%lX CheckSum=0x%08lX sections=%u; known 0x78/0x6AB54E37 with "
+            "0x12C02000/0x128DA293 or 0x12C01000/0x128CD801); navigation disabled.",static_cast<unsigned long>(dos.e_lfanew),
             static_cast<unsigned long>(nt.FileHeader.TimeDateStamp),static_cast<unsigned long long>(nt.OptionalHeader.ImageBase),
             static_cast<unsigned long>(nt.OptionalHeader.SizeOfImage),static_cast<unsigned long>(nt.OptionalHeader.CheckSum),
             static_cast<unsigned>(nt.FileHeader.NumberOfSections));
@@ -236,8 +248,10 @@ bool VanillaNavigation::initialize(std::string& diagnostic) noexcept {
         diagnostic.clear();
         if (initialized_) {diagnostic=terminal_diagnostic_;return ready_.load(std::memory_order_acquire);}
         initialized_=true;
-        if (!exact_host(diagnostic) || !loaded_image(image_,executable_regions_,diagnostic) || !profile(true)) {
-            if (diagnostic.empty()) diagnostic="Native menu PE/code/table profile mismatch; navigation disabled.";
+        const bool image_ok=exact_host(diagnostic) && loaded_image(image_,executable_regions_,diagnostic);
+        if (!image_ok || !profile(true)) {
+            if (diagnostic.empty()) diagnostic=image_ok?"Native menu code/table profile mismatch; navigation disabled.":
+                                                        "Native menu PE section layout mismatch; navigation disabled.";
             terminal_diagnostic_=diagnostic;
             return false;
         }
