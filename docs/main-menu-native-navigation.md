@@ -96,7 +96,21 @@ Quitの取消／Yes、認証popup、各画面からの復帰、最新カーソ�
 ログには `MainMenu: Main Menu replacement withheld: ...` が出る。
 ヘッダー不一致では、実際の値が `MainMenu navigation disabled: Native menu PE header mismatch (...)` に記録される。
 フォーカス喪失・メニュー非表示による要求の取消もログに残す。
-別PCのexeを受理するかどうかは、そのログの値と命令列の照合結果を確認してから決める。
+
+報告元PCのexeは公式からインストールしたもので、ログの値は次の通りだった。
+
+| 項目 | LeviLauncher版（解析済み） | 公式版（ログで観測） |
+| --- | --- | --- |
+| e_lfanew / TimeDateStamp | `0x78` / `0x6AB54E37` | `0x78` / `0x6AB54E37` |
+| SizeOfImage | `0x12C02000` | `0x12C01000`（1ページ小さい） |
+| CheckSum | `0x128DA293` | `0x128CD801` |
+| セクション数 | — | 8 |
+
+timestampが同じなので同一リンクの別パッケージと判断し、この2組のSizeOfImage / CheckSumだけを受理する。
+組み合わせが混ざった値は受理しない。
+命令列・table・実行ページの照合（`profile()`）はそのまま適用するため、公式版でRVAやコードがずれていれば遷移は無効のままになる。
+ヘッダー通過後に照合で落ちた場合は `Native menu code/table profile mismatch` をログに出す。
+公式版での実ゲームの動作確認はまだ無い。
 
 資料に残る一般のScreenEvent完全型、native FIFO ABI、ClientInstance quit候補のソース型、独立した非描画updateはこの接続経路では利用しない。
 それらの未取得事項は `docs/main-menu-navigation-missing.md` に履歴として残す。
