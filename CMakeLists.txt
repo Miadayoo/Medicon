@@ -15,6 +15,7 @@ include(CTest)
 include(FetchContent)
 option(MEDICON_BUILD_WINDOWS "Build the Windows x64 DLL and GUI preview" ${WIN32})
 set(MEDICON_SOCIAL_SERVER_URL "https://medicon.auau1000.com" CACHE STRING "Social server URL embedded in the client")
+set(MEDICON_UPDATE_HOST "medicon.auau1000.com" CACHE STRING "Host MediconLoader downloads Core releases from")
 
 # Immutable revisions; downloaded only during configure, never at client startup.
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
@@ -62,6 +63,12 @@ add_library(medicon_update STATIC src/update/Update.cpp)
 medicon_target(medicon_update)
 target_link_libraries(medicon_update PUBLIC nlohmann_json::nlohmann_json)
 
+# The update orchestration (run_update), tested with fakes; the Win32 fetch,
+# verify and storage live in the DLL target below.
+add_library(medicon_loader_core STATIC src/loader/UpdateManager.cpp)
+medicon_target(medicon_loader_core)
+target_link_libraries(medicon_loader_core PUBLIC medicon_update)
+
 add_library(medicon_mouse_capture STATIC src/platform/MouseCaptureController.cpp)
 medicon_target(medicon_mouse_capture)
 
@@ -99,6 +106,10 @@ if(BUILD_TESTING)
     medicon_target(medicon_update_tests)
     target_link_libraries(medicon_update_tests PRIVATE medicon_update)
     add_test(NAME update COMMAND medicon_update_tests)
+    add_executable(medicon_loader_tests tests/loader_tests.cpp)
+    medicon_target(medicon_loader_tests)
+    target_link_libraries(medicon_loader_tests PRIVATE medicon_loader_core)
+    add_test(NAME loader COMMAND medicon_loader_tests)
     add_executable(medicon_social_tests tests/social_tests.cpp)
     medicon_target(medicon_social_tests)
     target_link_libraries(medicon_social_tests PRIVATE medicon_social_core)
@@ -191,6 +202,20 @@ if(MEDICON_BUILD_WINDOWS)
     target_compile_definitions(Medicon PRIVATE MEDICON_EXPORTS MEDICON_VERSION="${PROJECT_VERSION}")
     target_link_libraries(Medicon PRIVATE medicon_runtime medicon_social_net d3d11 d3d12 dxgi d3dcompiler dwmapi imm32)
     set_target_properties(Medicon PROPERTIES PREFIX "" OUTPUT_NAME "Medicon")
+
+    # MediconLoader.dll: the small DLL the user installs once. It downloads,
+    # verifies and loads MediconCore.dll (docs/auto-update.md). Built static so
+    # it needs no extra runtime DLLs alongside it.
+    add_library(MediconLoader SHARED
+        src/loader/LoaderMain.cpp
+        src/loader/CoreLauncher.cpp
+        src/update/Download.cpp
+        src/update/Verify.cpp
+        src/update/Storage.cpp)
+    medicon_target(MediconLoader)
+    target_link_libraries(MediconLoader PRIVATE medicon_loader_core winhttp bcrypt shell32 ole32 version)
+    target_compile_definitions(MediconLoader PRIVATE MEDICON_UPDATE_HOST="${MEDICON_UPDATE_HOST}")
+    set_target_properties(MediconLoader PROPERTIES PREFIX "" OUTPUT_NAME "MediconLoader")
 
     add_executable(MediconPreview WIN32
         src/preview/Main.cpp
@@ -292,10 +317,11 @@ if(MEDICON_BUILD_WINDOWS)
         add_test(NAME preview_social_admin COMMAND MediconPreview --scenario social_admin --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_admin_focus COMMAND MediconPreview --scenario social_admin_focus --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_sign_in_gate COMMAND MediconPreview --scenario social_sign_in_gate --size 1280x720 --fixed-dt 0.016666667)
+        add_test(NAME preview_social_update_notice COMMAND MediconPreview --scenario social_update_notice --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_changelog_marks COMMAND MediconPreview --scenario social_changelog_marks --size 1280x720 --fixed-dt 0.016666667)
         set_tests_properties(preview_social_global preview_social_dm preview_social_friends preview_social_friend_remove
                              preview_social_admin preview_social_admin_focus
-                             preview_social_sign_in_gate preview_social_changelog_marks PROPERTIES TIMEOUT 30)
+                             preview_social_sign_in_gate preview_social_update_notice preview_social_changelog_marks PROPERTIES TIMEOUT 30)
         set_tests_properties(preview_social_home preview_social_device_recreate preview_social_changelog
                              preview_social_main_menu_click preview_social_toast_click preview_social_typing PROPERTIES TIMEOUT 30)
         add_test(NAME preview_main_menu_device_recreate COMMAND MediconPreview --main-menu-time 1.5 --size 1280x720 --simulate-device-lost 0)

@@ -857,6 +857,8 @@ void social_sign_in_gate(ScenarioHost& host, bool capture) {
         return false;
     };
     if (!welcomed()) throw std::runtime_error("no Welcome notification after signing in");
+    if (ui.toasts().visible().size() != 1)
+        throw std::runtime_error("only the Welcome notification shows without a loader update");
     // A reconnect is not a new sign-in.
     wait_frames(host, 5.0F);
     channel.events.push(social::StateChanged{social::ConnectionState::Reconnecting, {}});
@@ -866,6 +868,38 @@ void social_sign_in_gate(ScenarioHost& host, bool capture) {
     if (welcomed() || ui.screen_open()) throw std::runtime_error("a reconnect greeted again or gated");
     if (capture) host.capture("menu");
     host.log("milestone sign_in_gate");
+}
+
+// With a loader update, signing in also says "Updated to {version}".
+void social_update_notice(ScenarioHost& host, bool capture) {
+    auto& channel = social_mock(host, false, false);
+    auto& ui = host.overlay().social();
+    ui.set_startup_sign_in(true);
+    ui.set_update_notice("1.0.5");
+    channel.events.push(social::StateChanged{social::ConnectionState::NoLicense, {}});
+    social_settle(host);
+    type_text(host, L"MDC-TEST-TEST-TEST-TEST");
+    press_enter(host);
+    channel.commands.pop(std::chrono::steady_clock::now());
+    channel.events.push(social::LoginFinished{true, {}});
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User"}, 0});
+    channel.events.push(social::StateChanged{social::ConnectionState::Online, {}});
+    wait_frames(host, 0.5F);
+    const auto has = [&](const std::string& body) {
+        for (const auto& entry : ui.toasts().visible()) if (entry.toast.body == body) return true;
+        return false;
+    };
+    if (!has("Welcome to Preview User") || !has("Updated to 1.0.5"))
+        throw std::runtime_error("sign-in after a loader update did not notify");
+    // A reconnect does not repeat the update notice.
+    wait_frames(host, 5.0F);
+    channel.events.push(social::StateChanged{social::ConnectionState::Reconnecting, {}});
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User"}, 0});
+    channel.events.push(social::StateChanged{social::ConnectionState::Online, {}});
+    wait_frames(host, 0.5F);
+    if (has("Updated to 1.0.5")) throw std::runtime_error("the update notice repeated on reconnect");
+    if (capture) host.capture("");
+    host.log("milestone update_notice");
 }
 
 // A Change Log whose lines start with +, - and *, shown with coloured marks.
@@ -1119,6 +1153,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_admin", social_admin},
         {"social_admin_focus", social_admin_focus},
         {"social_sign_in_gate", social_sign_in_gate},
+        {"social_update_notice", social_update_notice},
         {"social_changelog_marks", social_changelog_marks},
         {"social_global", social_global},
         {"social_dm", social_dm},
