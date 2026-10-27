@@ -57,6 +57,11 @@ add_library(medicon_core STATIC
 medicon_target(medicon_core)
 target_link_libraries(medicon_core PUBLIC nlohmann_json::nlohmann_json)
 
+# Core auto-update rules shared by MediconLoader and its tests (docs/auto-update.md).
+add_library(medicon_update STATIC src/update/Update.cpp)
+medicon_target(medicon_update)
+target_link_libraries(medicon_update PUBLIC nlohmann_json::nlohmann_json)
+
 add_library(medicon_mouse_capture STATIC src/platform/MouseCaptureController.cpp)
 medicon_target(medicon_mouse_capture)
 
@@ -90,6 +95,10 @@ if(BUILD_TESTING)
     medicon_target(medicon_mouse_capture_tests)
     target_link_libraries(medicon_mouse_capture_tests PRIVATE medicon_mouse_capture)
     add_test(NAME mouse_capture COMMAND medicon_mouse_capture_tests)
+    add_executable(medicon_update_tests tests/update_tests.cpp)
+    medicon_target(medicon_update_tests)
+    target_link_libraries(medicon_update_tests PRIVATE medicon_update)
+    add_test(NAME update COMMAND medicon_update_tests)
     add_executable(medicon_social_tests tests/social_tests.cpp)
     medicon_target(medicon_social_tests)
     target_link_libraries(medicon_social_tests PRIVATE medicon_social_core)
