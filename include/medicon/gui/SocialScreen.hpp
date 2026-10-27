@@ -71,6 +71,10 @@ public:
     SocialTextInput& admin_body() noexcept { return admin_body_; }
     void set_admin_kind(social::NewsKind kind) noexcept { admin_kind_ = kind; }
     SocialRect admin_post_rect() const noexcept { return admin_post_rect_; }
+    // Title, Version (empty while News hides it) and Text, as last drawn.
+    SocialRect admin_field_rect(std::size_t index) const noexcept {
+        return index < admin_field_rects_.size() ? admin_field_rects_[index] : SocialRect{};
+    }
     SocialRect confirm_ok_rect() const noexcept { return confirm_ok_rect_; }
     bool confirming_post() const noexcept { return confirm_post_; }
     const std::string& admin_status() const noexcept { return admin_status_; }
@@ -207,6 +211,7 @@ private:
     bool admin_status_ok_ = false;
     double admin_status_until_ = 0.0;
     SocialRect admin_post_rect_{};
+    std::array<SocialRect, 3> admin_field_rects_{};
     std::array<std::uint32_t, 3> admin_revisions_{~0u, ~0u, ~0u};
     SocialRect confirm_ok_rect_{};
     std::string search_typed_;
