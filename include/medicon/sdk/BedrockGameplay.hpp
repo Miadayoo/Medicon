@@ -21,6 +21,12 @@ public:
     [[nodiscard]] const std::string& diagnostic() const noexcept;
     bool capture(void* client, void* local_actor, bool check_visibility = true);
     void end_tick() noexcept;
+    // Present-thread safe: rereads only the camera fields located by the last
+    // capture (plain copies, no native call) into `frame`, between game ticks.
+    // Leaves `frame` unchanged and returns false when they fail validation.
+    bool refresh_view(GameplayFrame& frame) const noexcept;
+    // Auto Select still holds a block slot that a later capture puts back.
+    [[nodiscard]] bool slot_restore_pending() const noexcept;
     void clear() noexcept;
     [[nodiscard]] const GameplayFrame& frame() const noexcept override;
     bool rotate(float yaw, float pitch) override;

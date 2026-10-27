@@ -41,9 +41,10 @@ struct Geometry {
     std::vector<ImDrawIdx> indices;
 };
 
-Geometry render(ModuleManager& modules, const sdk::GameplayFrame& frame, float seconds = 0.0F) {
+Geometry render(ModuleManager& modules, const sdk::GameplayFrame& frame, float seconds = 0.0F,
+                float partial_tick = 1.0F) {
     ImGui::NewFrame();
-    gui::render_gameplay_visuals(modules, frame, seconds);
+    gui::render_gameplay_visuals(modules, frame, seconds, partial_tick);
     const auto& draw = *ImGui::GetBackgroundDrawList();
     Geometry result;
     result.vertices.assign(draw.VtxBuffer.begin(), draw.VtxBuffer.end());
@@ -182,6 +183,34 @@ void test_hat() {
     frame.local.alive = false;
     check(render(modules, frame).vertices.empty(), "hat is hidden when the local player is dead");
 }
+
+void test_hat_camera_and_interpolation() {
+    ImGuiScope imgui;
+    ModuleManager modules;
+    modules.add<ChinaHatModule>().set_enabled(true);
+    auto frame = sample_frame();
+    // Third person with the render origin left at the eye: the view matrix
+    // carries the offset to a camera at (0, 2.6, 4).
+    frame.view_matrix[7] = -1.0F;
+    frame.view_matrix[11] = -4.0F;
+    const auto camera = sdk::camera_position(frame);
+    check(std::abs(camera.y - 2.6F) < 0.001F && std::abs(camera.z - 4.0F) < 0.001F,
+          "the camera position includes the view translation");
+    const auto current = render(modules, frame);
+    check(!current.vertices.empty(), "hat shows in third person when the offset is in the view matrix");
+
+    // Drawn where the model is between ticks, not where the last tick left it.
+    frame.local.previous_position = {0.0F, 0.0F, 1.0F};
+    frame.local.has_previous = true;
+    const auto start = render(modules, frame, 0.0F, 0.0F);
+    const auto end = render(modules, frame, 0.0F, 1.0F);
+    check(!start.vertices.empty() && start.vertices.size() == end.vertices.size() &&
+          std::abs(end.vertices.front().pos.x - current.vertices.front().pos.x) < 0.001F &&
+          std::abs(end.vertices.front().pos.y - current.vertices.front().pos.y) < 0.001F &&
+          (std::abs(start.vertices.front().pos.x - end.vertices.front().pos.x) > 0.5F ||
+           std::abs(start.vertices.front().pos.y - end.vertices.front().pos.y) > 0.5F),
+          "hat follows the position between the last two ticks");
+}
 } // namespace
 
 int main() {
@@ -189,6 +218,7 @@ int main() {
         test_esp_glow();
         test_filters_and_projection();
         test_hat();
+        test_hat_camera_and_interpolation();
         std::cout << checks << " gameplay visual checks passed\n";
         return 0;
     } catch (const std::exception& error) {

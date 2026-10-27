@@ -176,6 +176,7 @@ struct ClickGui::Impl {
     std::vector<int> z_order; // back to front, panel indices
     std::string applied_order = "\x01";
     bool checked_legacy_layout = false;
+    bool checked_stacked_panels = false;
     std::unordered_map<const Module*, ModuleUi> module_ui;
     OverlayState overlay;
     std::optional<Press> press;
@@ -360,13 +361,82 @@ struct ClickGui::Impl {
 
     void update_frame_pitch() { frame_pitch = initial_row_pitch(); }
 
-    PanelPoint initial_position(int index) const {
-        int ordinal = 0;
-        for (int i = 0; i < index; ++i) ordinal += panels[static_cast<std::size_t>(i)].present ? 1 : 0;
+    // Slot `ordinal` of the automatic grid, rows spaced by this frame's pitch.
+    PanelPoint grid_slot(int ordinal) const {
         auto point = initial_panel_position(ordinal, frame.client_w / scale);
         const float row = std::round((point.y - mt::start_y) / mt::panel_wrap_step_y);
         point.y = mt::start_y + row * frame_pitch;
         return point;
+    }
+
+    // Two panels at these origins would share a column within one row band.
+    bool crowds(const PanelPoint& a, const PanelPoint& b) const {
+        return std::abs(a.x - b.x) < mt::panel_width + mt::panel_gap * 0.5F && std::abs(a.y - b.y) < frame_pitch;
+    }
+
+    // A never-saved panel takes the first grid slot that no saved panel, and no
+    // earlier never-saved one, occupies. A category that gained its first module
+    // after the layout was saved (Movement, Player) used to land on a saved panel.
+    PanelPoint initial_position(int index) {
+        int ordinal = 0;
+        for (int i = 0; i < index; ++i) ordinal += panels[static_cast<std::size_t>(i)].present ? 1 : 0;
+        if (placed(index)) return grid_slot(ordinal);
+        std::array<PanelPoint, category_count> taken{};
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < panels.size(); ++i) {
+            if (panels[i].present && placed(static_cast<int>(i)))
+                taken[count++] = {stored_x(static_cast<int>(i)), stored_y(static_cast<int>(i))};
+        }
+        if (count == 0) return grid_slot(ordinal);
+        constexpr int slot_limit = 32;
+        int next = 0;
+        for (std::size_t i = 0; i < panels.size(); ++i) {
+            if (!panels[i].present || placed(static_cast<int>(i))) continue;
+            std::optional<PanelPoint> free;
+            for (; next < slot_limit && !free; ++next) {
+                const auto point = grid_slot(next);
+                if (std::none_of(taken.begin(), taken.begin() + static_cast<std::ptrdiff_t>(count),
+                                 [&](const PanelPoint& other) { return crowds(point, other); })) free = point;
+            }
+            // A screen too small for a free slot keeps the plain grid.
+            if (!free) return grid_slot(ordinal);
+            if (static_cast<int>(i) == index) return *free;
+            taken[count++] = *free;
+        }
+        return grid_slot(ordinal);
+    }
+
+    // The old placement saved new panels on top of saved ones, at exactly the
+    // same origin. Once, unsave the one later in the saved order (the newer
+    // panel) so it moves to a free slot; positions dragged elsewhere are kept.
+    void separate_stacked_panels() {
+        if (checked_stacked_panels) return;
+        checked_stacked_panels = true;
+        const auto order = cached_order();
+        std::array<bool, category_count> stacked{};
+        bool any = false;
+        for (std::size_t a = 0; a < order.size(); ++a) {
+            const int later = order[a];
+            if (!panels[static_cast<std::size_t>(later)].present) continue;
+            for (std::size_t b = 0; b < a; ++b) {
+                const int earlier = order[b];
+                if (!panels[static_cast<std::size_t>(earlier)].present || stacked[static_cast<std::size_t>(earlier)]) continue;
+                if (stored_x(earlier) == stored_x(later) && stored_y(earlier) == stored_y(later)) {
+                    stacked[static_cast<std::size_t>(later)] = any = true;
+                    break;
+                }
+            }
+        }
+        if (!any) return;
+        std::string kept;
+        for (const int index : order) {
+            if (stacked[static_cast<std::size_t>(index)]) continue;
+            if (!kept.empty()) kept.push_back(',');
+            kept += category_id(static_cast<Category>(index));
+        }
+        order_string() = kept;
+        write_order();
+        request_save();
     }
 
     void migrate_default_layout() {
@@ -1477,6 +1547,7 @@ struct ClickGui::Impl {
         sync_z_order();
         update_frame_pitch();
         migrate_default_layout();
+        separate_stacked_panels();
         for (const int index : z_order) layout(index);
         if (pending_overlay.first) {
             open_overlay_for(static_cast<int>(pending_overlay.first->category()), pending_overlay.first, pending_overlay.second);

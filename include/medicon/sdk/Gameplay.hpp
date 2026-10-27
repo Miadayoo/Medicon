@@ -18,6 +18,10 @@ struct ActorSnapshot {
     Vec3 position, velocity;
     Bounds bounds;
     bool player = false, alive = false, local = false, visible = false;
+    // One game tick earlier. Drawing between the two, as the game itself does,
+    // keeps overlays on the model at frame rate instead of stepping 20 times a second.
+    Vec3 previous_position;
+    bool has_previous = false;
 };
 
 struct GameplayFrame {
@@ -36,6 +40,9 @@ struct GameplayFrame {
 // Uses the copied Bedrock view rotation, camera origin and perspective scales.
 [[nodiscard]] bool world_to_screen(const GameplayFrame& frame, Vec3 world,
                                     Vec2 viewport, Vec2& screen) noexcept;
+// Where the camera actually is: the render origin moved by the view matrix's
+// own translation (the third-person offset, when the matrix carries it).
+[[nodiscard]] Vec3 camera_position(const GameplayFrame& frame) noexcept;
 
 class GameplayAccess {
 public:

@@ -181,6 +181,16 @@ struct BedrockGameplay::Impl {
     bool located = false, supported = false, active = false;
     DWORD thread = 0;
     std::uintptr_t client = 0, player = 0, registry = 0, block_source = 0;
+    // The LevelRenderer child whose camera fields the last capture validated.
+    std::uintptr_t view_player = 0;
+    // Auto Select keeps the block slot selected while placing (like Solstice's
+    // default Full switch) so the game reports it to the server on its own
+    // tick before a placement uses it. The original slot comes back once
+    // nothing has placed from the switched slot for a second. Survives clear().
+    std::uintptr_t switch_supplies = 0;
+    int switch_from = -1, switch_to = -1;
+    ULONGLONG switch_used = 0;
+    bool switched_this_tick = false;
     std::uint32_t local_entity = 0;
     memory::AddressRange image;
     std::vector<memory::AddressRange> executable_regions;
@@ -245,6 +255,11 @@ struct BedrockGameplay::Impl {
         result = {actor, state.position, state.velocity, shape.bounds,
                   (type & 0xFF) == 63, (type & 0x100) != 0 &&
                   !(dead_pool && detail::gameplay_contains(dead_pool, entity)), actor == player, false};
+        // A teleport is not motion to draw between.
+        if (valid_position(state.old_position) && distance_squared(state.old_position, state.position) <= 8 * 8) {
+            result.previous_position = state.old_position;
+            result.has_previous = true;
+        }
         return true;
     }
 
@@ -270,6 +285,21 @@ struct BedrockGameplay::Impl {
                     {0x80,0xB9,0xC8,0,0,0,0x01,0x0F,0x85,0x43,0xB4,0xFF,0xFF,0x80,0x3D,0x50})) return 0;
         }
         return mode;
+    }
+
+    void forget_switch() noexcept { switch_supplies = 0; switch_from = switch_to = -1; }
+
+    // Capture only, after the player was validated.
+    void restore_switched_slot() noexcept {
+        if (switch_from < 0) return;
+        std::uintptr_t supplies = 0;
+        int selected = -1;
+        // Another player or world, or a slot the user picked: nothing to undo.
+        if (!read_at(player, 0x5B8, supplies) || supplies != switch_supplies ||
+            !read_at(supplies, 0x10, selected) || selected != switch_to) { forget_switch(); return; }
+        if (GetTickCount64() - switch_used < 1000) return;
+        write_at(supplies, 0x10, switch_from);
+        forget_switch();
     }
 
     bool on_tick() const noexcept {
@@ -321,6 +351,25 @@ struct BedrockGameplay::Impl {
         return true;
     }
 
+    // Copies only: the camera origin and FOV of the renderer child, and the
+    // client's view matrix. Also used from Present between ticks.
+    bool read_view(std::uintptr_t renderer_player, Vec3& camera, Vec2& fov,
+                   std::array<float, 16>& matrix) const noexcept {
+        if (!client || !renderer_player ||
+            !read_at(renderer_player, 0x9CC, camera) || !valid_position(camera) ||
+            !read_at(renderer_player, 0xF58, fov.x) || !read_at(renderer_player, 0xF6C, fov.y) ||
+            !std::isfinite(fov.x) || !std::isfinite(fov.y) || fov.x < 0.01F || fov.y < 0.01F ||
+            fov.x > 20 || fov.y > 20 || !read_at(client, 0x420, matrix) ||
+            !std::ranges::all_of(matrix, [](float v) { return std::isfinite(v) && std::abs(v) < 100; })) return false;
+        for (std::size_t i = 0; i < 3; ++i) {
+            const auto offset = i * 4;
+            const float magnitude = matrix[offset] * matrix[offset] + matrix[offset + 1] * matrix[offset + 1] +
+                                    matrix[offset + 2] * matrix[offset + 2];
+            if (magnitude < 0.5F || magnitude > 1.5F) return false;
+        }
+        return true;
+    }
+
     void projection() noexcept {
         const auto get_renderer = method(client, 187);
         if (!get_renderer) return;
@@ -331,17 +380,8 @@ struct BedrockGameplay::Impl {
         Vec2 fov{};
         std::array<float, 16> matrix{};
         if (!renderer || !read_at(renderer, 0x468, renderer_player) ||
-            !read_at(renderer_player, 0x9CC, camera) || !valid_position(camera) ||
-            !read_at(renderer_player, 0xF58, fov.x) || !read_at(renderer_player, 0xF6C, fov.y) ||
-            !std::isfinite(fov.x) || !std::isfinite(fov.y) || fov.x < 0.01F || fov.y < 0.01F ||
-            fov.x > 20 || fov.y > 20 || !read_at(client, 0x420, matrix) ||
-            !std::ranges::all_of(matrix, [](float v) { return std::isfinite(v) && std::abs(v) < 100; })) return;
-        for (std::size_t i = 0; i < 3; ++i) {
-            const auto offset = i * 4;
-            const float magnitude = matrix[offset] * matrix[offset] + matrix[offset + 1] * matrix[offset + 1] +
-                                    matrix[offset + 2] * matrix[offset + 2];
-            if (magnitude < 0.5F || magnitude > 1.5F) return;
-        }
+            !read_view(renderer_player, camera, fov, matrix)) return;
+        view_player = renderer_player;
         frame.camera = camera;
         frame.fov = fov;
         frame.view_matrix = matrix;
@@ -375,13 +415,29 @@ const std::string& BedrockGameplay::diagnostic() const noexcept { return impl_->
 
 void BedrockGameplay::clear() noexcept {
     impl_->active = false;
+    impl_->switched_this_tick = false;
     impl_->frame = {};
-    impl_->client = impl_->player = impl_->registry = impl_->block_source = 0;
+    impl_->client = impl_->player = impl_->registry = impl_->block_source = impl_->view_player = 0;
     impl_->local_entity = 0;
     impl_->pools.clear();
 }
 
 void BedrockGameplay::end_tick() noexcept { impl_->active = false; }
+
+bool BedrockGameplay::slot_restore_pending() const noexcept { return impl_->switch_from >= 0; }
+
+bool BedrockGameplay::refresh_view(GameplayFrame& frame) const noexcept {
+    const auto& state = *impl_;
+    if (!state.supported || !frame.ready || !frame.projection_ready) return false;
+    Vec3 camera{};
+    Vec2 fov{};
+    std::array<float, 16> matrix{};
+    if (!state.read_view(state.view_player, camera, fov, matrix)) return false;
+    frame.camera = camera;
+    frame.fov = fov;
+    frame.view_matrix = matrix;
+    return true;
+}
 const GameplayFrame& BedrockGameplay::frame() const noexcept { return impl_->frame; }
 
 bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibility) {
@@ -449,6 +505,7 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         }
     }
     state.frame.local.visible = true;
+    state.restore_switched_slot();
     state.active = true;
     state.diagnostic = state.frame.projection_ready ? "Gameplay SDK: world snapshot and camera ready." :
         "Gameplay SDK: world snapshot ready; camera profile failed validation, visual projection withheld.";
@@ -514,7 +571,9 @@ bool BedrockGameplay::place_block(BlockPos position, bool auto_select) {
         const auto offset = offsets[static_cast<std::size_t>(index)];
         const BlockPos candidate{position.x + offset.x, position.y + offset.y, position.z + offset.z};
         const auto block = state.block(candidate);
-        if (block && block->solid && block->id != 0 && !(block->id >= 8 && block->id <= 11)) {
+        // Any block that is not air or liquid has a face to click, as in
+        // Solstice's getBlockPlaceFace: glass, slabs, stairs and leaves too.
+        if (block && block->id != 0 && !(block->id >= 8 && block->id <= 11)) {
             face = index;
             neighbor = candidate;
             break;
@@ -538,13 +597,22 @@ bool BedrockGameplay::place_block(BlockPos position, bool auto_select) {
                read_at(block, 0x68, legacy) && state.method(legacy, 0) &&
                read_at(legacy, 0x164, flags) && (flags & 2) != 0;
     };
-    int slot = selected;
-    if (!block_slot(slot)) {
+    // Nothing more this tick once Auto Select changed the slot: the game has
+    // not told the server yet, so the placement would be refused.
+    if (state.switched_this_tick) return false;
+    if (!block_slot(selected)) {
         if (!auto_select) return false;
-        slot = -1;
+        int slot = -1;
         for (int i = 0; i < 9; ++i) if (block_slot(i)) { slot = i; break; }
-        if (slot < 0) return false;
+        if (slot < 0 || !write_at(supplies, 0x10, slot)) return false;
+        if (state.switch_from < 0 || state.switch_supplies != supplies) state.switch_from = selected;
+        state.switch_supplies = supplies;
+        state.switch_to = slot;
+        state.switch_used = GetTickCount64();
+        state.switched_this_tick = true;
+        return false; // placed from the new slot on a later attempt
     }
+    if (selected == state.switch_to && supplies == state.switch_supplies) state.switch_used = GetTickCount64();
     std::uintptr_t level = 0;
     if (!read_at(state.player, 0x1D8, level)) return false;
     const auto get_hit = state.method(level, 335);
@@ -570,13 +638,6 @@ bool BedrockGameplay::place_block(BlockPos position, bool auto_select) {
     std::memcpy(placement_hit.data() + 0x1C, &hit_face, 1);
     std::memcpy(placement_hit.data() + 0x20, &neighbor, sizeof(BlockPos));
     std::memcpy(placement_hit.data() + 0x2C, &hit_position, sizeof(Vec3));
-    struct RestoreSlot {
-        std::uintptr_t supplies;
-        int slot;
-        bool changed;
-        ~RestoreSlot() { if (changed) write_at(supplies, 0x10, slot); }
-    } restore{supplies, selected, slot != selected};
-    if (slot != selected && !write_at(supplies, 0x10, slot)) return false;
     // buildBlock consumes the current level HitResult synchronously to form
     // transaction click coordinates. Preserve only its scalar prefix; the
     // WeakEntityRef at +0x38 and subsequent game-owned state are untouched.

@@ -45,6 +45,21 @@ bool contains(const sdk::Bounds& bounds, sdk::Vec3 point) {
            point.z >= bounds.min.z && point.z <= bounds.max.z;
 }
 
+// Where the game draws an actor this frame relative to its tick position: back
+// toward the previous tick by the part of the tick interval not yet elapsed.
+sdk::Vec3 drawn_offset(const sdk::ActorSnapshot& actor, float partial_tick) {
+    if (!actor.has_previous || !finite(actor.previous_position) || !finite(actor.position)) return {};
+    const float back = 1.0F - finite_clamp(partial_tick, 0.0F, 1.0F, 1.0F);
+    return {(actor.previous_position.x - actor.position.x) * back,
+            (actor.previous_position.y - actor.position.y) * back,
+            (actor.previous_position.z - actor.position.z) * back};
+}
+
+sdk::Bounds moved(const sdk::Bounds& bounds, sdk::Vec3 offset) {
+    return {{bounds.min.x + offset.x, bounds.min.y + offset.y, bounds.min.z + offset.z},
+            {bounds.max.x + offset.x, bounds.max.y + offset.y, bounds.max.z + offset.z}};
+}
+
 // ImGui clips to the viewport. Reject pathological coordinates before they can
 // reach its tessellator when a projected object is almost on the near plane.
 bool project(const sdk::GameplayFrame& frame, sdk::Vec3 point, sdk::Vec2 viewport,
@@ -98,7 +113,7 @@ void draw_glow(ImDrawList& draw, ImVec2 minimum, ImVec2 maximum, Color color,
 }
 
 void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFrame& frame,
-                sdk::Vec2 viewport) {
+                sdk::Vec2 viewport, float partial_tick) {
     const float range = finite_clamp(module.range.get<float>(), 4.0F, 256.0F, 64.0F);
     const float line_width = finite_clamp(module.line_width.get<float>(), 1.0F, 4.0F, 1.5F);
     const float spread = finite_clamp(module.glow_width.get<float>(), 1.0F, 32.0F, 10.0F);
@@ -116,7 +131,8 @@ void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFr
         if (dx * dx + dy * dy + dz * dz > static_cast<double>(range) * range) continue;
 
         ImVec2 minimum, maximum;
-        if (!screen_bounds(frame, actor.bounds, viewport, minimum, maximum)) continue;
+        if (!screen_bounds(frame, moved(actor.bounds, drawn_offset(actor, partial_tick)), viewport, minimum, maximum))
+            continue;
         const float margin = module.glow.get<bool>() ? spread + line_width : line_width;
         if (maximum.x < -margin || maximum.y < -margin ||
             minimum.x > viewport.x + margin || minimum.y > viewport.y + margin) continue;
@@ -129,11 +145,15 @@ void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFr
 }
 
 void render_hat(ImDrawList& draw, const ChinaHatModule& module, const sdk::GameplayFrame& frame,
-                sdk::Vec2 viewport, float seconds) {
-    const auto& bounds = frame.local.bounds;
+                sdk::Vec2 viewport, float seconds, float partial_tick) {
+    // Where the model is drawn this frame, not where the last tick left it.
+    const auto bounds = moved(frame.local.bounds, drawn_offset(frame.local, partial_tick));
     // In first person the camera sits inside the local player's bounds. A hat
     // there would cover the entire view; the cone is intended for third person.
-    if (!frame.local.alive || !valid_bounds(bounds) || !finite(frame.camera) || contains(bounds, frame.camera)) return;
+    // The render origin alone can stay at the eye in third person, with the
+    // camera offset carried by the view matrix, so use the real camera.
+    const auto camera = sdk::camera_position(frame);
+    if (!frame.local.alive || !valid_bounds(bounds) || !finite(camera) || contains(bounds, camera)) return;
 
     const float radius = finite_clamp(module.radius.get<float>(), 0.2F, 2.0F, 0.8F);
     const float height = finite_clamp(module.height.get<float>(), 0.1F, 1.5F, 0.35F);
@@ -167,8 +187,8 @@ void render_hat(ImDrawList& draw, const ChinaHatModule& module, const sdk::Gamep
     for (std::size_t index = 0; index < segments; ++index) {
         order[index] = index;
         const float angle = 2.0F * pi * (static_cast<float>(index) + 0.5F) / static_cast<float>(segments);
-        const double dx = static_cast<double>(center.x) + std::cos(angle) * radius - frame.camera.x;
-        const double dz = static_cast<double>(center.z) + std::sin(angle) * radius - frame.camera.z;
+        const double dx = static_cast<double>(center.x) + std::cos(angle) * radius - camera.x;
+        const double dz = static_cast<double>(center.z) + std::sin(angle) * radius - camera.z;
         distances[index] = dx * dx + dz * dz;
     }
     std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return distances[a] > distances[b]; });
@@ -184,7 +204,8 @@ void render_hat(ImDrawList& draw, const ChinaHatModule& module, const sdk::Gamep
 
 } // namespace
 
-void render_gameplay_visuals(ModuleManager& modules, const sdk::GameplayFrame& frame, float seconds) {
+void render_gameplay_visuals(ModuleManager& modules, const sdk::GameplayFrame& frame, float seconds,
+                             float partial_tick) {
     if (!ImGui::GetCurrentContext() || !frame.ready || !frame.projection_ready) return;
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     if (!std::isfinite(display.x) || !std::isfinite(display.y) || display.x < 1.0F || display.y < 1.0F) return;
@@ -192,9 +213,9 @@ void render_gameplay_visuals(ModuleManager& modules, const sdk::GameplayFrame& f
     auto& draw = *ImGui::GetBackgroundDrawList();
     draw.PushClipRect(ImVec2(0.0F, 0.0F), display, true);
     if (auto* module = dynamic_cast<EspModule*>(modules.find(EspModule::module_id)); module && module->enabled())
-        render_esp(draw, *module, frame, viewport);
+        render_esp(draw, *module, frame, viewport, partial_tick);
     if (auto* module = dynamic_cast<ChinaHatModule*>(modules.find(ChinaHatModule::module_id)); module && module->enabled())
-        render_hat(draw, *module, frame, viewport, seconds);
+        render_hat(draw, *module, frame, viewport, seconds, partial_tick);
     draw.PopClipRect();
 }
 
