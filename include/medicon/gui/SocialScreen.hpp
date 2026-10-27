@@ -71,6 +71,9 @@ public:
     SocialTextInput& admin_body() noexcept { return admin_body_; }
     void set_admin_kind(social::NewsKind kind) noexcept { admin_kind_ = kind; }
     SocialRect admin_post_rect() const noexcept { return admin_post_rect_; }
+    SocialRect admin_dll_rect() const noexcept { return admin_dll_rect_; }
+    bool admin_attach_dll() const noexcept { return admin_attach_dll_; }
+    SocialTextInput& admin_dll_path() noexcept { return admin_dll_path_; }
     // Title, Version (empty while News hides it) and Text, as last drawn.
     SocialRect admin_field_rect(std::size_t index) const noexcept {
         return index < admin_field_rects_.size() ? admin_field_rects_[index] : SocialRect{};
@@ -208,6 +211,11 @@ private:
     SocialTextInput admin_title_{120};
     SocialTextInput admin_version_{32};
     SocialTextInput admin_body_{4000};
+    // Change Log only: attach a Core DLL so posting also publishes the update
+    // (docs/auto-update.md). The path is typed/pasted; the net side reads it.
+    bool admin_attach_dll_ = false;
+    SocialTextInput admin_dll_path_{520};
+    SocialRect admin_dll_rect_{};
     bool confirm_post_ = false;
     bool posting_ = false;
     std::string admin_status_;

@@ -870,6 +870,48 @@ void social_sign_in_gate(ScenarioHost& host, bool capture) {
     host.log("milestone sign_in_gate");
 }
 
+// The Admin tab's Change Log with a DLL attached: one request publishes both.
+void social_admin_dll(ScenarioHost& host, bool capture) {
+    auto& channel = social_mock(host, true, false);
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User", social::Rank::Owner}, 0});
+    auto& screen = host.overlay().social().screen();
+    host.overlay().social().open_screen();
+    screen.open_admin();
+    screen.set_admin_kind(social::NewsKind::Changelog);
+    screen.admin_title().set_text(L"Medicon 1.0.5");
+    screen.admin_version().set_text(L"1.0.5");
+    screen.admin_body().set_text(L"+ Added auto update\n* Fixed Scaffold");
+    social_settle(host);
+    wait_frames(host, 0.3F);
+    const auto toggle = screen.admin_dll_rect();
+    social_click(host, (toggle.min.x + toggle.max.x) * 0.5F, (toggle.min.y + toggle.max.y) * 0.5F);
+    wait_frames(host, 0.2F);
+    if (!screen.admin_attach_dll()) throw std::runtime_error("the Attach DLL toggle did not turn on");
+    screen.admin_dll_path().set_text(L"C:/Medicon/MediconCore.dll");
+    wait_frames(host, 0.2F);
+    if (capture) host.capture("form");
+    const auto post = screen.admin_post_rect();
+    social_click(host, (post.min.x + post.max.x) * 0.5F, (post.min.y + post.max.y) * 0.5F);
+    wait_frames(host, 0.3F);
+    if (!screen.confirming_post()) throw std::runtime_error("Post did not ask first");
+    if (capture) host.capture("confirm");
+    const auto ok = screen.confirm_ok_rect();
+    social_click(host, (ok.min.x + ok.max.x) * 0.5F, (ok.min.y + ok.max.y) * 0.5F);
+    wait_frames(host, 0.2F);
+    // The DLL upload goes to the REST worker (api), not the WebSocket (commands).
+    if (channel.commands.pop(std::chrono::steady_clock::now()).has_value())
+        throw std::runtime_error("the DLL post was sent as a WebSocket command");
+    const auto request = channel.api.pop(std::chrono::steady_clock::now());
+    const auto* publish = request ? std::get_if<social::PublishRelease>(&*request) : nullptr;
+    if (!publish || publish->version != "1.0.5" || publish->dll_path != L"C:/Medicon/MediconCore.dll" ||
+        publish->body.find("+ Added auto update") == std::string::npos)
+        throw std::runtime_error("the release upload did not carry the version, body and path");
+    channel.events.push(social::RequestFinished{publish->nonce, true, {}, std::nullopt});
+    wait_frames(host, 0.2F);
+    if (screen.admin_status() != "Published") throw std::runtime_error("no confirmation after publishing");
+    host.log("milestone admin_dll");
+}
+
 // With a loader update, signing in also says "Updated to {version}".
 void social_update_notice(ScenarioHost& host, bool capture) {
     auto& channel = social_mock(host, false, false);
@@ -1154,6 +1196,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_admin_focus", social_admin_focus},
         {"social_sign_in_gate", social_sign_in_gate},
         {"social_update_notice", social_update_notice},
+        {"social_admin_dll", social_admin_dll},
         {"social_changelog_marks", social_changelog_marks},
         {"social_global", social_global},
         {"social_dm", social_dm},

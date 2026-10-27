@@ -26,6 +26,7 @@ private:
     void fetch(const FetchMessages& request);
     void fetch(const FetchFriends& request);
     void fetch(const SearchUsers& request);
+    void fetch(const PublishRelease& request);
 
     std::shared_ptr<Core> core_;
     std::thread worker_;

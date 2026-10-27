@@ -318,9 +318,10 @@ if(MEDICON_BUILD_WINDOWS)
         add_test(NAME preview_social_admin_focus COMMAND MediconPreview --scenario social_admin_focus --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_sign_in_gate COMMAND MediconPreview --scenario social_sign_in_gate --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_update_notice COMMAND MediconPreview --scenario social_update_notice --size 1280x720 --fixed-dt 0.016666667)
+        add_test(NAME preview_social_admin_dll COMMAND MediconPreview --scenario social_admin_dll --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_changelog_marks COMMAND MediconPreview --scenario social_changelog_marks --size 1280x720 --fixed-dt 0.016666667)
         set_tests_properties(preview_social_global preview_social_dm preview_social_friends preview_social_friend_remove
-                             preview_social_admin preview_social_admin_focus
+                             preview_social_admin preview_social_admin_focus preview_social_admin_dll
                              preview_social_sign_in_gate preview_social_update_notice preview_social_changelog_marks PROPERTIES TIMEOUT 30)
         set_tests_properties(preview_social_home preview_social_device_recreate preview_social_changelog
                              preview_social_main_menu_click preview_social_toast_click preview_social_typing PROPERTIES TIMEOUT 30)

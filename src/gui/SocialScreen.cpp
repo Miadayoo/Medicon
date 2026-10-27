@@ -52,6 +52,8 @@ enum : std::uint32_t {
     id_admin_version,
     id_admin_body,
     id_admin_post,
+    id_admin_dll,
+    id_admin_dll_path,
     id_post_ok,
     id_post_cancel,
     id_fixed_end,
@@ -267,7 +269,7 @@ SocialTextInput* SocialScreen::focused_input() noexcept {
     if (key_input_.focused()) return &key_input_;
     if (view_ == SocialView::Friends && search_input_.focused()) return &search_input_;
     if (view_ == SocialView::Home && admin_tab_) {
-        for (auto* input : {&admin_title_, &admin_version_, &admin_body_})
+        for (auto* input : {&admin_title_, &admin_version_, &admin_body_, &admin_dll_path_})
             if (input->focused()) return input;
     }
     if (view_ == SocialView::Global || view_ == SocialView::Dm) {
@@ -390,15 +392,20 @@ void SocialScreen::on_event(const social::Event& event) {
             admin_status_ok_ = done->ok;
             admin_status_until_ = now + 4.0;
             if (done->ok) {
-                admin_status_ = "Posted";
+                admin_status_ = admin_attach_dll_ ? "Published" : "Posted";
                 admin_title_.clear();
                 admin_version_.clear();
                 admin_body_.clear();
+                admin_dll_path_.clear();
             } else {
-                admin_status_ = done->error == "forbidden"   ? "Only owners can post"
-                              : done->error == "bad_request" ? "A title and text are required"
-                              : done->error == "offline"     ? "Not connected"
-                                                             : "Could not post";
+                admin_status_ = done->error == "forbidden"      ? "Only owners can post"
+                              : done->error == "bad_request"    ? "A title and text are required"
+                              : done->error == "offline"        ? "Not connected"
+                              : done->error == "dll_unreadable" ? "Cannot read that DLL file"
+                              : done->error == "version_conflict" ? "That version is already published"
+                              : done->error == "bad_release"    ? "That file is not a valid x64 DLL"
+                              : done->error == "releases_disabled" ? "The server has releases turned off"
+                                                                   : "Could not post";
             }
         } else if (!nonce.empty() && nonce.front() == 'f') {
             // Friend requests: lists come back from the server either way.
@@ -1094,7 +1101,9 @@ void SocialScreen::draw_confirm(Context& context, const SocialRect& panel, float
         context.shadows.draw(list, card.min, card.max, CornerRadii::all(metrics::panel_radius * s), panel_glow(s), 1.0F);
         list->AddRectFilled(card.min, card.max, to_u32(style::panel_fill), metrics::panel_radius * s);
         list->AddRect(card.min, card.max, to_u32(style::panel_rim), metrics::panel_radius * s);
-        const char* question = admin_kind_ == NewsKind::Changelog ? "Post this Change Log?" : "Post this News?";
+        const bool attaching = admin_kind_ == NewsKind::Changelog && admin_attach_dll_;
+        const char* question = attaching ? "Post this Change Log and publish the DLL?"
+                               : admin_kind_ == NewsKind::Changelog ? "Post this Change Log?" : "Post this News?";
         float y = card.min.y + 22.0F * s;
         fonts.draw(list, SocialText::Heading, card.min.x + 24.0F * s, y, to_u32(style::heading), question);
         y += fonts.line_height(SocialText::Heading) + 6.0F * s;
@@ -1110,9 +1119,17 @@ void SocialScreen::draw_confirm(Context& context, const SocialRect& panel, float
             if (context.channel) {
                 posting_ = true;
                 admin_status_.clear();
-                context.channel->commands.push(social::PostNews{"a" + std::to_string(next_nonce_++), admin_kind_,
-                                                                admin_title_.utf8(), admin_body_.utf8(),
-                                                                admin_kind_ == NewsKind::Changelog ? admin_version_.utf8() : ""});
+                const std::string nonce = "a" + std::to_string(next_nonce_++);
+                if (attaching) {
+                    // One request posts the Change Log and publishes the DLL on
+                    // the server, so neither happens without the other.
+                    context.channel->api.push(social::PublishRelease{nonce, admin_version_.utf8(), admin_title_.utf8(),
+                                                                     admin_body_.utf8(), admin_dll_path_.text()});
+                } else {
+                    context.channel->commands.push(social::PostNews{nonce, admin_kind_, admin_title_.utf8(),
+                                                                    admin_body_.utf8(),
+                                                                    admin_kind_ == NewsKind::Changelog ? admin_version_.utf8() : ""});
+                }
             }
         } else if (row_button(context, id_post_cancel, cancel, "Cancel", SocialButton::Normal, true, s)) {
             confirm_post_ = false;
@@ -1232,6 +1249,30 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         if (input_.click(id, pill)) admin_kind_ = kind;
         x = pill.max.x + 8.0F * s;
     }
+    // Change Log can carry a Core DLL: posting then also publishes the update.
+    if (admin_kind_ == NewsKind::Changelog) {
+        const char* label = "Attach DLL";
+        const float w = fonts.measure(SocialText::Title, label) + 28.0F * s, h = 28.0F * s;
+        const SocialRect pill{{x, y}, {x + w, y + h}};
+        admin_dll_rect_ = pill;
+        const auto& m = motion(id_admin_dll, pill, context.frame.dt);
+        GlassPlate plate;
+        plate.hover = m.hover;
+        plate.accent = false;
+        plate.drop = admin_attach_dll_;
+        plate.fill = admin_attach_dll_ ? style::bubble_mine : style::plate;
+        plate.alpha = admin_attach_dll_ ? 1.0F : 0.5F + 0.5F * m.hover;
+        draw_glass_plate(list, pill.min, pill.max, h * 0.5F, plate);
+        draw_centered(list, fonts, SocialText::Title, pill,
+                      to_u32(admin_attach_dll_ ? style::heading : style::text_secondary), label);
+        if (input_.click(id_admin_dll, pill)) {
+            admin_attach_dll_ = !admin_attach_dll_;
+            if (!admin_attach_dll_ && admin_dll_path_.focused()) admin_dll_path_.set_focused(false);
+        }
+    } else {
+        admin_attach_dll_ = false;
+        admin_dll_rect_ = {};
+    }
     y += 28.0F * s + 12.0F * s;
 
     // Title, and the version for a Change Log.
@@ -1244,7 +1285,7 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
     // One field owns the keyboard. focused_input() takes the first focused field,
     // so focusing only the clicked one left every key in Title once it was used.
     const auto focus = [this](SocialTextInput& field) {
-        for (auto* input : {&admin_title_, &admin_version_, &admin_body_}) input->set_focused(input == &field);
+        for (auto* input : {&admin_title_, &admin_version_, &admin_body_, &admin_dll_path_}) input->set_focused(input == &field);
     };
     const SocialRect title{{x0, y}, {x1 - version_w - gap, y + field_h}};
     admin_field_rects_[0] = title;
@@ -1261,6 +1302,16 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         admin_version_.set_focused(false);
     }
     y += field_h + 12.0F * s;
+    const bool attach = changelog && admin_attach_dll_;
+    if (!attach && admin_dll_path_.focused()) admin_dll_path_.set_focused(false);
+    if (attach) {
+        fonts.draw(list, SocialText::Small, x0 + 4.0F * s, y, to_u32(style::text_secondary), "DLL FILE");
+        y += small + 4.0F * s;
+        const SocialRect field{{x0, y}, {x1, y + field_h}};
+        if (input_.click(id_admin_dll_path, field)) focus(admin_dll_path_);
+        admin_dll_path_.draw(list, fonts, field, s, 1.0F, "C:\\path\\to\\MediconCore.dll", !posting_, now, &context.shadows);
+        y += field_h + 12.0F * s;
+    }
 
     // The text on the left, a live preview on the right.
     const float button_h = metrics::button_height * s;
@@ -1336,6 +1387,7 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         return false;
     };
     const bool ready = !posting_ && has_text(admin_title_) && has_text(admin_body_) &&
+                       (!attach || (has_text(admin_version_) && admin_dll_path_.length() > 0)) &&
                        context.store.state() == ConnectionState::Online;
     if (row_button(context, id_admin_post, admin_post_rect_, posting_ ? "Posting\xE2\x80\xA6" : "Post", SocialButton::Primary, ready, s)) {
         if (auto* input = focused_input()) input->set_focused(false);
@@ -1421,7 +1473,7 @@ void SocialScreen::render(Context& context) {
     const bool popup = menu_for_ != 0 || confirm_remove_ != 0 || confirm_post_;
     input_.begin(pointer);
     input_.set_blocked(popup);
-    for (auto* input : {&key_input_, &search_input_, &admin_title_, &admin_version_, &admin_body_}) {
+    for (auto* input : {&key_input_, &search_input_, &admin_title_, &admin_version_, &admin_body_, &admin_dll_path_}) {
         input->update();
         input->set_animation(input_animation_);
     }

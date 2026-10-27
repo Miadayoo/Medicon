@@ -84,6 +84,10 @@ public:
     HttpResponse request(const Endpoint& endpoint, const wchar_t* method, std::string_view path,
                          std::string_view json_body, std::string_view bearer) const;
 
+    // A binary POST (the Core DLL release upload) with an explicit content type.
+    HttpResponse upload(const Endpoint& endpoint, std::string_view path, std::string_view content_type,
+                        const void* body, std::size_t size, std::string_view bearer) const;
+
     struct Upgrade {
         std::unique_ptr<WebSocket> socket;
         int status = 0;  // 101 on success, or the HTTP status the server answered with

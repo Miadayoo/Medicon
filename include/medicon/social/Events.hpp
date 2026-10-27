@@ -128,7 +128,18 @@ struct FetchFriends {};
 struct SearchUsers {
     std::string query;
 };
-using ApiRequest = std::variant<FetchNews, FetchMessages, FetchFriends, SearchUsers>;
+// Owners: upload a Core DLL and post its Change Log in one request
+// (docs/auto-update.md). The REST worker reads dll_path and POSTs /releases;
+// answered by RequestFinished with the same nonce. Here, not Command, because
+// it is a large HTTPS upload, not a small WebSocket frame.
+struct PublishRelease {
+    std::string nonce;
+    std::string version;
+    std::string title;
+    std::string body;
+    std::wstring dll_path;
+};
+using ApiRequest = std::variant<FetchNews, FetchMessages, FetchFriends, SearchUsers, PublishRelease>;
 
 // --- Render thread -> send thread --------------------------------------------
 
