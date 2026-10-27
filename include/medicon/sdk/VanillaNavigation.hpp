@@ -21,6 +21,9 @@ class VanillaNavigation final {
 public:
     [[nodiscard]] bool initialize(std::string& diagnostic) noexcept;
     [[nodiscard]] std::uintptr_t update_hook_target() const noexcept;
+    // False before initialization, after stop(), or once a pump finds the
+    // loaded profile changed. No button can reach the game while false.
+    [[nodiscard]] bool ready() const noexcept { return ready_.load(std::memory_order_acquire); }
     [[nodiscard]] bool has_pending() const noexcept;
     [[nodiscard]] bool openPlay(std::uint64_t epoch) noexcept;
     [[nodiscard]] bool openSettings(std::uint64_t epoch) noexcept;

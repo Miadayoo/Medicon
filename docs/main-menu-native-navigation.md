@@ -83,6 +83,21 @@ Quitの取消／Yes、認証popup、各画面からの復帰、最新カーソ�
 全体の自動テスト20/20成功（79.22秒）、ASLR修正後の関連6/6成功（18.72秒）。
 実ゲームの確認DLLは `out/build/main-menu-fix/bin/Medicon.dll`。
 
+### 別PCでボタンが反応しない報告（2026-10-27）
+
+別PCでは独自Main Menuは表示されるが、Play / Settingsが反応しないと報告された。
+画面判定（`BedrockMenu`）はFileVersionと命令列だけを照合する。
+一方、純正遷移（`VanillaNavigation`）はtimestamp・SizeOfImage・CheckSumまで、解析したexeと完全一致を要求する。
+解析したexeはLeviLauncherの`versions`フォルダーにあり、`.levildr`セクションを含む。
+同じ1.26.52.3でも、公式インストールや別の配布元のexeではヘッダー値が変わり得る。
+その場合、独自メニューは表示されて入力を塞ぐのに、ボタンは何も呼べなかった。
+
+修正後は、純正遷移が使えない間は独自メニューを出さず、バニラのタイトル画面へ入力を渡す。
+ログには `MainMenu: Main Menu replacement withheld: ...` が出る。
+ヘッダー不一致では、実際の値が `MainMenu navigation disabled: Native menu PE header mismatch (...)` に記録される。
+フォーカス喪失・メニュー非表示による要求の取消もログに残す。
+別PCのexeを受理するかどうかは、そのログの値と命令列の照合結果を確認してから決める。
+
 資料に残る一般のScreenEvent完全型、native FIFO ABI、ClientInstance quit候補のソース型、独立した非描画updateはこの接続経路では利用しない。
 それらの未取得事項は `docs/main-menu-navigation-missing.md` に履歴として残す。
 
