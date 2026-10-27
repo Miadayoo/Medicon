@@ -12,6 +12,10 @@ Medicon のクライアント内SNS「Social」のサーバー（実装指示書
 
 制限（実装指示書 2.5）：本文は前後の空白を除いて1〜300コードポイント（`empty` / `too_long`）。Global は1ユーザー0.3秒に1回（仕様の2秒から短縮）、DM は5秒に5回、フレンド申請は1時間に10回（`rate_limited`）。相手から自分への申請があるときに申請すると、その場でフレンドになります。
 
+## Core DLL の自動アップデート
+
+MediconLoader に配る Core DLL の配信も、このサーバーで行えます。手順と設計は [../docs/auto-update.md](../docs/auto-update.md) を参照してください。`npm run release:keygen` で鍵を作り、`.env` に `RELEASE_SIGNING_KEY` と `PUBLIC_BASE_URL` を設定すると、`/medicon/manifest.json` などの配信と、owner／CLI（`npm run admin -- release:publish`）からの公開が有効になります。秘密鍵はこのサーバーの外へ出しません。
+
 ## 必要なもの
 
 - Node.js 24 LTS 以降
