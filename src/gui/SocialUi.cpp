@@ -1,6 +1,7 @@
 #include <medicon/gui/SocialUi.hpp>
 
 #include <medicon/gui/Fonts.hpp>
+#include <medicon/gui/Theme.hpp>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -209,7 +210,9 @@ void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_
     }
     std::visit([&](const auto& value) {
         using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, social::SessionStarted>) {
+        if constexpr (std::is_same_v<T, social::SettingsLoaded>) {
+            toasts_.set_animation_speed(value.debug_toast_slow_motion ? theme::social::timing::toast_debug_speed : 1.0F);
+        } else if constexpr (std::is_same_v<T, social::SessionStarted>) {
             screen_fonts_.request(SocialText::Body, value.me.name);
             screen_fonts_.request(SocialText::Title, value.me.name);
             if (startup_sign_in_ && !std::exchange(welcomed_, true)) {

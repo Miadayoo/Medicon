@@ -27,6 +27,8 @@ struct SocialConfig {
     NotifySettings notify;
     // Logs the per-frame cost of Social drawing (spec 4.9).
     bool debug_timing = false;
+    // Plays notification animations at 0.25x to inspect each stage.
+    bool debug_toast_slow_motion = false;
 };
 
 struct ConfigLoad {

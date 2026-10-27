@@ -47,55 +47,118 @@ void run(ToastManager& toasts, float seconds, bool in_menu, int hovered = -1) {
     for (float t = 0.0F; t < seconds; t += 0.01F) toasts.advance(0.01F, in_menu, hovered);
 }
 
+bool approx(float a, float b, float tolerance = 1e-4F) { return std::fabs(a - b) <= tolerance; }
+
 void test_toast_stack() {
     ToastManager toasts;
     for (int i = 0; i < 4; ++i) toasts.push(toast(ToastKind::News, std::to_string(i)));
     check(toasts.visible().size() == 3 && toasts.queued() == 1, "three visible, the rest queued");
     check(toasts.visible()[0].phase == ToastManager::Phase::Entering &&
           ToastManager::opacity(toasts.visible()[0]) == 0.0F &&
-          ToastManager::slide(toasts.visible()[0]) == -theme::social::metrics::toast_slide, "entering starts hidden, 20 px up");
+          ToastManager::morph(toasts.visible()[0].anim).scale == 0.0F, "entering starts as an invisible point");
 
-    run(toasts, timing::toast_fade_in + 0.01F, false);
-    check(toasts.visible()[0].phase == ToastManager::Phase::Holding && ToastManager::opacity(toasts.visible()[0]) == 1.0F &&
-          ToastManager::slide(toasts.visible()[0]) == 0.0F, "fully shown after 200 ms");
+    run(toasts, timing::toast_enter + 0.01F, false);
+    const auto shown = ToastManager::morph(toasts.visible()[0].anim);
+    check(toasts.visible()[0].phase == ToastManager::Phase::Holding && toasts.visible()[0].anim == timing::toast_enter &&
+          shown.opacity == 1.0F && approx(shown.scale, 1.0F) && approx(shown.stretch, 1.0F) && approx(shown.round, 1.0F) &&
+          approx(shown.content, 1.0F), "the whole card after 560 ms");
     run(toasts, timing::toast_hold_game, false);
-    check(toasts.visible()[0].phase == ToastManager::Phase::Leaving, "3 s while playing");
-    run(toasts, timing::toast_fade_out, false);
+    check(toasts.visible()[0].phase == ToastManager::Phase::Leaving, "3 s while playing, counted after the entrance");
+    run(toasts, timing::toast_enter / timing::toast_exit_speed - 0.03F, false);
+    check(toasts.visible().size() == 3 && toasts.visible()[0].phase == ToastManager::Phase::Leaving,
+          "leaving keeps its slot while it plays back");
+    run(toasts, 0.05F, false);
     check(toasts.visible().size() == 1 && toasts.queued() == 0 && toasts.visible()[0].toast.body == "3",
-          "finished toasts leave and the queued one takes a slot");
+          "finished toasts leave after about 470 ms and the queued one takes a slot");
 
     for (int i = 0; i < 40; ++i) toasts.push(toast(ToastKind::News, std::to_string(i)));
     check(toasts.visible().size() == 3 && toasts.queued() == ToastManager::max_queued, "the queue is bounded");
 }
 
+void test_toast_morph() {
+    // Spec toast-anim 2: each stage within its window, overshoots as stated.
+    float peak_scale = 0.0F, peak_stretch = 0.0F;
+    for (float t = 0.0F; t <= timing::toast_enter; t += 0.001F) {
+        const auto m = ToastManager::morph(t);
+        peak_scale = std::max(peak_scale, m.scale);
+        peak_stretch = std::max(peak_stretch, m.stretch);
+    }
+    check(peak_scale > 1.08F && peak_scale < 1.12F, "the circle pops about 10 % past full size");
+    check(peak_stretch > 1.03F && peak_stretch < 1.05F, "the stretch overshoots about 4 %");
+    check(approx(ToastManager::morph(0.200F).scale, 1.0F) && approx(ToastManager::morph(0.060F).opacity, 0.5F) &&
+          ToastManager::morph(0.120F).opacity == 1.0F, "pop by 200 ms, linear fade by 120 ms");
+    check(ToastManager::morph(0.160F).stretch == 0.0F && ToastManager::morph(0.160F).round == 0.0F &&
+          approx(ToastManager::morph(0.480F).stretch, 1.0F) && approx(ToastManager::morph(0.480F).round, 1.0F),
+          "stretch and corner radius from 160 to 480 ms");
+    check(ToastManager::morph(0.360F).content == 0.0F && approx(ToastManager::morph(0.560F).content, 1.0F),
+          "content from 360 to 560 ms");
+
+    ToastManager toasts;
+    toasts.push(toast(ToastKind::News, "a"));
+    toasts.advance(5.0F, false, -1);
+    check(approx(toasts.visible()[0].anim, theme::timing::max_dt), "a stalled frame advances at most 100 ms");
+
+    ToastManager slow;
+    slow.set_animation_speed(timing::toast_debug_speed);
+    slow.push(toast(ToastKind::News, "a"));
+    run(slow, timing::toast_enter + 0.01F, false);
+    check(slow.visible()[0].phase == ToastManager::Phase::Entering, "slow motion: still entering after 560 ms");
+    run(slow, timing::toast_enter * 3.0F + 0.02F, false);
+    check(slow.visible()[0].phase == ToastManager::Phase::Holding, "and whole after 4 x 560 ms");
+}
+
 void test_toast_menu_timing() {
     ToastManager menu;
     menu.push(toast(ToastKind::News, "a"));
-    run(menu, timing::toast_fade_in + 0.01F, true);
+    run(menu, timing::toast_enter + 0.01F, true);
     run(menu, timing::toast_hold_game + 0.2F, true);
     check(menu.visible()[0].phase == ToastManager::Phase::Holding, "4 s in menus, not 3");
     run(menu, 10.0F, true, 0);
     check(menu.visible()[0].phase == ToastManager::Phase::Holding, "hovering pauses the timer in menus");
-    // 3.2 s were already spent; 0.85 s more crosses 4 s but not the 200 ms fade after it.
+    // 3.2 s were already spent; 0.85 s more crosses 4 s but not the ~470 ms exit after it.
     run(menu, 0.85F, true);
     check(menu.visible().size() == 1 && menu.visible()[0].phase == ToastManager::Phase::Leaving,
           "the timer resumes once the cursor leaves");
 
+    // Hovering a leaving toast turns it back from where it is.
+    run(menu, 0.15F, true);
+    const float anim = menu.visible()[0].anim;
+    check(anim < timing::toast_enter && anim > 0.0F, "part of the way out");
+    menu.advance(0.0F, true, 0);
+    check(menu.visible()[0].phase == ToastManager::Phase::Entering && menu.visible()[0].anim == anim,
+          "a leaving toast under the cursor enters again without a jump");
+    run(menu, timing::toast_enter - anim + 0.02F, true, 0);
+    check(menu.visible()[0].phase == ToastManager::Phase::Holding && menu.visible()[0].time < 0.05F,
+          "whole again, with the shown timer started over");
+
     ToastManager game;
     game.push(toast(ToastKind::News, "a"));
-    run(game, timing::toast_fade_in + timing::toast_hold_game + 0.05F, false, 0);
+    run(game, timing::toast_enter + timing::toast_hold_game + 0.05F, false, 0);
     check(game.visible()[0].phase == ToastManager::Phase::Leaving, "no hover pause while playing");
+    run(game, 0.1F, false, 0);
+    check(game.visible()[0].phase == ToastManager::Phase::Leaving, "and no way back while playing");
 }
 
 void test_dm_merge() {
     ToastManager toasts;
     toasts.push(toast(ToastKind::Dm, "first", 5));
-    run(toasts, timing::toast_fade_in + 2.0F, false);
+    run(toasts, timing::toast_enter + 2.0F, false);
     toasts.push(toast(ToastKind::Dm, "second", 5));
     check(toasts.visible().size() == 1 && toasts.visible()[0].merged == 1 && toasts.visible()[0].toast.body == "second",
           "a DM from the same sender updates the toast");
-    check(toasts.visible()[0].phase == ToastManager::Phase::Holding && toasts.visible()[0].time == 0.0F,
-          "and restarts its timer");
+    check(toasts.visible()[0].phase == ToastManager::Phase::Holding && toasts.visible()[0].time == 0.0F &&
+          toasts.visible()[0].relayout, "and restarts its timer, laid out again at its new width");
+
+    run(toasts, timing::toast_hold_game + 0.1F, false);
+    const float anim = toasts.visible()[0].anim;
+    check(toasts.visible()[0].phase == ToastManager::Phase::Leaving && anim < timing::toast_enter, "leaving");
+    toasts.push(toast(ToastKind::Dm, "third", 5));
+    check(toasts.visible()[0].phase == ToastManager::Phase::Entering && toasts.visible()[0].anim == anim &&
+          toasts.visible()[0].merged == 2, "a DM merged into a leaving toast brings it back from where it is");
+    run(toasts, timing::toast_enter, false);
+    check(toasts.visible()[0].phase == ToastManager::Phase::Holding && toasts.visible()[0].time < timing::toast_enter,
+          "with a fresh timer");
+
     toasts.push(toast(ToastKind::Dm, "other", 6));
     toasts.push(toast(ToastKind::News, "news", 5));
     check(toasts.visible().size() == 3, "other senders and kinds get their own toast");
@@ -600,6 +663,7 @@ void test_open_from_toast() {
 int main() {
     try {
         test_toast_stack();
+        test_toast_morph();
         test_toast_menu_timing();
         test_dm_merge();
         test_social_ui();

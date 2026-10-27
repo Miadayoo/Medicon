@@ -106,8 +106,8 @@ void toasts(ScenarioHost& host, bool capture, bool menu) {
         host.frame();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    // Past the 200 ms entrance, with the stack settled.
-    for (int i = 0; i < static_cast<int>(std::ceil(0.4F / host.dt())); ++i) host.frame();
+    // Past the 560 ms entrance, with the stack settled.
+    for (int i = 0; i < static_cast<int>(std::ceil(0.8F / host.dt())); ++i) host.frame();
     const auto& toasts = host.overlay().social().toasts();
     char line[96];
     std::snprintf(line, sizeof line, "toasts visible=%zu queued=%zu", toasts.visible().size(), toasts.queued());
@@ -988,7 +988,7 @@ void toasts_click(ScenarioHost& host, bool capture) {
     wait_for(host, std::chrono::seconds(10), "toast_shown", [&] {
         return !host.overlay().social().toasts().visible().empty() && host.overlay().social().screen_fonts_ready();
     });
-    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    for (int i = 0; i < static_cast<int>(std::ceil(0.6F / host.dt())); ++i) host.frame();
     const float s = host.height() / 1080.0F;
     const float top = theme::social::metrics::toast_top * s;
     social_click(host, host.width() * 0.5F, top + theme::social::metrics::toast_height * s * 0.5F);
@@ -998,6 +998,25 @@ void toasts_click(ScenarioHost& host, bool capture) {
     host.log("toast click opened Change Log");
     social_settle(host);
     if (capture) host.capture("");
+}
+
+// One notification through its morph (spec toast-anim 2): circle, stretch,
+// content, then the same timeline backwards after the 4 s menu hold.
+void toasts_morph(ScenarioHost& host, bool capture) {
+    auto& channel = social_mock(host, false, false);
+    channel.events.push(social::NewsPosted{social::NewsItem{1, social::NewsKind::News,
+        "Server maintenance on 10/28, 22:00 to 23:00", "Body", std::nullopt, 0}});
+    // The toast's clock starts on its first drawn frame, once the face is ready.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!host.overlay().social().screen_fonts_ready()) {
+        if (std::chrono::steady_clock::now() > deadline) throw std::runtime_error("Social font was not ready within 10 s");
+        host.frame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    capture_at(host, capture, "in", {0, 60, 120, 200, 280, 360, 440, 560});
+    const auto& toasts = host.overlay().social().toasts();
+    while (!toasts.visible().empty() && toasts.visible()[0].phase != gui::ToastManager::Phase::Leaving) host.frame();
+    capture_at(host, capture, "out", {0, 80, 170, 270, 340, 400, 450});
 }
 
 // The typing animation on the license key field, on a clock that follows the
@@ -1225,6 +1244,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_scroll", social_scroll},
         {"social_toasts_steady", social_toasts_steady},
         {"toasts_click", toasts_click},
+        {"toasts_morph", toasts_morph},
         {"main_menu_social", [](ScenarioHost& h, bool c) { main_menu_social(h, c, false); }},
         {"main_menu_social_badge", [](ScenarioHost& h, bool c) { main_menu_social(h, c, true); }},
         {"main_menu_social_click", main_menu_social_click},

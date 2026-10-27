@@ -353,7 +353,7 @@ SocialNet::Ending SocialNet::receive_loop(net::WebSocket& socket, Backoff& backo
 void SocialNet::run_connection() {
     // File I/O and DPAPI happen here, never on the render thread (spec 4.9).
     const auto config = load_config(directory_ / L"social.json", *core_);
-    core_->channel().events.push(SettingsLoaded{config.notify, config.debug_timing});
+    core_->channel().events.push(SettingsLoaded{config.notify, config.debug_timing, config.debug_toast_slow_motion});
     const auto endpoint = parse_server_url(server_url);
     if (!endpoint) {
         core_->report("Social: the server URL embedded in this client is invalid.");

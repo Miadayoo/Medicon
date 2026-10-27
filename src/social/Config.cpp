@@ -33,6 +33,7 @@ ConfigLoad parse_config(std::string_view text) {
     load.parsed = true;
     auto& config = load.config;
     read_bool(root, "debugTiming", config.debug_timing, load.warnings, {});
+    read_bool(root, "debugToastSlowMotion", config.debug_toast_slow_motion, load.warnings, {});
     // The obsolete field is ignored; its value must never enter warnings.
     if (root.contains("debugLicenseKey"))
         load.warnings.emplace_back("debugLicenseKey: no longer used; sign in on the login screen and remove it");
