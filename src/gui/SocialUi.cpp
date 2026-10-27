@@ -215,7 +215,7 @@ void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_
             if (startup_sign_in_ && !std::exchange(welcomed_, true)) {
                 Toast toast;
                 toast.kind = ToastKind::System;
-                toast.title = "Medicon Social";
+                toast.title = "Medicon";
                 toast.body = one_line("Welcome to " + value.me.name);
                 notify(std::move(toast), fonts, in_menu, true);
                 // Right after a loader update, say so once, after auth succeeded.
@@ -302,7 +302,7 @@ void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_
             if (const char* message = state_message(value)) {
                 Toast toast;
                 toast.kind = ToastKind::System;
-                toast.title = "Medicon Social";
+                toast.title = "Medicon";
                 toast.body = message;
                 notify(std::move(toast), fonts, in_menu, true);
             }

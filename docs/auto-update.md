@@ -81,8 +81,8 @@ RELEASES_DIR=./releases                 # 任意
 ### 方法A：クライアントの Admin タブ（owner）
 
 1. Social 画面 → Admin タブ → Change Log を選ぶ。
-2. **Attach DLL** を押す。
-3. Title・Version（`x.y.z`）・本文（Change Log）・DLL のパス（ビルドした `Medicon.dll` の場所）を入れる。
+2. **Attach DLL** を押すと Windows 標準のファイルを開くダイアログ（エクスプローラー）が出るので、ビルドした `Medicon.dll` を選ぶ。選んだパスは「DLL FILE」欄に表示され、その欄をもう一度押せば選び直せます。
+3. Title・Version（`x.y.z`）・本文（Change Log）を入れる。
 4. Post → 確認 → 公開。サーバーが署名付きで Core を保存し、同じ内容の Change Log も投稿します（どちらか片方だけにはなりません）。
 
 Version は常に「今の最新より大きい」値にしてください。古い／同じ版は拒否されます。
