@@ -15,6 +15,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "release:keygen": "node tools/release-keygen.ts",
+    "release:setup": "node tools/release-setup.ts",
     "release:sign": "node tools/release-sign.ts"
   },
   "dependencies": {

@@ -54,15 +54,18 @@ manifest の例：
 }
 ```
 
-### 鍵（秘密鍵はリポジトリにも配布物にも入れない）
+### 初回設定（秘密鍵はリポジトリにも配布物にも入れない）
 
 ```sh
 cd social-server
-npm run release:keygen          # keys/release-private.pem と公開鍵ヘッダーを作る
+npm run release:setup           # 鍵・保存先・.env・公開鍵ヘッダーを用意する
+# 別の公開ドメインを使う場合:
+# npm run release:setup -- --base-url https://<host>
 ```
 
-- 秘密鍵 `keys/release-private.pem`：このサーバーの外へ出さない（`.gitignore` 済み）。`.env` の `RELEASE_SIGNING_KEY` に絶対パスで設定。
-- 公開鍵 `include/medicon/update/ReleasePublicKey.hpp`：コミットして **MediconLoader をビルドし直す**。Loader にはこの公開鍵だけが埋め込まれ、鍵が無いうちは Loader はどの Core も信頼しません。
+- 秘密鍵 `keys/release-private.pem`：このサーバーで保持する（`.gitignore` 済み）。初回だけ作り、既存の鍵は再利用します。設定済みの鍵が消えている場合は、新しい鍵で置き換えずエラーにします。鍵だけを用意する従来の `npm run release:keygen` も利用できます。
+- `.env`：既存設定を保持して `RELEASE_SIGNING_KEY` と `PUBLIC_BASE_URL` を補います。既定URLは Loader と同じ `https://medicon.auau1000.com` です。設定後はサーバーを再起動してください。サービス側に同名の環境変数がある場合は、そちらが優先されます。
+- 公開鍵 `include/medicon/update/ReleasePublicKey.hpp`：コミットして **MediconLoader をビルドし直す**。`social-server/` だけを配置したサーバーでは `keys/ReleasePublicKey.hpp` に出力されるので、ビルド環境の同ヘッダーへ反映してください。Loader にはこの公開鍵だけが埋め込まれ、鍵が無いうちは Loader はどの Core も信頼しません。
 - 鍵を作り直すと、既存の Loader は新しい署名を受け付けません（Loader の再配布が必要）。
 
 ### .env
@@ -76,6 +79,8 @@ RELEASES_DIR=./releases                 # 任意
 
 両方（鍵と公開URL）が揃うと公開が有効になり、起動ログに `Core releases enabled` と出ます。
 
+DLL は `RELEASES_DIR/<version>/MediconCore.dll` に保存し、同じフォルダに署名と manifest を置きます。既定の保存先は `social-server/releases/` です。サーバー移行時は DB・`.env` に加えて署名鍵と保存済み `releases/` も引き継いでください。
+
 ## 新しい版を公開する
 
 ### 方法A：クライアントの Admin タブ（owner）
@@ -86,6 +91,8 @@ RELEASES_DIR=./releases                 # 任意
 4. Post → 確認 → 公開。サーバーが署名付きで Core を保存し、同じ内容の Change Log も投稿します（どちらか片方だけにはなりません）。
 
 Version は常に「今の最新より大きい」値にしてください。古い／同じ版は拒否されます。
+
+送信前に `GET /releases/status`（owner のみ）で公開設定を確認します。未設定なら DLL を送らず `releases_disabled` を返します。投稿結果と失敗理由は Admin タブに次の投稿まで残り、失敗時には入力と添付ファイルを保持します。通信断・タイムアウトの場合は Change Log に反映されているか確認してから再試行してください。
 
 ### 方法B：サーバーの CLI
 

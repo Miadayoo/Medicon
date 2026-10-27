@@ -14,7 +14,9 @@ Medicon のクライアント内SNS「Social」のサーバー（実装指示書
 
 ## Core DLL の自動アップデート
 
-MediconLoader に配る Core DLL の配信も、このサーバーで行えます。手順と設計は [../docs/auto-update.md](../docs/auto-update.md) を参照してください。`npm run release:keygen` で鍵を作り、`.env` に `RELEASE_SIGNING_KEY` と `PUBLIC_BASE_URL` を設定すると、`/medicon/manifest.json` などの配信と、owner／CLI（`npm run admin -- release:publish`）からの公開が有効になります。秘密鍵はこのサーバーの外へ出しません。
+MediconLoader に配る Core DLL の配信も、このサーバーで行えます。初回に `npm run release:setup` を実行してサーバーを再起動してください。署名鍵・保存先と `.env` の `RELEASE_SIGNING_KEY` / `PUBLIC_BASE_URL` を用意し、owner の Admin タブから DLL を公開できるようにします。既定の公開URLは `https://medicon.auau1000.com` です。別のドメインでは `npm run release:setup -- --base-url https://<host>` を使います。既存の鍵・管理用シークレット・DB設定は引き継ぎます。
+
+初回は生成された公開鍵ヘッダーで **MediconLoader をビルドし直して配布**してください。サーバーだけを配置した場合は `keys/ReleasePublicKey.hpp` に出力されるので、ビルド環境の `include/medicon/update/ReleasePublicKey.hpp` に反映します。DLL は `releases/<version>/MediconCore.dll` に永続保存され、再起動後も配信されます。詳細は [../docs/auto-update.md](../docs/auto-update.md) を参照してください。
 
 ## 必要なもの
 
@@ -75,7 +77,7 @@ sh ./start.sh
 
 `start.sh` は呼び出した場所に関係なく、このフォルダを基準に起動します。依存パッケージが未導入、または SQLite のネイティブモジュールが実行環境と合わない場合は `npm ci --omit=dev` で入れ直します。`.env` がなければランダムな `ADMIN_SECRET` を設定して作成し、既存の `.env` と DB は引き継ぎます。更新後に依存パッケージを確実に揃える場合は、先に `npm ci --omit=dev` を実行してください。
 
-既存のライセンスキーを別のサーバーでも使うには、移行元を停止してから `data/` と `.env` も転送してください。`data/` がなければ空の DB で起動します。
+既存のライセンスキーを別のサーバーでも使うには、移行元を停止してから `data/` と `.env` も転送してください。DLL配信も移行する場合は `keys/` と `releases/`（設定で保存先を変えている場合はそのフォルダ）も転送します。署名鍵を作り直すと既存の Loader が更新を検証できなくなります。`data/` がなければ空の DB で起動します。
 
 SSH を切断しても動かすだけなら、次のように起動できます。
 

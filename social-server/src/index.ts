@@ -33,10 +33,10 @@ if (config.releaseSigningKey !== undefined && config.publicBaseUrl !== undefined
     })
     log.info(`Core releases enabled (latest ${releases.latestVersion() ?? 'none'})`)
   } catch (err) {
-    log.error('Core releases disabled: the signing key could not be loaded', err instanceof Error ? err.message : err)
+    log.error('Core releases disabled: check the signing key and releases directory', err instanceof Error ? err.message : err)
   }
 } else {
-  log.info('Core releases disabled (set RELEASE_SIGNING_KEY and PUBLIC_BASE_URL to publish)')
+  log.info('Core releases disabled (run npm run release:setup, then restart to enable DLL publishing)')
 }
 
 const db = openDb(config.dbPath)

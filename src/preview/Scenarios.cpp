@@ -892,6 +892,9 @@ void social_admin_dll(ScenarioHost& host, bool capture) {
     if (!screen.admin_attach_dll()) throw std::runtime_error("the Attach DLL toggle did not turn on");
     screen.admin_dll_path().set_text(L"C:/Medicon/MediconCore.dll");
     wait_frames(host, 0.2F);
+    // Discard the initial news fetches queued by the mock sign-in; only the
+    // publish request below is handled by this scenario's fake REST worker.
+    while (channel.api.pop(std::chrono::steady_clock::now())) {}
     if (capture) host.capture("form");
     const auto post = screen.admin_post_rect();
     social_click(host, (post.min.x + post.max.x) * 0.5F, (post.min.y + post.max.y) * 0.5F);
@@ -909,9 +912,22 @@ void social_admin_dll(ScenarioHost& host, bool capture) {
     if (!publish || publish->version != "1.0.5" || publish->dll_path != L"C:/Medicon/MediconCore.dll" ||
         publish->body.find("+ Added auto update") == std::string::npos)
         throw std::runtime_error("the release upload did not carry the version, body and path");
-    channel.events.push(social::RequestFinished{publish->nonce, true, {}, std::nullopt});
+    channel.events.push(social::RequestFinished{publish->nonce, false, "releases_disabled", std::nullopt});
+    wait_frames(host, 6.0F);
+    if (screen.admin_status() != "DLL publishing is not configured on the server" ||
+        screen.admin_version().utf8() != "1.0.5" || screen.admin_dll_path().text() != L"C:/Medicon/MediconCore.dll")
+        throw std::runtime_error("a failed upload lost its explanation or retry inputs");
+    if (capture) host.capture("failed");
+    social_click(host, (post.min.x + post.max.x) * 0.5F, (post.min.y + post.max.y) * 0.5F);
+    wait_frames(host, 0.3F);
+    social_click(host, (ok.min.x + ok.max.x) * 0.5F, (ok.min.y + ok.max.y) * 0.5F);
+    const auto retry = channel.api.pop(std::chrono::steady_clock::now());
+    const auto* retried = retry ? std::get_if<social::PublishRelease>(&*retry) : nullptr;
+    if (!retried || retried->version != publish->version) throw std::runtime_error("failed DLL upload could not be retried");
+    channel.events.push(social::RequestFinished{retried->nonce, true, {}, std::nullopt});
     wait_frames(host, 0.2F);
     if (screen.admin_status() != "Published") throw std::runtime_error("no confirmation after publishing");
+    if (capture) host.capture("published");
     host.log("milestone admin_dll");
 }
 

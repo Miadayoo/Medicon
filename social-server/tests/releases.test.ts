@@ -2,12 +2,14 @@ import { constants, createHash, generateKeyPairSync, verify, type KeyObject } fr
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { request } from 'node:http'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import {
   buildReleaseUpload,
   compareVersions,
   parseReleaseUpload,
   RELEASE_CONTENT_TYPE,
+  MAX_CORE_BYTES,
   ReleaseStore,
 } from '../src/services/releases.ts'
 import { ADMIN_SECRET, connect, http, startServer, type TestServer } from './helpers.ts'
@@ -72,6 +74,27 @@ async function bytes(url: string): Promise<{ status: number; data: Buffer }> {
   return { status: response.status, data: Buffer.from(await response.arrayBuffer()) }
 }
 
+// Send only headers, deliberately withholding the DLL. Rejection must not wait
+// for the request body (or a multi-minute upload timeout on the client).
+function beforeBody(url: string, headers: Record<string, string>): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method: 'POST', headers: {
+      'Content-Type': RELEASE_CONTENT_TYPE, 'Content-Length': String(MAX_CORE_BYTES), ...headers,
+    } }, (response) => {
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => { body += chunk })
+      response.on('end', () => {
+        req.destroy()
+        resolve({ status: response.statusCode!, body: JSON.parse(body) })
+      })
+    })
+    req.setTimeout(2000, () => req.destroy(new Error('server waited for the DLL body')))
+    req.on('error', reject)
+    req.flushHeaders()
+  })
+}
+
 describe('Core releases', () => {
   it('compares versions numerically', () => {
     expect(compareVersions('1.0.10', '1.0.9')).toBe(1)
@@ -84,6 +107,31 @@ describe('Core releases', () => {
     const token = await owner(server)
     expect((await upload(server, token, release('1.0.0'))).body).toEqual({ error: 'releases_disabled' })
     expect((await bytes(`${server.baseUrl}/medicon/manifest.json`)).status).toBe(404)
+  })
+
+  it('reports readiness only to owners, including the latest persisted version', async () => {
+    const { server: s } = await start()
+    const url = `${s.baseUrl}/releases/status`
+    expect((await http(url)).status).toBe(401)
+    const user = await s.signUp('someone')
+    expect((await http(url, { headers: { Authorization: `Bearer ${user}` } })).status).toBe(403)
+    const token = await owner(s)
+    const headers = { Authorization: `Bearer ${token}` }
+    expect(await http(url, { headers })).toEqual({ status: 200, body: { latest_version: null, max_core_bytes: MAX_CORE_BYTES } })
+    await upload(s, token, release('1.0.0'))
+    expect((await http(url, { headers })).body.latest_version).toBe('1.0.0')
+  })
+
+  it('rejects disabled publishing and unauthorized requests before receiving DLL bytes', async () => {
+    server = await startServer()
+    const token = await owner(server)
+    expect(await http(`${server.baseUrl}/releases/status`, { headers: { Authorization: `Bearer ${token}` } }))
+      .toEqual({ status: 503, body: { error: 'releases_disabled' } })
+    expect(await beforeBody(`${server.baseUrl}/releases`, {})).toEqual({ status: 401, body: { error: 'unauthorized' } })
+    expect(await beforeBody(`${server.baseUrl}/releases`, { Authorization: `Bearer ${token}` }))
+      .toEqual({ status: 503, body: { error: 'releases_disabled' } })
+    expect(await beforeBody(`${server.adminUrl}/releases`, { 'X-Admin-Secret': ADMIN_SECRET }))
+      .toEqual({ status: 503, body: { error: 'releases_disabled' } })
   })
 
   it('publishes a signed manifest, the DLL and its Change Log in one request', async () => {
@@ -119,6 +167,11 @@ describe('Core releases', () => {
     expect(core.data.equals(dll)).toBe(true)
     const pinned = await bytes(`${s.baseUrl}/medicon/releases/1.0.5/manifest.json`)
     expect(pinned.data.equals(manifest.data)).toBe(true)
+    // A fresh store must serve the same files after a server restart.
+    const reopened = new ReleaseStore(s.ctx.releases!.options)
+    expect(reopened.latestVersion()).toBe('1.0.5')
+    expect(reopened.file('MediconCore.dll')?.equals(dll)).toBe(true)
+    expect(reopened.file('manifest.sig')?.equals(signature.data)).toBe(true)
 
     const posted = await watcher.next((frame) => frame.t === 'news.new')
     expect(posted.item).toMatchObject({ kind: 'changelog', title: 'Medicon 1.0.5', version: '1.0.5' })

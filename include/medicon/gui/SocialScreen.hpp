@@ -232,7 +232,6 @@ private:
     bool posting_ = false;
     std::string admin_status_;
     bool admin_status_ok_ = false;
-    double admin_status_until_ = 0.0;
     SocialRect admin_post_rect_{};
     std::array<SocialRect, 3> admin_field_rects_{};
     std::array<std::uint32_t, 3> admin_revisions_{~0u, ~0u, ~0u};

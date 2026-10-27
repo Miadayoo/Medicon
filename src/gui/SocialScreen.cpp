@@ -390,7 +390,6 @@ void SocialScreen::on_event(const social::Event& event) {
             // The Admin tab's post.
             posting_ = false;
             admin_status_ok_ = done->ok;
-            admin_status_until_ = now + 4.0;
             if (done->ok) {
                 admin_status_ = admin_attach_dll_ ? "Published" : "Posted";
                 admin_title_.clear();
@@ -400,11 +399,16 @@ void SocialScreen::on_event(const social::Event& event) {
             } else {
                 admin_status_ = done->error == "forbidden"      ? "Only owners can post"
                               : done->error == "bad_request"    ? "A title and text are required"
+                              : done->error == "unauthorized"   ? "Session expired. Reconnect and try again"
                               : done->error == "offline"        ? "Not connected"
-                              : done->error == "dll_unreadable" ? "Cannot read that DLL file"
-                              : done->error == "version_conflict" ? "That version is already published"
-                              : done->error == "bad_release"    ? "That file is not a valid x64 DLL"
-                              : done->error == "releases_disabled" ? "The server has releases turned off"
+                              : done->error == "dll_unreadable" ? "Cannot read the DLL. Choose a file up to 64 MiB"
+                              : done->error == "version_conflict" ? "Use a version newer than the latest release"
+                              : done->error == "bad_release"    ? "Use an x64 DLL and a version like 1.0.1"
+                              : done->error == "releases_disabled" ? "DLL publishing is not configured on the server"
+                              : done->error == "release_too_large" ? "DLL files must be 64 MiB or smaller"
+                              : done->error == "release_timeout" ? "Upload timed out. Check the Change Log before retrying"
+                              : done->error == "release_network" ? "Connection failed. Check the Change Log before retrying"
+                              : done->error == "internal"       ? "The server could not publish the DLL. Check server logs"
                                                                    : "Could not post";
             }
         } else if (!nonce.empty() && nonce.front() == 'f') {
@@ -1259,7 +1263,7 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         plate.alpha = selected ? 1.0F : 0.5F + 0.5F * m.hover;
         draw_glass_plate(list, pill.min, pill.max, h * 0.5F, plate);
         draw_centered(list, fonts, SocialText::Title, pill, to_u32(selected ? style::heading : style::text_secondary), label);
-        if (input_.click(id, pill)) admin_kind_ = kind;
+        if (input_.click(id, pill) && !posting_) admin_kind_ = kind;
         x = pill.max.x + 8.0F * s;
     }
     // Change Log can carry a Core DLL: posting then also publishes the update.
@@ -1320,7 +1324,8 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         const SocialRect version{{x1 - version_w, y}, {x1, y + field_h}};
         admin_field_rects_[1] = version;
         if (input_.click(id_admin_version, version)) focus(admin_version_);
-        admin_version_.draw(list, fonts, version, s, 1.0F, "Version (optional)", !posting_, now, &context.shadows);
+        admin_version_.draw(list, fonts, version, s, 1.0F,
+                            admin_attach_dll_ ? "Version (x.y.z)" : "Version (optional)", !posting_, now, &context.shadows);
     } else {
         // News hides the version; it must not keep typing into a field nobody sees.
         admin_field_rects_[1] = {};
@@ -1342,7 +1347,10 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
 
     // The text on the left, a live preview on the right.
     const float button_h = metrics::button_height * s;
-    const float bottom = area.max.y - pad * 0.75F - button_h - 12.0F * s;
+    // Reserve two lines above the button for a persistent result. Long errors
+    // must stay readable instead of running underneath the Post button.
+    const float status_height = small * 2.0F + 8.0F * s;
+    const float bottom = area.max.y - pad * 0.75F - button_h - 12.0F * s - status_height;
     const float split = x0 + (x1 - x0) * 0.55F;
     fonts.draw(list, SocialText::Small, x0 + 4.0F * s, y, to_u32(style::text_secondary), "TEXT");
     fonts.draw(list, SocialText::Small, split + 16.0F * s, y, to_u32(style::text_secondary), "PREVIEW");
@@ -1420,10 +1428,17 @@ void SocialScreen::draw_admin(Context& context, const SocialRect& area, float s)
         if (auto* input = focused_input()) input->set_focused(false);
         confirm_post_ = true;
     }
-    if (!admin_status_.empty() && now < admin_status_until_) {
-        fonts.draw(list, SocialText::Small, x0 + 4.0F * s,
-                   admin_post_rect_.min.y + (button_h - small) * 0.5F, to_u32(admin_status_ok_ ? style::online : style::error),
-                   admin_status_);
+    if (!admin_status_.empty()) {
+        fonts.request(SocialText::Small, admin_status_);
+        std::vector<SocialFonts::Line> lines;
+        fonts.wrap(SocialText::Small, admin_status_, x1 - x0 - 8.0F * s, lines);
+        float sy = bottom + 6.0F * s;
+        for (const auto& span : lines) {
+            fonts.draw(list, SocialText::Small, x0 + 4.0F * s, sy,
+                       to_u32(admin_status_ok_ ? style::online : style::error),
+                       std::string_view(admin_status_).substr(span.begin, span.end - span.begin));
+            sy += small;
+        }
     }
 }
 

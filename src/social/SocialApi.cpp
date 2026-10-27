@@ -183,6 +183,15 @@ void SocialApi::fetch(const PublishRelease& request) {
     const auto endpoint = core_->endpoint();
     const auto token = core_->token_snapshot();
     if (!endpoint || token.value.empty()) return fail("offline");
+    // Fail before reading/sending megabytes when publishing is not configured.
+    // Older servers without the status route still accept the original POST.
+    const auto status = core_->http().request(*endpoint, L"GET", "/releases/status", {}, token.value);
+    if (status.status != 200 && status.status != 404) {
+        std::string error = parse_error_code(status.body);
+        if (error.empty()) error = status.error == ERROR_WINHTTP_TIMEOUT ? "release_timeout" : "release_network";
+        core_->report("Social: release preflight failed (" + describe_failure(status.status, status.error) + ", " + error + ").");
+        return fail(std::move(error));
+    }
     std::string dll;
     if (!read_release_dll(request.dll_path, dll)) return fail("dll_unreadable");
     const std::string upload = build_release_upload(request, dll);
@@ -194,9 +203,11 @@ void SocialApi::fetch(const PublishRelease& request) {
         return;
     }
     std::string error = parse_error_code(response.body);
+    if (response.status == 413) error = "release_too_large";
+    if (response.status == 0) error = response.error == ERROR_WINHTTP_TIMEOUT ? "release_timeout" : "release_network";
     if (error.empty()) error = response.status == 403 ? "forbidden" : "release_failed";
     core_->report("Social: publishing Core " + request.version + " failed (" +
-                  describe_failure(response.status, response.error) + ").");
+                  describe_failure(response.status, response.error) + ", " + error + ").");
     fail(std::move(error));
 }
 

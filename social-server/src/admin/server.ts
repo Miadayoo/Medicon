@@ -99,7 +99,13 @@ export function createAdminApp(ctx: AppContext, secret: string): FastifyInstance
 
   // release:publish from the CLI: the same one-step DLL + Change Log as owners.
   registerReleaseParser(app)
-  app.post('/releases', { bodyLimit: RELEASE_BODY_LIMIT }, async (request, reply) => {
+  app.post('/releases', {
+    bodyLimit: RELEASE_BODY_LIMIT,
+    onRequest: async (_request, reply) => {
+      if (!ctx.releases) return sendError(reply, 503, 'releases_disabled')
+      return undefined
+    },
+  }, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return sendError(reply, 400, 'bad_release')
     const upload = parseReleaseUpload(request.body)
     if (!upload) return sendError(reply, 400, 'bad_release')

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { AppContext } from '../../context.ts'
 import { log } from '../../log.ts'
 import { createNews, type NewsItem } from '../../services/news.ts'
@@ -69,8 +69,22 @@ export function registerReleaseRoutes(app: FastifyInstance, ctx: AppContext): vo
   })
 
   // Owners only, like news.post: the Admin tab's Change Log with a DLL attached.
-  app.post('/releases', { preHandler: requireUser(ctx), bodyLimit: RELEASE_BODY_LIMIT }, async (request, reply) => {
+  // Check before parsing the large body, so a disabled server or expired session
+  // does not make the owner wait for the entire DLL to upload before failing.
+  const authenticate = requireUser(ctx)
+  const requirePublisher = async (request: FastifyRequest, reply: FastifyReply) => {
+    const rejected = await authenticate(request, reply)
+    if (rejected) return rejected
     if (request.user?.rank !== 'owner') return sendError(reply, 403, 'forbidden')
+    if (!ctx.releases) return sendError(reply, 503, 'releases_disabled')
+    return undefined
+  }
+  app.get('/releases/status', { onRequest: requirePublisher }, async () => ({
+    latest_version: ctx.releases!.latestVersion(),
+    max_core_bytes: MAX_CORE_BYTES,
+  }))
+  // Recheck after reception too: a session may expire or be revoked mid-upload.
+  app.post('/releases', { onRequest: requirePublisher, preHandler: requirePublisher, bodyLimit: RELEASE_BODY_LIMIT }, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return sendError(reply, 400, 'bad_release')
     const upload = parseReleaseUpload(request.body)
     if (!upload) return sendError(reply, 400, 'bad_release')
