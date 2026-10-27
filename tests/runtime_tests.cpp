@@ -57,6 +57,46 @@ void hooks_test() {
     require(second.clear(error), error.c_str());
 }
 
+void gameplay_dispatch_test(const std::filesystem::path& path) {
+    struct Game final : medicon::sdk::GameplayAccess {
+        medicon::sdk::GameplayFrame current;
+        int rotations = 0;
+        const medicon::sdk::GameplayFrame& frame() const noexcept override { return current; }
+        bool rotate(float, float) override { ++rotations; return true; }
+        bool attack(std::uintptr_t) override { throw std::runtime_error("Unexpected attack"); }
+        bool place_block(medicon::sdk::BlockPos, bool) override { throw std::runtime_error("Unexpected placement"); }
+        bool replaceable(medicon::sdk::BlockPos) const override { return false; }
+    } game;
+    game.current.ready = true;
+    game.current.local.id = 1;
+    game.current.local.alive = true;
+    game.current.local.local = true;
+    medicon::Client client(path);
+    require(client.start(), "Gameplay client starts");
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp"})
+        require(client.modules().find(id) && !client.modules().find(id)->enabled(), "Gameplay module registered disabled");
+    client.game_tick(game, 0.05F);
+    require(game.rotations == 0, "Disabled gameplay modules do not act");
+    client.modules().find("derp")->set_enabled(true);
+    client.tick(0.05F);
+    require(game.rotations == 0, "Present tick never mutates the game");
+    client.game_tick(game, 0.05F);
+    require(game.rotations == 1, "Native game tick dispatches Derp");
+    client.game_tick(game, 0.05F, false);
+    require(game.rotations == 1, "Unfocused or inventory input suppresses actions");
+    client.gui().set_open(true);
+    client.game_tick(game, 0.05F);
+    require(game.rotations == 1, "ClickGUI suppresses gameplay actions");
+    client.gui().set_open(false);
+    game.current.ready = false;
+    client.game_tick(game, 0.05F);
+    require(game.rotations == 1, "Missing world suppresses gameplay actions");
+    require(client.stop(), "Gameplay client stops");
+    game.current.ready = true;
+    client.game_tick(game, 0.05F);
+    require(game.rotations == 1, "Stopped client cannot mutate the game");
+}
+
 void client_test(const std::filesystem::path& path) {
     { std::ofstream config(path); config << R"({"version":1,"modules":{"clickgui":{"enabled":true}}})"; }
     medicon::Client client(path);
@@ -260,6 +300,7 @@ int main() {
     try {
         std::filesystem::create_directories(directory);
         hooks_test();
+        gameplay_dispatch_test(directory / "gameplay-config.json");
         client_test(directory / "config.json");
         main_menu_input_test(directory / "main-menu-config.json");
         std::filesystem::remove_all(directory);

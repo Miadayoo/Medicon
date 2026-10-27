@@ -45,7 +45,7 @@ public:
     State locate(std::string& diagnostic);
     [[nodiscard]] std::uintptr_t send_target() const noexcept { return send_target_; }
     bool consume(void* packet, const std::function<void(std::string)>& enqueue) const noexcept;
-    [[nodiscard]] std::uintptr_t tick_target(std::string& diagnostic) const noexcept;
+    [[nodiscard]] std::uintptr_t tick_target(std::string& diagnostic, bool require_feedback = true) const noexcept;
     [[nodiscard]] bool is_local_player(void* actor) const noexcept;
     // Invoke only from the matching local-player baseTick callback, never from
     // Present or an arbitrary worker. Revalidates the current client/player/GUI.

@@ -348,10 +348,10 @@ std::uintptr_t BedrockChat::local_player() const noexcept {
     } catch (...) { return 0; }
 }
 
-std::uintptr_t BedrockChat::tick_target(std::string& diagnostic) const noexcept {
+std::uintptr_t BedrockChat::tick_target(std::string& diagnostic, bool require_feedback) const noexcept {
     diagnostic.clear();
     try {
-        if (!display_target_ || !executable(display_target_)) {
+        if (require_feedback && (!display_target_ || !executable(display_target_))) {
             set_diagnostic(diagnostic, "Native chat feedback signature is unavailable.");
             return 0;
         }

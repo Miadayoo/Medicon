@@ -7,12 +7,14 @@
 #include <medicon/gui/Overlay.hpp>
 #include <medicon/hooks/HookManager.hpp>
 #include <medicon/memory/signature_registry.hpp>
+#include <medicon/sdk/Gameplay.hpp>
 #include <filesystem>
 #include <string>
 
 namespace medicon {
 
 // One client per host. Call tick/render/key_event/stop on the host's UI thread.
+// A native host may call game_tick from baseTick while holding its render lock.
 class Client final {
 public:
     explicit Client(std::filesystem::path config_path);
@@ -20,6 +22,8 @@ public:
     bool start();
     bool stop();
     void tick(float delta_seconds);
+    void game_tick(sdk::GameplayAccess& game, float delta_seconds, bool allow_actions = true);
+    void clear_gameplay() noexcept;
     // Before ImGui::NewFrame(); true when the host must re-upload its font texture.
     bool prepare_frame();
     void render(); // An ImGui context and an active NewFrame() are required.
@@ -47,6 +51,9 @@ private:
     gui::Overlay overlay_;
     HookManager hooks_;
     memory::SignatureRegistry signatures_;
+    sdk::GameplayFrame gameplay_frame_;
+    float gameplay_age_ = 1.0F;
+    float elapsed_ = 0.0F;
     std::string error_;
     bool running_{};
     bool config_writable_{true};

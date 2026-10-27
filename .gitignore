@@ -9,3 +9,4 @@
 *.log
 imgui.ini
 /claude.exe
+/social-server/

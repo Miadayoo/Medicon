@@ -1227,14 +1227,26 @@ struct Tester {
     float body_top(const ClickGui::PanelRect& r) {
         return r.y + gm::px(mt::header_height, s()) + gm::px(mt::separator, s());
     }
-    // Centre of module row `index` in a panel (no settings expanded above it).
-    ImVec2 row(Category category, int index) {
+    // Resolve rows from registration order rather than a fixed demo ordinal.
+    // Callers keep preceding modules collapsed before measuring these points.
+    std::pair<Category, int> module_row(const char* id) {
+        const Module& target = module(id);
+        int index = 0;
+        for (const auto& candidate : host.modules().all()) {
+            if (candidate.get() == &target) return {target.category(), index};
+            if (candidate->category() == target.category()) ++index;
+        }
+        throw std::runtime_error(std::string("Missing input-test module: ") + id);
+    }
+    ImVec2 row(const char* id) {
+        const auto [category, index] = module_row(id);
         const auto r = rect(category);
         return {r.x + gm::px(mt::panel_width * 0.4F, s()),
                 body_top(r) + gm::px(mt::module_height * (static_cast<float>(index) + 0.5F), s())};
     }
     // A point in the first setting of a module, with preceding modules collapsed.
-    ImVec2 first_setting(Category category, int module_index, bool slider = false) {
+    ImVec2 first_setting(const char* id, bool slider = false) {
+        const auto [category, module_index] = module_row(id);
         const auto r = rect(category);
         const float offset = mt::module_height * static_cast<float>(module_index + 1) + mt::setting_gap_top;
         const float inside = slider ? mt::setting_height - mt::slider_track_from_bottom : mt::setting_height * 0.5F;
@@ -1244,10 +1256,16 @@ struct Tester {
         const auto r = rect(category);
         return {r.x + gm::px(mt::panel_width * 0.4F, s()), r.y + gm::px(mt::header_height * 0.5F, s())};
     }
-    Module& module(const char* id) { return *host.modules().find(id); }
+    Module& module(const char* id) {
+        if (Module* found = host.modules().find(id)) return *found;
+        throw std::runtime_error(std::string("Missing input-test module: ") + id);
+    }
     void reset() {
         gui().set_open(true);
-        for (std::size_t i = 0; i < category_count; ++i) gui().set_panel_collapsed(static_cast<Category>(i), false);
+        for (std::size_t i = 0; i < category_count; ++i) {
+            gui().set_panel_collapsed(static_cast<Category>(i), false);
+            gui().set_panel_scroll(static_cast<Category>(i), 0.0F);
+        }
         for (const auto& m : host.modules().all()) gui().set_module_expanded(m->id(), false);
         move(-100.0F, -100.0F);
         settle(host);
@@ -1278,7 +1296,7 @@ int run_input_tests(ScenarioHost& host) {
     {
         Module& fullbright = t.module("demo.fullbright");
         const bool before = fullbright.enabled();
-        const ImVec2 p = t.row(Category::Visual, 0);
+        const ImVec2 p = t.row("demo.fullbright");
         t.left_click(p.x, p.y);
         t.expect(fullbright.enabled() != before, "left click toggles module");
         // Double click: DOWN, UP, DBLCLK (treated as DOWN), UP -> two toggles.
@@ -1337,13 +1355,16 @@ int run_input_tests(ScenarioHost& host) {
         t.frames();
         const ImVec2 front = t.header(Category::Player);
         t.left_click(front.x, front.y); // brings Player to the front
-        const ImVec2 p = t.row(Category::Player, 0);
+        const ImVec2 p = t.row("demo.auto_gg");
         Module& player_first = t.module("demo.auto_gg");
-        Module& movement_first = t.module("demo.toggle_sprint");
         const bool a = player_first.enabled();
-        const bool b = movement_first.enabled();
+        std::vector<std::pair<Module*, bool>> movement_states;
+        for (const auto& module : host.modules().all())
+            if (module->category() == Category::Movement) movement_states.emplace_back(module.get(), module->enabled());
         t.left_click(p.x, p.y);
-        t.expect(player_first.enabled() != a && movement_first.enabled() == b, "overlap: only the front panel reacts");
+        const bool movement_unchanged = std::all_of(movement_states.begin(), movement_states.end(),
+            [](const auto& entry) { return entry.first->enabled() == entry.second; });
+        t.expect(player_first.enabled() != a && movement_unchanged, "overlap: only the front panel reacts");
         const auto player_position = gm::initial_panel_position(static_cast<int>(Category::Player), host.width() / t.s());
         gui.set_panel_position(Category::Player, player_position.x, player_position.y);
     }
@@ -1363,13 +1384,18 @@ int run_input_tests(ScenarioHost& host) {
     // Slider drag keeps its value while the panel scrolls.
     {
         t.reset();
-        for (const auto& m : host.modules().all()) if (m->category() == Category::Visual) gui.set_module_expanded(m->id(), true);
-        gui.set_module_expanded("demo.crosshair", false);
+        bool reached_zoom = false;
+        for (const auto& m : host.modules().all()) {
+            if (m->category() != Category::Visual) continue;
+            reached_zoom = reached_zoom || m->id() == "demo.zoom";
+            gui.set_module_expanded(m->id(), reached_zoom);
+        }
         settle(host);
         Module& zoom = t.module("demo.zoom");
-        // Zoom is row 2; its first setting (Factor slider) starts after the row.
+        // Keep earlier modules collapsed so Factor is visible; later expanded
+        // modules supply the scrollable content used during the slider drag.
         const float s = t.s();
-        const ImVec2 p = t.first_setting(Category::Visual, 2, true);
+        const ImVec2 p = t.first_setting("demo.zoom", true);
         t.move(p.x, p.y);
         t.button(WM_LBUTTONDOWN, p.x, p.y, MK_LBUTTON);
         const float value = zoom.settings()[0].get<float>();
@@ -1392,7 +1418,7 @@ int run_input_tests(ScenarioHost& host) {
         t.reset();
         gui.set_module_expanded("demo.crosshair", true);
         settle(host);
-        const ImVec2 mode = t.first_setting(Category::Visual, 1);
+        const ImVec2 mode = t.first_setting("demo.crosshair");
         t.left_click(mode.x, mode.y);
         const bool opened = gui.overlay_open();
         const ImVec2 h = t.header(Category::Visual);
@@ -1405,7 +1431,7 @@ int run_input_tests(ScenarioHost& host) {
         t.reset();
         gui.set_module_expanded("demo.crosshair", true);
         settle(host);
-        const ImVec2 mode2 = t.first_setting(Category::Visual, 1);
+        const ImVec2 mode2 = t.first_setting("demo.crosshair");
         t.left_click(mode2.x, mode2.y);
         t.key(VK_ESCAPE);
         t.expect(!gui.overlay_open() && gui.open(), "Esc closes the dropdown first");
@@ -1419,7 +1445,7 @@ int run_input_tests(ScenarioHost& host) {
     {
         t.reset();
         Module& fullbright = t.module("demo.fullbright");
-        const ImVec2 p = t.row(Category::Visual, 0);
+        const ImVec2 p = t.row("demo.fullbright");
         const int original = fullbright.keybind();
         t.middle_click(p.x, p.y);
         t.expect(gui.capturing_keybind(), "middle click starts keybind capture");
@@ -1437,7 +1463,7 @@ int run_input_tests(ScenarioHost& host) {
         t.middle_click(p.x, p.y);
         Module& crosshair = t.module("demo.crosshair");
         const bool crosshair_state = crosshair.enabled();
-        const ImVec2 other = t.row(Category::Visual, 1);
+        const ImVec2 other = t.row("demo.crosshair");
         t.left_click(other.x, other.y);
         t.expect(!gui.capturing_keybind() && crosshair.enabled() == crosshair_state && fullbright.keybind() == VK_XBUTTON1,
                  "left click cancels capture and is not passed on");

@@ -30,3 +30,11 @@ are independently implemented here; the upstream SDK and networking source are
 not imported. Native feedback passes a borrowed POD string envelope rather than
 importing game STL types or transferring the DLL's allocations to the game.
 See `docs/commands.md` for the exact boundary and verification limits.
+
+The gameplay bridge additionally uses the same pinned Solstice revision's
+`OffsetProvider.hpp`, actor ECS component layouts, client camera layout,
+`GameMode.hpp`, inventory/block layouts, and Scaffold placement behavior as
+layout/ABI references. ChinaHat, Derp, Aimbot, Killaura, Scaffold, ESP, the
+snapshot interface and ImGui glow renderer are independently implemented here.
+No upstream module, EnTT implementation or game-owned STL type is linked into
+the client. See `docs/gameplay-modules.md` for behavior and validation scope.

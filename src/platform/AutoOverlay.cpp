@@ -9,7 +9,9 @@
 #include <medicon/gui/Ime.hpp>
 #include <medicon/gui/Log.hpp>
 #include <medicon/modules/ClientModules.hpp>
+#include <medicon/modules/GameplayModules.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/BedrockMenu.hpp>
 #include <medicon/sdk/VanillaNavigation.hpp>
 #include <medicon/social/Service.hpp>
@@ -73,6 +75,7 @@ struct ContextScope {
 thread_local bool inside_overlay{};
 thread_local bool inside_present{};
 thread_local bool inside_navigation{};
+thread_local bool inside_gameplay{};
 struct FlagScope {
     bool& flag;
     bool previous;
@@ -150,6 +153,10 @@ public:
     HookManager mouse_hooks;
     HookManager navigation_hooks;
     sdk::BedrockChat bedrock_chat;
+    sdk::BedrockGameplay gameplay;
+    std::atomic_bool gameplay_ready{false};
+    std::chrono::steady_clock::time_point last_game_tick{}; // Under render_mutex.
+    std::string gameplay_diagnostic; // Under render_mutex.
     sdk::BedrockMenu bedrock_menu;
     sdk::VanillaNavigation navigation;
     std::atomic_bool navigation_ready{false};
@@ -510,6 +517,9 @@ public:
         }
         if (context) { ImGui::DestroyContext(context); context = nullptr; }
         window = nullptr;
+        gameplay.clear();
+        last_game_tick = {};
+        gameplay_diagnostic.clear();
         std::lock_guard lock(input_mutex);
         messages.clear();
     }
@@ -1295,6 +1305,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     if (menu_changed) report(main_menu ? "MainMenu active: verified start_screen; native input is blocked." :
         "MainMenu inactive: replacement hidden; native input restored.");
     client->overlay().set_main_menu_active(main_menu);
+    if (main_menu) client->clear_gameplay();
     set_open(client->gui().open() || client->overlay().social().screen_open());
     publish_menu_visible(main_menu);
     const auto current_menu_epoch = menu_epoch.load(std::memory_order_acquire);
@@ -1457,6 +1468,77 @@ void hook_base_tick(void* actor) {
         catch (...) { /* Never interrupt the game's actor update. */ }
     }
     state.base_tick(actor);
+    // The original actor update must finish before reading the current world.
+    // Native mutations stay on this thread; Present only receives copied data.
+    if (state.stopping || inside_gameplay || !state.gameplay_ready.load(std::memory_order_acquire)) return;
+    FlagScope recursion(inside_gameplay);
+    std::unique_lock render(state.render_mutex, std::try_to_lock);
+    if (!render.owns_lock() || !state.client || !state.bedrock_chat.is_local_player(actor)) return;
+    bool wanted = false;
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp"}) {
+        const auto* module = state.client->modules().find(id);
+        if (module && module->enabled()) { wanted = true; break; }
+    }
+    if (!wanted) {
+        state.client->clear_gameplay();
+        state.gameplay.clear();
+        state.last_game_tick = {};
+        return;
+    }
+    struct EndTick {
+        sdk::BedrockGameplay& game;
+        ~EndTick() { game.end_tick(); }
+    } end_tick{state.gameplay};
+    try {
+        const auto* aim = dynamic_cast<AimbotModule*>(state.client->modules().find(AimbotModule::module_id));
+        const auto* aura = dynamic_cast<KillauraModule*>(state.client->modules().find(KillauraModule::module_id));
+        const bool visibility = (aim && aim->enabled() && aim->visible_only.get<bool>()) ||
+            (aura && aura->enabled() && aura->visible_only.get<bool>());
+        if (!state.gameplay.capture(state.bedrock_chat.mouse_client(), actor, visibility)) {
+            state.client->clear_gameplay();
+            state.last_game_tick = {};
+            const auto& diagnostic = state.gameplay.diagnostic();
+            if (!diagnostic.empty() && diagnostic != state.gameplay_diagnostic) {
+                state.report("Gameplay: " + diagnostic);
+                state.gameplay_diagnostic = diagnostic;
+            }
+            return;
+        }
+        const auto* hat = state.client->modules().find("chinahat");
+        const auto* esp = state.client->modules().find("esp");
+        const bool missing_camera = !state.gameplay.frame().projection_ready &&
+            ((hat && hat->enabled()) || (esp && esp->enabled()));
+        if (missing_camera) {
+            const auto& diagnostic = state.gameplay.diagnostic();
+            if (diagnostic != state.gameplay_diagnostic) {
+                state.report("Gameplay: " + diagnostic);
+                state.gameplay_diagnostic = diagnostic;
+            }
+        } else if (!state.gameplay_diagnostic.empty()) {
+            state.report("Gameplay world components ready.");
+            state.gameplay_diagnostic.clear();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const float seconds = state.last_game_tick == std::chrono::steady_clock::time_point{}
+            ? 0.05F : std::clamp(std::chrono::duration<float>(now - state.last_game_tick).count(), 0.001F, 0.1F);
+        state.last_game_tick = now;
+        std::string diagnostic;
+        std::optional<bool> grabbed;
+        {
+            // The window thread owns native mouse transitions and their cached
+            // validation state. Never wait for it while holding render_mutex.
+            std::unique_lock mouse(state.mouse_mutex, std::try_to_lock);
+            if (mouse.owns_lock()) grabbed = state.bedrock_chat.mouse_grabbed(diagnostic);
+        }
+        const bool allow_actions = !state.input_open() && grabbed.value_or(false) &&
+            state.window_focused_cached.load(std::memory_order_acquire);
+        state.client->game_tick(state.gameplay, seconds, allow_actions);
+    } catch (const std::exception& error) {
+        state.client->clear_gameplay();
+        state.report(std::string("Gameplay update: ") + error.what(), true);
+    } catch (...) {
+        state.client->clear_gameplay();
+    }
 }
 
 void hook_grab_mouse(void* client) {
@@ -1573,7 +1655,7 @@ void Runtime::connect_mouse() {
 }
 
 void Runtime::connect_chat_feedback() {
-    if (!chat_installed) return;
+    if (!chat_installed && !gameplay_ready.load(std::memory_order_acquire)) return;
     if (tick_registered) {
         std::string error;
         tick_installed = tick_hooks.enable_all(error);
@@ -1583,11 +1665,11 @@ void Runtime::connect_chat_feedback() {
     std::string previous;
     while (!stopping) {
         std::string diagnostic;
-        const auto target = bedrock_chat.tick_target(diagnostic);
+        const auto target = bedrock_chat.tick_target(diagnostic, !gameplay_ready.load(std::memory_order_acquire));
         if (!diagnostic.empty() && diagnostic != previous) { report(diagnostic); previous = diagnostic; }
         if (target) {
             std::string error;
-            if (!tick_hooks.create("Local player chat feedback", reinterpret_cast<void*>(target),
+            if (!tick_hooks.create("Local player gameplay and chat", reinterpret_cast<void*>(target),
                     reinterpret_cast<void*>(&hook_base_tick), reinterpret_cast<void**>(&base_tick), error)) {
                 report("Native chat feedback hook: " + error, true);
                 return;
@@ -1595,7 +1677,7 @@ void Runtime::connect_chat_feedback() {
             tick_registered = true;
             tick_installed = tick_hooks.enable_all(error);
             if (!tick_installed) report("Native chat feedback hook: " + error, true);
-            else report("Minecraft native chat feedback ready.");
+            else report("Minecraft local-player gameplay and chat tick ready.");
             return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -1897,6 +1979,11 @@ DWORD WINAPI start_worker(void*) {
                 state.menu_diagnostic = diagnostic;
             }
         } catch (const std::exception& error) { state.report(std::string("Native profile preparation failed: ") + error.what(), true); }
+        try {
+            std::string diagnostic;
+            state.gameplay_ready.store(state.gameplay.locate(diagnostic), std::memory_order_release);
+            if (!diagnostic.empty()) state.report("Gameplay: " + diagnostic);
+        } catch (const std::exception& error) { state.report(std::string("Gameplay profile unavailable: ") + error.what(), true); }
         state.report("Native profiles prepared in " + std::to_string(GetTickCount64() - profile_start) + " ms.");
         if (state.stopping) return 0;
         // Created before Present is hooked so the first frame can attach Social

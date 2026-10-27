@@ -52,6 +52,7 @@ add_library(medicon_core STATIC
     src/core/Module.cpp
     src/core/ModuleManager.cpp
     src/core/ConfigStore.cpp
+    src/core/Gameplay.cpp
     ${MEDICON_MODULE_SOURCES})
 medicon_target(medicon_core)
 target_link_libraries(medicon_core PUBLIC nlohmann_json::nlohmann_json)
@@ -77,6 +78,10 @@ if(BUILD_TESTING)
     medicon_target(medicon_core_tests)
     target_link_libraries(medicon_core_tests PRIVATE medicon_core)
     add_test(NAME core COMMAND medicon_core_tests)
+    add_executable(medicon_gameplay_module_tests tests/gameplay_module_tests.cpp)
+    medicon_target(medicon_gameplay_module_tests)
+    target_link_libraries(medicon_gameplay_module_tests PRIVATE medicon_core)
+    add_test(NAME gameplay_modules COMMAND medicon_gameplay_module_tests)
     add_executable(medicon_signature_tests tests/signature_tests.cpp)
     medicon_target(medicon_signature_tests)
     target_link_libraries(medicon_signature_tests PRIVATE medicon_memory)
@@ -124,6 +129,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/EdgeLit.cpp
         src/gui/Fonts.cpp
         src/gui/Glass.cpp
+        src/gui/GameplayVisuals.cpp
         src/gui/Ime.cpp
         src/gui/InjectSplash.cpp
         src/gui/KeyNames.cpp
@@ -155,7 +161,7 @@ if(MEDICON_BUILD_WINDOWS)
     medicon_target(medicon_social_net)
     target_link_libraries(medicon_social_net PUBLIC medicon_social_core winhttp crypt32 winmm shell32 ole32)
 
-    add_library(medicon_bedrock STATIC src/sdk/BedrockChat.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp)
+    add_library(medicon_bedrock STATIC src/sdk/BedrockChat.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp src/sdk/Gameplay.cpp)
     medicon_target(medicon_bedrock)
     target_link_libraries(medicon_bedrock PUBLIC medicon_memory version)
 
@@ -202,6 +208,10 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_bedrock_chat_tests)
         target_link_libraries(medicon_bedrock_chat_tests PRIVATE medicon_bedrock)
         add_test(NAME bedrock_chat COMMAND medicon_bedrock_chat_tests)
+        add_executable(medicon_bedrock_gameplay_tests tests/bedrock_gameplay_tests.cpp)
+        medicon_target(medicon_bedrock_gameplay_tests)
+        target_link_libraries(medicon_bedrock_gameplay_tests PRIVATE medicon_bedrock)
+        add_test(NAME bedrock_gameplay COMMAND medicon_bedrock_gameplay_tests)
         add_executable(medicon_bedrock_menu_tests tests/bedrock_menu_tests.cpp)
         medicon_target(medicon_bedrock_menu_tests)
         target_link_libraries(medicon_bedrock_menu_tests PRIVATE medicon_bedrock)
@@ -216,6 +226,10 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_runtime_tests)
         target_link_libraries(medicon_runtime_tests PRIVATE medicon_runtime)
         add_test(NAME runtime COMMAND medicon_runtime_tests)
+        add_executable(medicon_gameplay_visual_tests tests/gameplay_visual_tests.cpp)
+        medicon_target(medicon_gameplay_visual_tests)
+        target_link_libraries(medicon_gameplay_visual_tests PRIVATE medicon_gui)
+        add_test(NAME gameplay_visuals COMMAND medicon_gameplay_visual_tests)
         add_executable(medicon_dll_tests tests/dll_tests.cpp)
         medicon_target(medicon_dll_tests)
         target_link_libraries(medicon_dll_tests PRIVATE medicon_imgui)

@@ -1,5 +1,7 @@
 #include <medicon/client/Client.hpp>
 #include <medicon/modules/BuiltinModules.hpp>
+#include <medicon/modules/GameplayModules.hpp>
+#include <medicon/gui/GameplayVisuals.hpp>
 #include <medicon/memory/module_view.hpp>
 #include <Windows.h>
 #include <ShlObj.h>
@@ -46,6 +48,7 @@ bool Client::stop() {
     // Save enabled state before shutdown invokes module disable callbacks.
     const bool saved = !config_writable_ || config_.save(modules_, error_);
     modules_.shutdown();
+    clear_gameplay();
     running_ = false;
     return saved;
 }
@@ -53,7 +56,34 @@ bool Client::stop() {
 void Client::tick(float seconds) {
     if (!running_) return;
     if (!std::isfinite(seconds) || seconds < 0.0F) seconds = 0.0F;
+    elapsed_ += seconds;
+    gameplay_age_ += seconds;
+    if (gameplay_age_ > 0.25F) clear_gameplay();
     modules_.tick(seconds);
+}
+
+void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_actions) {
+    if (!running_) return;
+    if (!game.frame().ready) { clear_gameplay(); return; }
+    if (!std::isfinite(seconds) || seconds <= 0.0F) seconds = 0.05F;
+    // The host serializes this game-thread entry point with UI settings edits.
+    // No game-owned pointers are used by tick() or render().
+    if (allow_actions && !capturing_input()) {
+        for (const auto& module : modules_.all()) {
+            if (!module->enabled()) continue;
+            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()))
+                gameplay->game_tick(game, seconds);
+        }
+    }
+    gameplay_frame_ = game.frame();
+    gameplay_age_ = 0.0F;
+}
+
+void Client::clear_gameplay() noexcept {
+    gameplay_frame_.ready = false;
+    gameplay_frame_.projection_ready = false;
+    gameplay_frame_.actors.clear();
+    gameplay_age_ = 1.0F;
 }
 
 bool Client::prepare_frame() {
@@ -63,6 +93,7 @@ bool Client::prepare_frame() {
 
 void Client::render() {
     if (!running_) return;
+    gui::render_gameplay_visuals(modules_, gameplay_frame_, elapsed_);
     modules_.render();
     overlay_.render();
 }
