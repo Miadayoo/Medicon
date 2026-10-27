@@ -1,0 +1,22 @@
+{
+  "modules": {
+    "example": {
+      "enabled": true,
+      "keybind": 82,
+      "settings": {
+        "alignment": 2,
+        "label": "Fixture label",
+        "sample_count": 17,
+        "scale": 1.75,
+        "show_label": false,
+        "tint": [
+          0.25,
+          0.5,
+          0.75,
+          0.5
+        ]
+      }
+    }
+  },
+  "version": 1
+}

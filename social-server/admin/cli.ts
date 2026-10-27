@@ -1,0 +1,205 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { parseArgs } from 'node:util'
+import { loadConfig, loadEnvFile } from '../src/config.ts'
+
+const USAGE = `使い方: npm run admin -- <コマンド> [オプション]
+
+  license:create --name <name>   ユーザーを作成（既にいればキーだけ追加）してキーを発行
+  license:revoke --name <name>   そのユーザーの全キーを無効化し、接続中なら切断
+  license:list                   ユーザーとキーの一覧
+  user:ban --name <name>         BANして、接続中なら切断
+  user:unban --name <name>       BANを解除
+  user:rank --name <name> --rank <owner|user>
+                                 ランクを変更（owner は Social の Admin タブから投稿できる）
+  news:post --kind <news|changelog> --title <title> --body-file <path> [--version <v>]
+                                 お知らせ／Change Logを投稿して全接続に配信`
+
+// Errors meant for the operator: printed without a stack trace.
+class CliError extends Error {}
+
+interface UserRef {
+  id: number
+  name: string
+}
+
+interface LicenseRow {
+  name: string
+  banned: boolean
+  licenseId: number
+  status: string
+  createdAt: number
+  lastUsedAt: number | null
+}
+
+async function main(): Promise<void> {
+  const { positionals, values } = parseArgs({
+    allowPositionals: true,
+    options: {
+      name: { type: 'string' },
+      kind: { type: 'string' },
+      rank: { type: 'string' },
+      title: { type: 'string' },
+      'body-file': { type: 'string' },
+      version: { type: 'string' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  })
+  const command = positionals[0]
+  if (values.help === true || command === undefined) {
+    console.log(USAGE)
+    return
+  }
+
+  loadEnvFile()
+  const config = loadConfig()
+  const admin = adminClient(config.adminPort, config.adminSecret)
+
+  switch (command) {
+    case 'license:create': {
+      const result = await admin.post<{ user: UserRef; createdUser: boolean; key: string }>('/licenses', {
+        name: required(values.name, '--name'),
+      })
+      console.log(
+        result.createdUser
+          ? `ユーザー ${result.user.name} (id=${result.user.id}) を作成しました`
+          : `既存のユーザー ${result.user.name} (id=${result.user.id}) にキーを追加しました`,
+      )
+      console.log(`ライセンスキー: ${result.key}`)
+      console.log('このキーは今回しか表示されません。控えてから本人に渡してください。')
+      break
+    }
+    case 'license:revoke': {
+      const result = await admin.post<{ user: UserRef; revokedKeys: number; kicked: boolean }>('/licenses/revoke', {
+        name: required(values.name, '--name'),
+      })
+      console.log(`${result.user.name} のキーを ${result.revokedKeys} 件無効化しました${result.kicked ? '（接続を切断）' : ''}`)
+      break
+    }
+    case 'license:list': {
+      const result = await admin.get<{ items: LicenseRow[] }>('/licenses')
+      if (result.items.length === 0) {
+        console.log('キーはまだありません')
+        break
+      }
+      printTable(
+        ['name', 'ban', 'key', 'status', 'created', 'last_used'],
+        result.items.map((row) => [
+          row.name,
+          row.banned ? 'BAN' : '-',
+          `#${row.licenseId}`,
+          row.status,
+          formatTime(row.createdAt),
+          row.lastUsedAt === null ? '-' : formatTime(row.lastUsedAt),
+        ]),
+      )
+      break
+    }
+    case 'user:ban': {
+      const result = await admin.post<{ user: UserRef; kicked: boolean }>('/users/ban', {
+        name: required(values.name, '--name'),
+      })
+      console.log(`${result.user.name} をBANしました${result.kicked ? '（接続を切断）' : ''}`)
+      break
+    }
+    case 'user:unban': {
+      const result = await admin.post<{ user: UserRef }>('/users/unban', { name: required(values.name, '--name') })
+      console.log(`${result.user.name} のBANを解除しました`)
+      break
+    }
+    case 'user:rank': {
+      const rank = values.rank
+      if (rank !== 'owner' && rank !== 'user') throw new CliError('--rank には owner か user を指定してください')
+      const result = await admin.post<{ user: UserRef; reconnected: boolean }>('/users/rank', {
+        name: required(values.name, '--name'),
+        rank,
+      })
+      console.log(`${result.user.name} のランクを ${rank} にしました${result.reconnected ? '（接続中のため再接続させました）' : ''}`)
+      break
+    }
+    case 'news:post': {
+      const kind = values.kind
+      if (kind !== 'news' && kind !== 'changelog') throw new CliError('--kind には news か changelog を指定してください')
+      const title = required(values.title, '--title')
+      const body = readBody(required(values['body-file'], '--body-file'))
+      const result = await admin.post<{ item: { id: number } }>('/news', { kind, title, body, version: values.version })
+      console.log(`${kind === 'news' ? 'お知らせ' : 'Change Log'}を投稿しました (id=${result.item.id})`)
+      break
+    }
+    default:
+      throw new CliError(`不明なコマンドです: ${command}\n\n${USAGE}`)
+  }
+}
+
+function required(value: string | undefined, flag: string): string {
+  if (value === undefined || value.trim() === '') throw new CliError(`${flag} を指定してください`)
+  return value
+}
+
+function readBody(path: string): string {
+  // npm runs scripts in the package directory; INIT_CWD is where the command was typed.
+  const fullPath = resolve(process.env.INIT_CWD ?? process.cwd(), path)
+  try {
+    return readFileSync(fullPath, 'utf8').replace(/^﻿/, '')
+  } catch {
+    throw new CliError(`本文ファイルを読めません: ${fullPath}`)
+  }
+}
+
+function adminClient(port: number, secret: string) {
+  const request = async <T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> => {
+    let response: Response
+    try {
+      response = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers:
+          body === undefined ? { 'X-Admin-Secret': secret } : { 'X-Admin-Secret': secret, 'Content-Type': 'application/json' },
+        body: body === undefined ? null : JSON.stringify(body),
+      })
+    } catch {
+      throw new CliError(`管理ポート 127.0.0.1:${port} に接続できません。サーバーが起動しているか確認してください。`)
+    }
+    const data: unknown = await response.json().catch(() => null)
+    if (!response.ok) throw new CliError(describeError(response.status, data))
+    return data as T
+  }
+  return {
+    get: <T>(path: string) => request<T>('GET', path),
+    post: <T>(path: string, body: unknown) => request<T>('POST', path, body),
+  }
+}
+
+function describeError(status: number, data: unknown): string {
+  const code = typeof data === 'object' && data !== null && 'error' in data ? String(data.error) : ''
+  switch (code) {
+    case 'unauthorized':
+      return 'ADMIN_SECRET がサーバーと一致しません。.env を確認してください。'
+    case 'user_not_found':
+      return 'そのユーザーは存在しません。'
+    case 'bad_request':
+      return '入力が不正です。usernameは3〜16文字の英数字と _ です。'
+    default:
+      return `サーバーエラー: HTTP ${status} ${code}`
+  }
+}
+
+function formatTime(ms: number): string {
+  const date = new Date(ms)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return (
+    `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  )
+}
+
+function printTable(header: string[], rows: string[][]): void {
+  const widths = header.map((title, i) => Math.max(title.length, ...rows.map((row) => row[i]?.length ?? 0)))
+  const format = (cells: string[]): string => cells.map((cell, i) => cell.padEnd(widths[i] ?? 0)).join('  ').trimEnd()
+  console.log(format(header))
+  for (const row of rows) console.log(format(row))
+}
+
+main().catch((err: unknown) => {
+  console.error(err instanceof CliError ? err.message : err)
+  process.exitCode = 1
+})

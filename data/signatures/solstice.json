@@ -1,0 +1,580 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/surukotonai/solstice",
+    "commit": "1d7808f52ef4ba6e34a7fbcc65294907a7761611",
+    "path": "src/SDK/SigManager.hpp",
+    "blob_url": "https://github.com/surukotonai/solstice/blob/1d7808f52ef4ba6e34a7fbcc65294907a7761611/src/SDK/SigManager.hpp",
+    "license_status": "no_root_license_found"
+  },
+  "compatibility": "Unverified against a running Minecraft build. Upstream version comments are hints only.",
+  "signatures": [
+    {
+      "name": "Actor_getNameTag",
+      "pattern": "56 48 83 EC ? 48 8B 81 ? ? ? ? 48 85 C0 74 ? 8B 50 ? ? ? ? 29 CA 81 E2 ? ? ? ? 48 8D 05",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 46,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Actor_setNameTag",
+      "pattern": "56 57 48 83 EC ? 48 89 CE 48 8B 89 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? 48 89 D7",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 47,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ClientInstance_mBgfx",
+      "pattern": "4C 8B 35 ? ? ? ? 49 8D 8E",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 50,
+      "upstream_version_hint": "",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "ContainerScreenController_tick",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 48 89 CE 48 8D B9 ? ? ? ? C6 45",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 54,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ContainerScreenController_handleAutoPlace",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 44 89 CE 4C 89 C7 41 89 D6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 55,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ComplexInventoryTransaction_vtable",
+      "pattern": "48 8D 05 ? ? ? ? ? ? ? 48 83 C1 10 E8 ? ? ? ? 85 FF 74 ? BA 68 00 00 00",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 56,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "EnchantUtils_getEnchantLevel",
+      "pattern": "56 57 53 48 81 EC ? ? ? ? 89 CB 48 8B 4A ? 31 F6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 57,
+      "upstream_version_hint": "1.26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "GameMode_getDestroyRate",
+      "pattern": "56 57 48 83 EC ? 0F 29 74 24 ? 48 89 CE 48 8B 49 ? E8 ? ? ? ? 0F 28 F0",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 58,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "HoverTextRenderer_render",
+      "pattern": "55 41 57 41 56 56 57 53 48 81 EC 78 01 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 48 83 79 ? 00",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 59,
+      "upstream_version_hint": "1.21.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "GameMode_baseUseItem",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 81 EC 50 01 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 44 89 C3",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 60,
+      "upstream_version_hint": "1.21.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "GuiData_displayClientMessage",
+      "pattern": "55 56 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 44 88 CB",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 61,
+      "upstream_version_hint": "21.51",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "InventoryTransaction_addAction",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 48 89 D7 48 89 CE ? ? 41 89 C7",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 62,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemStack_vTable",
+      "pattern": "48 8D 05 ? ? ? ? ? ? ? 0F B6 81 ? ? ? ? FE C8 3C ? 77 ? 48 8D 91 ? ? ? ? 48 8B 81 ? ? ? ? ? ? ? 48 89 CE 48 89 D1 31 D2 FF 15 ? ? ? ? 48 89 F1 48 83 C4 ? 5E E9 ? ? ? ? ? ? ? ? ? ? ? ? 55",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 63,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemStack_getCustomName",
+      "pattern": "56 57 48 83 EC 28 48 89 D6 48 8B 41 ? 48 85 C0 74 ? 48 89 CF",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 64,
+      "upstream_version_hint": "1.26.0",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemUseInventoryTransaction_vtable",
+      "pattern": "48 89 85 ? ? ? ? 8B 45 ? 89 85 ? ? ? ? C6 85 ? ? ? ? ? 0F B6 45",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 65,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemUseOnActorInventoryTransaction_vtable",
+      "pattern": "48 8D 05 ? ? ? ? ? ? ? 48 B8 00 00 00 00 FF FF FF FF 48 89 41 ? 48 C7 81 ? ? ? ? 00 00 00 00 66 C7 81 ? ? ? ? 00 00 48 8D 05 ? ? ? ? 48 89 41 ? C6 81 ? ? ? ? 00 C7 81 ? ? ? ? 00 00 00 00 C6 81 ? ? ? ? 00 C7 81 ? ? ? ? 00 00 00 00 0F 11 81 ? ? ? ? 48 C7 81 ? ? ? ? 00 00 00 00 48 C7 81 ? ? ? ? 0F 00 00 00 0F 11 81 ? ? ? ? 48 C7 81 ? ? ? ? 00 00 00 00 4D 89 F0 ? ? ? 49 8B 46 ? 48 8D 0D ? ? ? ? 49 89 4E ? 48 39 C8 49 89 D9 48 89 FA 48 89 F1 75 ? 49 8B 40 ? EB ? 31 C0 49 89 40 ? 48 83 C4 38 5B 5F 5E 41 5E 41 5F 5D E9 ? ? ? ? B9 F0 00 00 00 31 D2 E8 ? ? ? ? E9 ? ? ? ? 66 2E 0F 1F 84 00 ? ? ? ? 48 89 54 24 ? 55 41 57 41 56 56 57 53 48 83 EC 28 48 8D 6A ? BA F0 00 00 00 48 8B 4D ? E8 ? ? ? ? 90 48 83 C4 28 5B 5F 5E 41 5E 41 5F 5D C3 CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 56",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 66,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemReleaseInventoryTransaction_vtable",
+      "pattern": "48 8D 05 ? ? ? ? 48 89 41 ? C6 81 ? ? ? ? 00 C7 81 ? ? ? ? 00 00 00 00 C6 81 ? ? ? ? 00 C7 81 ? ? ? ? 00 00 00 00 0F 11 81 ? ? ? ? 48 C7 81 ? ? ? ? 00 00 00 00 48 C7 81 ? ? ? ? 0F 00 00 00 48 C7 81 ? ? ? ? 00 00 00 00 C7 81 ? ? ? ? 00 00 00 00 48 89 8D",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 67,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "MinecraftGame_instance",
+      "pattern": "48 89 15 ? ? ? ? 49 8B 40",
+      "resolution": "relative32",
+      "displacement_offset": 3,
+      "source_line": 70,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "MinecraftPackets_createPacket",
+      "pattern": "56 48 83 EC 20 48 89 CE 81 FA 61 01 00 00",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 71,
+      "upstream_version_hint": "1.26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Mob_JumpFromGroundRequestComponentPatch",
+      "pattern": "C7 46 ? ? ? ? ? 48 83 C4 ? 5F 5E C3 41 57",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 74,
+      "upstream_version_hint": "",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "Mob_getCurrentSwingDuration",
+      "pattern": "55 56 48 83 EC ? 48 8D 6C 24 ? 48 C7 45 ? ? ? ? ? 48 89 CE 8B 05 ? ? ? ? 8B 0D ? ? ? ? 65 48 8B 14 25 ? ? ? ? ? ? ? ? 3B 81 ? ? ? ? 7F ? ? ? ? 48 8B 80 ? ? ? ? 48 8D 15 ? ? ? ? 48 89 F1 FF 15 ? ? ? ? 48 85 C0 74 ? F3 0F 10 40 ? F3 0F 59 05 ? ? ? ? F3 48 0F 2C C0",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 75,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "MouseDevice_feed",
+      "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC ? 44 89 CF 44 89 C3 89 D5 48 89 CE 44 0F B7 A4 24",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 76,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "NetworkStackItemDescriptor_ctor",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 83 EC 60 48 8D 6C 24 ? 48 C7 45 ? FE FF FF FF 48 89 D6 49 89 CF",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 77,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "PlayerMovement_clearInputStateInlined",
+      "pattern": "75 ? 48 89 6C 24 ? 8B 44 24",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 78,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "PlayerMovement_clearInputStateInlined2",
+      "pattern": "E9 ? ? ? ? 48 8D 0D ? ? ? ? 4C 89 CB 49 89 D6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 79,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "PlayerMovement_clearInputStateInlined3",
+      "pattern": "0F 84 ? ? ? ? 48 89 BC 24 ? ? ? ? ? ? ? ? ? 0F 29 44 24",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 80,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "RakNet_RakPeer_runUpdateCycle",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 B8 ? ? ? ? E8 ? ? ? ? 48 29 C4 48 8D AC 24 ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 48 89 95 ? ? ? ? 49 89 CF",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 82,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "RakNet_RakPeer_sendImmediate",
+      "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC ? ? ? ? 44 89 CF 44 89 C3",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 83,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ScreenView_setupAndRender",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 B8 ? ? ? ? E8 ? ? ? ? 48 29 C4 48 8D AC 24 ? ? ? ? 44 0F 29 BD ? ? ? ? 44 0F 29 B5 ? ? ? ? 44 0F 29 AD ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 48 89 95 ? ? ? ? 48 89 CE",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 84,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "SimulatedPlayer_simulateJump",
+      "pattern": "56 57 48 83 EC ? 48 89 CE 48 8B 01 48 8B 80 ? ? ? ? FF 15 ? ? ? ? 84 C0 0F 84",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 85,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemInHandRenderer_render_bytepatch",
+      "pattern": "F3 0F 59 0D ? ? ? ? 0F 57 C0 F3 41 0F 10 74 24",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 86,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "SneakMovementSystem_tickSneakMovementSystem",
+      "pattern": "83 E1 ? 88 48",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 87,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "SneakMovementSystem_tickSneakMovementSystem2",
+      "pattern": "? ? ? 83 E1 ? 41 89 CA ? ? ? 44 88 50",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 88,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ConnectionRequest_create",
+      "pattern": "55 41 57 41 56 56 57 53 48 81 EC B8 01 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 4C 89 CB",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 89,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "CameraDirectLookSystemUtil_handleLookInput",
+      "pattern": "56 48 83 EC 30 0F 29 74 24 ? 4C 89 C6 F3 0F 10 05",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 91,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "ItemRenderer_render",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? ? ? ? 48 85 F6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 92,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "BlockSource_fireBlockChanged",
+      "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC ? 48 8B 81 ? ? ? ? 48 39 81 ? ? ? ? 0F 84 ? ? ? ? 4C 89 CE",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 98,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ActorAnimationControllerPlayer_applyToPose",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4D 89 CD",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 99,
+      "upstream_version_hint": "1.21.80",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "JSON_parse",
+      "pattern": "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 41 56 48 83 EC ? 48 83 7A",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 100,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ConcreteBlockLegacy_getCollisionShapeForCamera",
+      "pattern": "41 56 56 57 53 48 81 EC ? ? ? ? 44 0F 29 9C 24 ? ? ? ? 44 0F 29 94 24 ? ? ? ? 44 0F 29 8C 24 ? ? ? ? 44 0F 29 44 24",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 104,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "WaterBlockLegacy_getCollisionShapeForCamera",
+      "pattern": "48 89 D0 0F 57 C0 ? ? ? 48 C7 42 ? 00 00 00 00 C3",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 105,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ActorShaderManager_setupShaderParameters",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 BD ? ? ? ? 44 0F 29 B5 ? ? ? ? 44 0F 29 AD ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4D 89 CE 4C 89 C3 48 89 95 ? ? ? ? F3 44 0F 10 B5",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 106,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ResourcePackManager_composeFullStackBp",
+      "pattern": "0F 85 ? ? ? ? 48 83 BD ? ? ? ? ? 75 ? 48 83 BD",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 110,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ClientInstance_isPreGame",
+      "pattern": "48 83 EC ? ? ? ? 48 8B 80 ? ? ? ? FF 15 ? ? ? ? 48 85 C0 0F 94 C0",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 111,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "tickEntity_ItemUseSlowdownModifierComponent",
+      "pattern": "56 57 53 48 83 EC 40 0F 29 74 24 ? 4C 89 C6 48 89 CF",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 113,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "checkBlocks",
+      "pattern": "48 8D 1D ? ? ? ? 48 89 5C 24 ? C6 44 24 ? 00 48 C7 44 24 ? 00 00 00 00",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 115,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Unknown_renderBlockOverlay",
+      "pattern": "0F 84 ? ? ? ? 48 8D 45 ? 48 89 44 24 ? 48 8D 4D ? 4C 89 E2",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 120,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Unknown_renderNametag",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4C 89 8D ? ? ? ? 4D 89 C7",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 122,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Reach",
+      "pattern": "0F 2E 3D ? ? ? ? 76 ? F3 0F 10 3D ? ? ? ? 31 F6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 123,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "BlockReach",
+      "pattern": "F3 0F 10 05 ? ? ? ? EB ? 48 8B 79",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 124,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "GetSpeedInAirWithSprint",
+      "pattern": "41 C7 40 ? ? ? ? ? 31 C0",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 125,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ConnectionRequest_create_DeviceModel",
+      "pattern": "? ? ? 48 83 C2 ? 48 8D 8D ? ? ? ? E8 ? ? ? ? 48 8D 15",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 126,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ConnectionRequest_create_DeviceOS",
+      "pattern": "FF 15 ? ? ? ? 89 C2 48 8D 8D ? ? ? ? E8 ? ? ? ? 48 8D 15 ? ? ? ? 48 8D 8D ? ? ? ? E8 ? ? ? ? 48 89 C1",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 127,
+      "upstream_version_hint": "",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "ConnectionRequest_create_DefaultInputMode",
+      "pattern": "? ? ? 48 8B 80 ? ? ? ? FF 15 ? ? ? ? 31 C9 83 F8 ? 0F 94 C1 8D 0C 4D",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 128,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "TapSwingAnim",
+      "pattern": "F3 44 0F 59 35 ? ? ? ? 48 C7 45",
+      "resolution": "relative32",
+      "displacement_offset": 5,
+      "source_line": 133,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Unknown_updatePlayerFromCamera",
+      "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC ? ? ? ? 44 0F 29 94 24 ? ? ? ? 44 0F 29 8C 24 ? ? ? ? 44 0F 29 84 24 ? ? ? ? 0F 29 BC 24 ? ? ? ? 0F 29 B4 24 ? ? ? ? 4C 89 C6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 134,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "FluxSwing",
+      "pattern": "F3 45 0F 11 4C 24 ? F3 41 0F 11 54 24",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 136,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "BobHurt",
+      "pattern": "56 57 55 53 48 81 EC ? ? ? ? 44 0F 29 84 24 ? ? ? ? 0F 29 BC 24 ? ? ? ? 0F 29 B4 24 ? ? ? ? 0F 28 F2",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 137,
+      "upstream_version_hint": "26.51",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "CameraComponent_applyRotation",
+      "pattern": "7E ? 0F 57 FF F3 0F 2A F8",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 138,
+      "upstream_version_hint": "",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "GetCollisionShapeActorProxy_getFeetAttachPos",
+      "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC ? 0F 29 74 24 ? 44 89 C7",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 139,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "Actor_canSee",
+      "pattern": "41 57 41 56 56 57 53 48 81 EC ? ? ? ? 44 89 C3 48 89 D6 48 89 CF 48 8B 89 ? ? ? ? 8B 41 ? 66 66 66 66 66 66 2E 0F 1F 84 00 ? ? ? ? 8D 50 ? F0 0F B1 51 ? 75 ? 4C 8B B7 ? ? ? ? 4C 8B BF ? ? ? ? 4D 85 FF 74 ? F0 41 FF 4F ? 75 ? ? ? ? ? ? ? 4C 89 F9 FF 15 ? ? ? ? F0 41 FF 4F ? 75 ? ? ? ? 48 8B 40 ? 4C 89 F9 FF 15 ? ? ? ? ? ? ? 48 8B 40 ? 4C 89 F1 FF 15 ? ? ? ? 49 89 C6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 140,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "ItemInHandRenderer_renderItem_bytepatch2",
+      "pattern": "8B 40 ? 89 86 ? ? ? ? F3 0F 10 9E",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 146,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    },
+    {
+      "name": "LevelRenderer_renderLevel",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 AD ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4D 89 C6 48 89 D6",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 153,
+      "upstream_version_hint": "",
+      "upstream_uncertain": false
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+/.reference/
+/.tools/
+/out/
+/build/
+/.vs/
+/.idea/
+/CMakeUserPresets.json
+*.user
+*.log
+imgui.ini
+/claude.exe

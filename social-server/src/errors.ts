@@ -1,0 +1,17 @@
+// Error codes shared with the client (spec 2.5). Change the spec before adding one.
+export type ErrorCode =
+  | 'invalid_key'
+  | 'revoked'
+  | 'banned'
+  | 'unauthorized'
+  | 'rate_limited'
+  | 'empty'
+  | 'too_long'
+  | 'not_friends'
+  | 'user_not_found'
+  | 'already_friends'
+  | 'request_exists'
+  | 'self'
+  | 'bad_request'
+  | 'forbidden'
+  | 'internal'
