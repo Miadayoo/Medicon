@@ -4,3 +4,5 @@ data/
 backups/
 logs/
 .env
+releases/
+keys/

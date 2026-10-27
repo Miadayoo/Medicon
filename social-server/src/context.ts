@@ -1,5 +1,6 @@
 import type { Db } from './db/db.ts'
 import { LIMITS, RateLimiter } from './ratelimit.ts'
+import type { ReleaseStore } from './services/releases.ts'
 import { createHandlers } from './ws/handlers.ts'
 import { Hub } from './ws/hub.ts'
 
@@ -12,11 +13,14 @@ export interface AppContext {
   hub: Hub
   now: () => number
   limits: { auth: RateLimiter; global: RateLimiter; dm: RateLimiter; friend: RateLimiter }
+  // Null when RELEASE_SIGNING_KEY / PUBLIC_BASE_URL are not configured.
+  releases: ReleaseStore | null
 }
 
 export interface ContextOptions {
   now?: () => number
   idleTimeoutMs?: number
+  releases?: ReleaseStore | null
 }
 
 export function createContext(db: Db, options: ContextOptions = {}): AppContext {
@@ -24,6 +28,7 @@ export function createContext(db: Db, options: ContextOptions = {}): AppContext 
   const ctx: AppContext = {
     db,
     now,
+    releases: options.releases ?? null,
     hub: new Hub({ now, idleTimeoutMs: options.idleTimeoutMs ?? IDLE_TIMEOUT_MS }),
     limits: {
       auth: new RateLimiter(LIMITS.auth),

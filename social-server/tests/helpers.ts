@@ -4,6 +4,7 @@ import { createAdminApp } from '../src/admin/server.ts'
 import { createApp } from '../src/app.ts'
 import { createContext, type AppContext } from '../src/context.ts'
 import { openDb } from '../src/db/db.ts'
+import type { ReleaseStore } from '../src/services/releases.ts'
 
 export const ADMIN_SECRET = 'test-admin-secret-0123456789'
 
@@ -43,10 +44,16 @@ export interface TestServer {
   close(): Promise<void>
 }
 
-export async function startServer(options: { idleTimeoutMs?: number } = {}): Promise<TestServer> {
+export async function startServer(
+  options: { idleTimeoutMs?: number; releases?: ReleaseStore | null } = {},
+): Promise<TestServer> {
   const clock = { offset: 0 }
   const db = openDb(':memory:')
-  const ctx = createContext(db, { now: () => Date.now() + clock.offset, idleTimeoutMs: options.idleTimeoutMs })
+  const ctx = createContext(db, {
+    now: () => Date.now() + clock.offset,
+    idleTimeoutMs: options.idleTimeoutMs,
+    releases: options.releases ?? null,
+  })
   const app = createApp(ctx)
   const adminApp = createAdminApp(ctx, ADMIN_SECRET)
   await app.listen({ host: '127.0.0.1', port: 0 })

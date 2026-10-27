@@ -13,7 +13,9 @@
     "admin": "node admin/cli.ts",
     "test-client": "node tools/test-client.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release:keygen": "node tools/release-keygen.ts",
+    "release:sign": "node tools/release-sign.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

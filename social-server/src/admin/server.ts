@@ -7,7 +7,9 @@ import type { AppContext } from '../context.ts'
 import type { Db } from '../db/db.ts'
 import type { ErrorCode } from '../errors.ts'
 import { installErrorHandlers, sendError } from '../http/common.ts'
+import { publishRelease, RELEASE_BODY_LIMIT, registerReleaseParser } from '../http/routes/releases.ts'
 import { createNews, newsInput } from '../services/news.ts'
+import { parseReleaseUpload } from '../services/releases.ts'
 import { createUser, findUserByName, setBanned, setRank, USERNAME_PATTERN, type User, type UserRef } from '../services/users.ts'
 
 const nameBody = z.object({ name: z.string().regex(USERNAME_PATTERN) })
@@ -93,6 +95,17 @@ export function createAdminApp(ctx: AppContext, secret: string): FastifyInstance
     const item = createNews(ctx.db, body.data, ctx.now())
     ctx.hub.broadcast({ t: 'news.new', item })
     return { item }
+  })
+
+  // release:publish from the CLI: the same one-step DLL + Change Log as owners.
+  registerReleaseParser(app)
+  app.post('/releases', { bodyLimit: RELEASE_BODY_LIMIT }, async (request, reply) => {
+    if (!Buffer.isBuffer(request.body)) return sendError(reply, 400, 'bad_release')
+    const upload = parseReleaseUpload(request.body)
+    if (!upload) return sendError(reply, 400, 'bad_release')
+    const outcome = await publishRelease(ctx, upload.metadata, upload.dll)
+    if (!outcome.ok) return sendError(reply, outcome.status, outcome.error)
+    return { manifest: outcome.manifest, item: outcome.item }
   })
 
   return app
