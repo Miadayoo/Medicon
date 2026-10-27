@@ -179,6 +179,19 @@ void SocialUi::draw(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo&
     }
 }
 
+void SocialUi::update_sign_in_gate() {
+    if (!startup_sign_in_ || !channel_ || !store_.state_known()) return;
+    using social::ConnectionState;
+    // A saved key that is still being tried, or a server that cannot be reached,
+    // does not gate: only no key, or a key the server refused.
+    const auto state = store_.state();
+    if (state == ConnectionState::NoLicense || state == ConnectionState::AuthFailed) gate_ = true;
+    if (!gate_) return;
+    // Keep it up whatever closed it; showing_login() draws the key form.
+    if (!screen_.opened()) open_screen(SocialView::Home);
+    screen_.set_locked(true);
+}
+
 SocialUi::Timing SocialUi::take_timing() noexcept { return std::exchange(timing_, {}); }
 
 void SocialUi::add_time(std::chrono::steady_clock::time_point start) noexcept {
@@ -188,11 +201,24 @@ void SocialUi::add_time(std::chrono::steady_clock::time_point start) noexcept {
 void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_menu) {
     const bool changed = store_.apply(event);
     screen_.on_event(event);
+    if (const auto* login = std::get_if<social::LoginFinished>(&event); login && login->ok && gate_) {
+        // The key was accepted: on to the Main Menu (or the game) under the panel.
+        gate_ = false;
+        screen_.set_locked(false);
+        screen_.close();
+    }
     std::visit([&](const auto& value) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, social::SessionStarted>) {
             screen_fonts_.request(SocialText::Body, value.me.name);
             screen_fonts_.request(SocialText::Title, value.me.name);
+            if (startup_sign_in_ && !std::exchange(welcomed_, true)) {
+                Toast toast;
+                toast.kind = ToastKind::System;
+                toast.title = "Medicon Social";
+                toast.body = one_line("Welcome to " + value.me.name);
+                notify(std::move(toast), fonts, in_menu, true);
+            }
             // Spec 2.6: reload what the views show after every (re)connect: news,
             // friends, and the newest 50 of every conversation already loaded
             // (merged by id with what is shown).
@@ -261,6 +287,9 @@ void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_
         } else if constexpr (std::is_same_v<T, social::FriendUpdated>) {
             screen_fonts_.request(SocialText::Body, value.user.name);
         } else if constexpr (std::is_same_v<T, social::StateChanged>) {
+            // The next account (or the same one after a new key) is greeted again.
+            if (value.state == social::ConnectionState::NoLicense || value.state == social::ConnectionState::AuthFailed)
+                welcomed_ = false;
             if (!changed) return;
             if (const char* message = state_message(value)) {
                 Toast toast;

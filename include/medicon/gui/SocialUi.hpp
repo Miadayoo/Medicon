@@ -27,7 +27,16 @@ public:
     void open_screen(SocialView view = SocialView::Home);
     // Home with the News or Change Log tab selected.
     void open_news(social::NewsKind kind);
-    void close_screen() noexcept { screen_.close(); }
+    // The sign-in gate stays up even when the Main Menu goes away under it.
+    void close_screen() noexcept { if (!gate_) screen_.close(); }
+    // The injected client's startup sign-in: after the inject intro, an account
+    // without a working key gets the sign-in panel, which cannot be closed until
+    // a key is accepted, and every sign-in greets with "Welcome to {name}".
+    // Off in Preview scenarios unless they ask for it.
+    void set_startup_sign_in(bool enabled) noexcept { startup_sign_in_ = enabled; }
+    // Once per frame after the intro (Overlay::render).
+    void update_sign_in_gate();
+    bool sign_in_gate_active() const noexcept { return gate_; }
     bool screen_open() const noexcept { return screen_.opened(); }
     bool screen_visible() const noexcept { return screen_.visible(); }
     // Fully open: the backdrop covers everything drawn before it.
@@ -95,6 +104,10 @@ private:
     TextureHost* texture_host_ = nullptr;
     bool glyphs_requested_ = false;
     bool badge_preview_ = false;
+    bool startup_sign_in_ = false;
+    bool gate_ = false;
+    // A sign-in was already greeted; reconnects keep it, losing the account resets it.
+    bool welcomed_ = false;
     double backdrop_time_ = 0.0;
     ImeBridge* ime_ = nullptr;
     std::vector<social::Event> scratch_;

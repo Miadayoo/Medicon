@@ -822,6 +822,52 @@ void social_admin_focus(ScenarioHost& host, bool capture) {
     host.log("milestone admin_focus");
 }
 
+// The injected client's startup sign-in: after the intro, no key means the
+// sign-in panel, which Esc cannot close; an accepted key goes to the Main Menu
+// and greets with "Welcome to {name}".
+void social_sign_in_gate(ScenarioHost& host, bool capture) {
+    auto& channel = social_mock(host, false, false);
+    auto& ui = host.overlay().social();
+    ui.set_startup_sign_in(true);
+    channel.events.push(social::StateChanged{social::ConnectionState::NoLicense, {}});
+    social_settle(host);
+    if (!ui.screen_open() || !ui.sign_in_gate_active() || !ui.screen().showing_login(ui.store()))
+        throw std::runtime_error("no sign-in panel without a key");
+    host.send(WM_KEYDOWN, VK_ESCAPE, 1); host.frame();
+    host.send(WM_KEYUP, VK_ESCAPE, static_cast<LPARAM>(0xC0000001)); host.frame();
+    host.overlay().set_main_menu_active(false);
+    host.overlay().set_main_menu_active(true);
+    host.frame();
+    if (!ui.screen_open()) throw std::runtime_error("the sign-in gate was closed without a key");
+    if (capture) host.capture("gate");
+    type_text(host, L"MDC-TEST-TEST-TEST-TEST");
+    press_enter(host);
+    auto command = channel.commands.pop(std::chrono::steady_clock::now());
+    if (!command || !std::holds_alternative<social::Login>(*command)) throw std::runtime_error("the gate did not sign in");
+    channel.events.push(social::LoginFinished{true, {}});
+    channel.events.push(social::StateChanged{social::ConnectionState::Connecting, {}});
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User"}, 0});
+    channel.events.push(social::StateChanged{social::ConnectionState::Online, {}});
+    wait_frames(host, 0.5F);
+    if (ui.screen_open() || ui.sign_in_gate_active() || !host.overlay().main_menu().active())
+        throw std::runtime_error("an accepted key did not go to the Main Menu");
+    const auto welcomed = [&] {
+        for (const auto& entry : ui.toasts().visible())
+            if (entry.toast.body == "Welcome to Preview User") return true;
+        return false;
+    };
+    if (!welcomed()) throw std::runtime_error("no Welcome notification after signing in");
+    // A reconnect is not a new sign-in.
+    wait_frames(host, 5.0F);
+    channel.events.push(social::StateChanged{social::ConnectionState::Reconnecting, {}});
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User"}, 0});
+    channel.events.push(social::StateChanged{social::ConnectionState::Online, {}});
+    wait_frames(host, 0.5F);
+    if (welcomed() || ui.screen_open()) throw std::runtime_error("a reconnect greeted again or gated");
+    if (capture) host.capture("menu");
+    host.log("milestone sign_in_gate");
+}
+
 // A Change Log whose lines start with +, - and *, shown with coloured marks.
 void social_changelog_marks(ScenarioHost& host, bool capture) {
     auto& channel = social_mock(host, true, false);
@@ -1072,6 +1118,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_live_chat", social_live_chat},
         {"social_admin", social_admin},
         {"social_admin_focus", social_admin_focus},
+        {"social_sign_in_gate", social_sign_in_gate},
         {"social_changelog_marks", social_changelog_marks},
         {"social_global", social_global},
         {"social_dm", social_dm},

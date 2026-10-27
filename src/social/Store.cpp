@@ -118,6 +118,7 @@ bool SocialStore::apply(const Event& event) {
     return std::visit([this](const auto& value) -> bool {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, StateChanged>) {
+            state_known_ = true;
             const bool forget_account = value.state == ConnectionState::NoLicense || value.state == ConnectionState::AuthFailed;
             const bool changed = state_ != value.state || state_reason_ != value.reason || (forget_account && me_.has_value());
             if (!changed) return false;

@@ -54,6 +54,15 @@ Medicon Social のクライアント側です。ログイン、ホームのお�
 - 右上の小さなバッジ（`theme::social::alert`）は、未読の DM か未処理のフレンド申請があるときに出ます（`SocialStore::attention()`）。
 - メニュー中に通知をクリックすると、その内容の画面が開きます。お知らせは Home の News タブ、Change Log は Change Log タブ、DM はその相手との DM、フレンド申請はフレンド画面、接続についての通知は Home です。
 
+### 起動時のサインイン（DLL）
+
+- inject時のアニメーションが終わった後、キーが無い（`NoLicense`）かサーバーに拒否された（`AuthFailed`）ときは、サインイン画面を自動で出します。
+- この画面は Esc でも × でも閉じられません。キーが受理される（`LoginFinished` が成功）と閉じ、下のメインメニュー（ワールド内で inject したときはゲーム）に戻ります。
+- 保存済みのキーで認証中のとき、サーバーにつながらず再接続待ちのときは出しません。
+- 後でサインアウトしたり、キーが revoke・BAN されたりしたときも、同じ画面がまた出ます。
+- サインインするたびに（キーを入力したときも、保存済みキーで自動サインインしたときも）、`Medicon Social` の通知で `Welcome to {名前}` を出します。再接続では出しません。
+- Preview のシナリオでは既定で無効です（`SocialUi::set_startup_sign_in`）。`social_sign_in_gate` で確認します。
+
 ### 開いている間
 
 - 閉じるのは Esc か右上の ×（× は仕様にない追加です）。パネルの外をクリックしても閉じません。
@@ -229,6 +238,7 @@ Minecraft なしで確かめられます。`--size 1920x1080 --screenshot out.pn
 | `social_friend_remove` | 右クリックの「Remove friend」と確認 |
 | `social_admin` | owner の Admin タブで Change Log を書き、警告を経て投稿（`PostNews` が確認後にだけ出る） |
 | `social_changelog_marks` | Change Log の `+` `-` `*` の色分け |
+| `social_sign_in_gate` | 起動時のサインイン：閉じられないこと、受理後にメインメニューへ戻ること、Welcome 通知、再接続では出ないこと |
 | `social_login_states` | サインインの入力欄のフォーカス、Sign in ボタンのホバーと押下 |
 | `social_animation` | 開く 0/70/140/220 ms、閉じる 0/50/90/140 ms（`--fixed-dt 0.01` で時刻ちょうど） |
 | `social_typing` | 入力アニメーション 0/30/60/120/180/300 ms と、秒間15文字の連打（`--fixed-dt 0.01`） |
@@ -290,7 +300,7 @@ Preview が1人（dll）、スクリプトが bob・cat・eve として WebSocke
 1. `social-server` を起動し、`npm run admin -- license:create --name <name>` でキーを発行する。
 2. Cloudflare Tunnel で `medicon.auau1000.com` をサーバーの `http://127.0.0.1:8787` に転送する。クライアント側で接続先を設定する必要はない。
 3. Minecraft に DLL を読み込み、`inject.log` に `Social:` の行が出ることを確認する。
-4. メインメニュー下端の Social ボタンで画面を開き、発行したキーを入力して Sign in。ホームにお知らせと Change Log が出ることを確認する。
+4. inject のアニメーションの後に出るサインイン画面で、発行したキーを入力して Sign in。メインメニューに戻り、`Welcome to {名前}` の通知が出ることを確認する。Social ボタンで画面を開き、ホームにお知らせと Change Log が出ることを確認する。
 5. `npm run admin -- news:post ...` で、メインメニューとゲーム中のそれぞれで通知が出ること、メニュー中に通知をクリックすると該当するタブが開くことを確認する。
 6. サーバーを止めて起動し直し、`Social: reconnecting` → `Social: online` になることを確認する。
 7. `debugTiming` を `true` にして、上の FPS の比較をする。

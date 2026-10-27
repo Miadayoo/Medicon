@@ -1265,7 +1265,10 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         ClickGui::apply_theme();
         client = std::make_unique<Client>(config_path);
         client->overlay().set_owns_font_atlas(true);
-        if (social) client->overlay().set_social(&social->channel(), &social::play_notification_sound);
+        if (social) {
+            client->overlay().set_social(&social->channel(), &social::play_notification_sound);
+            client->overlay().social().set_startup_sign_in(true);
+        }
         client->overlay().set_ime(&ime);
         if (!client->start()) { report(client->last_error(), true); status = 4; return false; }
     }
