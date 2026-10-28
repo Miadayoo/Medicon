@@ -51,8 +51,8 @@ ProbeTargets resolve_probe_targets(std::uint32_t timestamp, std::uint32_t image_
     std::span<const memory::MemoryRegion> regions, memory::AddressRange image, std::string& diagnostic) {
     // PE identity from the original executable recorded in custom_model_ida_report.md.
     // This is a version/profile gate, not a claim that a loaded image was SHA-256 verified.
-    if (timestamp != 0x6AB54E37 || image_size != 0x12C02000) {
-        diagnostic = "P0 probe withheld: PE identity differs from the IDA evidence.";
+    if (!native::known_image(timestamp, image_size)) {
+        diagnostic = native::image_mismatch("P0 probe", timestamp, image_size);
         return {};
     }
     constexpr std::array definitions{

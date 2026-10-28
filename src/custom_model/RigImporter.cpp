@@ -14,7 +14,7 @@ namespace medicon::custom_model {
 namespace {
 using Json=nlohmann::json;
 using Bytes=std::vector<std::byte>;
-constexpr std::string_view rig_version="medicon-rig-p3-v3-ufbx-0.20.1";
+constexpr std::string_view rig_version="medicon-rig-p3-v4-ufbx-0.20.1";
 constexpr std::size_t max_bones=512,max_bindings=2048,max_vertices=500000,max_samples=4000000;
 Affine convert(const ufbx_matrix& m,float scale) { Affine out;for(unsigned c=0;c<4;++c)for(unsigned r=0;r<3;++r)out.v[c*4+r]=static_cast<float>(m.cols[c].v[r])*(c==3?scale:1);return out; }
 Transform convert(const ufbx_transform& t,float scale) { return {{float(t.translation.x*scale),float(t.translation.y*scale),float(t.translation.z*scale)},
@@ -136,7 +136,7 @@ void load_animation_asset(const std::filesystem::path& root,std::span<const std:
         if(cache_part==cache.end()||_wcsicmp(root_part->c_str(),cache_part->c_str()))throw std::runtime_error("Rig cache escapes the model directory.");
     if(auto cached=read_cache(cache,model)){publish(cached);return;}
     std::unique_ptr<ufbx_scene,decltype(&ufbx_free_scene)> owned(nullptr,ufbx_free_scene);auto* scene=static_cast<const ufbx_scene*>(loaded_scene);
-    if(!scene){ufbx_load_opts opts{};opts.target_axes=ufbx_axes_right_handed_y_up;opts.target_unit_meters=1;opts.generate_missing_normals=true;opts.evaluate_skinning=true;opts.temp_allocator.memory_limit=256*1024*1024;opts.result_allocator.memory_limit=256*1024*1024;owned.reset(ufbx_load_memory(fbx.data(),fbx.size(),&opts,nullptr));scene=owned.get();}
+    if(!scene){ufbx_load_opts opts{};opts.target_axes=ufbx_axes_right_handed_y_up;opts.target_unit_meters=1;opts.inherit_mode_handling=UFBX_INHERIT_MODE_HANDLING_COMPENSATE;opts.generate_missing_normals=true;opts.evaluate_skinning=true;opts.temp_allocator.memory_limit=256*1024*1024;opts.result_allocator.memory_limit=256*1024*1024;owned.reset(ufbx_load_memory(fbx.data(),fbx.size(),&opts,nullptr));scene=owned.get();}
     if(!scene)throw std::runtime_error("Cannot load FBX skeleton.");if(scene->skin_deformers.count==0)return;
     if(scene->nodes.count>max_bones)throw std::runtime_error("FBX skeleton exceeds 512 nodes.");
     const auto config=Json::parse(config_text);auto rig=std::make_shared<RigAsset>();std::map<const ufbx_node*,std::uint32_t> node_indices;std::vector<const ufbx_node*> nodes;
@@ -145,23 +145,51 @@ void load_animation_asset(const std::filesystem::path& root,std::span<const std:
         const auto t=convert(node->local_transform,model.scale);finite(t);const auto w=ufbx_matrix_to_transform(&node->node_to_world);
         node_indices[node]=static_cast<std::uint32_t>(rig->bones.size());nodes.push_back(node);rig->bones.push_back({std::string(node->name.data,node->name.length),node->parent?int(node_indices[node->parent]):-1,t,convert(w,model.scale).rotation});};
     for(auto* node:scene->nodes)add_node(add_node,node);resolve_roles(*rig,config);
+    // Avatars can repeat the entire skeleton's clusters on every clothing mesh.
+    // Reuse exactly identical bone/inverse-bind pairs before applying the budget.
+    std::map<std::pair<std::uint32_t,std::array<float,16>>,std::uint16_t> binding_indices;
+    const auto binding_for=[&](std::uint32_t bone,Affine inverse_bind){
+        for(float f:inverse_bind.v)if(!std::isfinite(f))throw std::runtime_error("Invalid inverse bind matrix.");
+        const auto key=std::pair(bone,inverse_bind.v);
+        if(const auto found=binding_indices.find(key);found!=binding_indices.end())return found->second;
+        if(rig->bindings.size()>=max_bindings)throw std::runtime_error("FBX exceeds unique skin binding budget.");
+        const auto index=static_cast<std::uint16_t>(rig->bindings.size());
+        rig->bindings.push_back({bone,inverse_bind});binding_indices.emplace(key,index);return index;
+    };
     std::size_t part_index{};
     for(auto* node:scene->nodes){auto* mesh=node->mesh;if(!mesh||!mesh->num_triangles)continue;
         if(mesh->skin_deformers.count>1)throw std::runtime_error("Multiple skin deformers need explicit composition.");
         const auto* skin=mesh->skin_deformers.count?mesh->skin_deformers.data[0]:nullptr;
         const auto inverse_geometry=ufbx_matrix_invert(&node->geometry_to_world);std::vector<std::uint16_t> bindings;
-        if(skin)for(auto* cluster:skin->clusters){if(rig->bindings.size()>=max_bindings||!cluster->bone_node)throw std::runtime_error("Invalid FBX skin cluster.");
-            const auto bind=ufbx_matrix_mul(&cluster->geometry_to_bone,&inverse_geometry);bindings.push_back(static_cast<std::uint16_t>(rig->bindings.size()));rig->bindings.push_back({node_indices.at(cluster->bone_node),convert(bind,model.scale)});}
-        const auto rigid=static_cast<std::uint16_t>(rig->bindings.size());rig->bindings.push_back({node_indices.at(node),convert(inverse_geometry,model.scale)});
+        if(skin)for(auto* cluster:skin->clusters){if(!cluster->bone_node)throw std::runtime_error("Invalid FBX skin cluster.");
+            const auto bind=ufbx_matrix_mul(&cluster->geometry_to_bone,&inverse_geometry);bindings.push_back(binding_for(node_indices.at(cluster->bone_node),convert(bind,model.scale)));}
+        const auto rigid=binding_for(node_indices.at(node),convert(inverse_geometry,model.scale));
+        std::vector<std::uint32_t> repaired_indices;std::vector<ufbx_vec3> repaired_normals;
+        const auto bind_normal=[&](std::uint32_t index){
+            auto normal=ufbx_get_vertex_vec3(&mesh->vertex_normal,index);
+            const double length2=normal.x*normal.x+normal.y*normal.y+normal.z*normal.z;
+            if(std::isfinite(length2)&&length2>1e-24)return normal;
+            if(repaired_indices.empty()){
+                // Like ufbx's evaluated skinned normals, derive missing/zero
+                // bind normals from topology and smoothing groups, off-thread.
+                std::vector<ufbx_topo_edge> topology(mesh->num_indices);
+                repaired_indices.resize(mesh->num_indices);
+                ufbx_compute_topology(mesh,topology.data(),topology.size());
+                const auto count=ufbx_generate_normal_mapping(mesh,topology.data(),topology.size(),repaired_indices.data(),repaired_indices.size(),false);
+                repaired_normals.resize(count);
+                ufbx_compute_normals(mesh,&mesh->vertex_position,repaired_indices.data(),repaired_indices.size(),repaired_normals.data(),repaired_normals.size());
+            }
+            return repaired_normals.at(repaired_indices.at(index));
+        };
         std::map<std::tuple<std::uint32_t,float,float,float>,std::uint32_t> vertex_indices;
         std::map<std::uint32_t,std::vector<std::uint32_t>> materials;std::vector<std::uint32_t> tri(std::max<std::size_t>(3,mesh->max_face_triangles*3));
         const auto normals=ufbx_matrix_for_normals(&node->geometry_to_world);
         for(std::size_t f=0;f<mesh->faces.count;++f){const auto face=mesh->faces.data[f];if(face.num_indices<3)continue;const auto count=ufbx_triangulate_face(tri.data(),tri.size(),mesh,face);auto& indices=materials[mesh->face_material.count?mesh->face_material.data[f]:0];
-            for(std::size_t k=0;k<count*3;++k){const auto index=tri[k],logical=mesh->vertex_indices.data[index];const auto normal=ufbx_get_vertex_vec3(&mesh->vertex_normal,index);
+            for(std::size_t k=0;k<count*3;++k){const auto index=tri[k],logical=mesh->vertex_indices.data[index];const auto normal=bind_normal(index);
                 const auto key=std::tuple(logical,float(normal.x),float(normal.y),float(normal.z));auto found=vertex_indices.find(key);std::uint32_t vertex{};
                 if(found!=vertex_indices.end())vertex=found->second;else{
                     if(rig->vertices.size()>=max_vertices)throw std::runtime_error("Too many skin vertices.");
-                    const auto p=ufbx_transform_position(&node->geometry_to_world,ufbx_get_vertex_vec3(&mesh->vertex_position,index));auto n=ufbx_transform_direction(&normals,ufbx_get_vertex_vec3(&mesh->vertex_normal,index));const auto length=std::sqrt(n.x*n.x+n.y*n.y+n.z*n.z);if(length<1e-12)throw std::runtime_error("Invalid bind normal.");
+                    const auto p=ufbx_transform_position(&node->geometry_to_world,ufbx_get_vertex_vec3(&mesh->vertex_position,index));auto n=ufbx_transform_direction(&normals,normal);const auto length=std::sqrt(n.x*n.x+n.y*n.y+n.z*n.z);if(!std::isfinite(length)||length<1e-12)throw std::runtime_error("Invalid bind normal in "+std::string(node->name.data,node->name.length)+" at vertex "+std::to_string(index)+".");
                     SkinVertex v{{float(p.x*model.scale),float(p.y*model.scale),float(p.z*model.scale)},{float(n.x/length),float(n.y/length),float(n.z/length)},{{rigid,rigid,rigid,rigid},{1,0,0,0}}};
                     if(skin&&logical<skin->vertices.count){const auto weights=skin->vertices.data[logical];const auto take=std::min(weights.num_weights,4U);float sum=0;
                         if(take){v.skin.weight={};for(unsigned w=0;w<take;++w){const auto weight=skin->weights.data[weights.weight_begin+w];if(weight.cluster_index>=bindings.size()||!std::isfinite(weight.weight)||weight.weight<0)throw std::runtime_error("Invalid skin weight.");v.skin.binding[w]=bindings[weight.cluster_index];v.skin.weight[w]=float(weight.weight);sum+=v.skin.weight[w];}

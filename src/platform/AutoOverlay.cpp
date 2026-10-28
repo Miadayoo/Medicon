@@ -184,6 +184,11 @@ public:
     std::array<double, 2> model_sample_seconds{};
     std::array<std::uint64_t, 2> model_sample_frames{};
     bool model_previous_enabled{}, model_has_interval{};
+    // Present thread: inject.log is all a remote player can send, so each
+    // model load outcome and the first custom draw are written there once.
+    medicon::custom_model::ModelRegistry::Status model_logged_status{};
+    bool model_logged_drawing{}, model_logged_wait{};
+    ULONGLONG model_wait_since{};
     sdk::BedrockChat bedrock_chat;
     sdk::BedrockGameplay gameplay;
     std::atomic_bool gameplay_ready{false};
@@ -203,6 +208,9 @@ public:
     // loader read it from the signed manifest (else the hosted Core's own
     // version). Empty without the loader: the Watermark keeps the build's.
     std::string server_version;
+    // Set by Medicon_Initialize: the release this Core was published as.
+    // Empty when the DLL was injected directly.
+    std::string core_version;
     sdk::MenuScreenState cached_menu_screen_{sdk::MenuScreenState::unknown};
     sdk::MenuSessionIdentity cached_menu_session_{};
     void* cached_menu_client_{};
@@ -568,6 +576,10 @@ public:
         model_sample_seconds = {};
         model_sample_frames = {};
         model_has_interval = false;
+        model_logged_status = {};
+        model_logged_drawing = false;
+        model_logged_wait = false;
+        model_wait_since = 0;
         std::lock_guard lock(input_mutex);
         messages.clear();
     }
@@ -1495,12 +1507,50 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     return true;
 }
 
+const char* model_status_name(medicon::custom_model::ModelRegistry::Status status) noexcept {
+    using S=medicon::custom_model::ModelRegistry::Status;
+    return status==S::ready?"ready":status==S::failed?"failed":status==S::loading?"loading":"not started";
+}
+
 void Runtime::draw_model_probe() {
     auto* module = dynamic_cast<CustomModelProbeModule*>(client->modules().find(CustomModelProbeModule::module_id));
+    const auto selected=static_cast<medicon::custom_model::BuiltinModel>(module?module->model.get<Choice>().index:0);
+    if (model_assets.select(selected)) {
+        model_logged_status={};model_logged_drawing=false;model_logged_wait=false;model_wait_since=0;
+    }
     const bool requested = module && module->enabled();
     const auto mode=module?module->mode.get<Choice>().index:0;
     const auto progress=model_box.static_progress();
     const bool visible=requested&&mode==0&&progress.ready&&model_box.view_mode()!=sdk::custom_model::ViewMode::unknown;
+    using ModelStatus=medicon::custom_model::ModelRegistry::Status;
+    if (const auto loaded=model_assets.status(); loaded!=model_logged_status) {
+        model_logged_status=loaded;
+        if (loaded==ModelStatus::ready||loaded==ModelStatus::failed)
+            report(std::string("CustomModel model ")+(loaded==ModelStatus::ready?"loaded: ":"failed: ")+model_assets.diagnostic(),
+                loaded==ModelStatus::failed);
+    }
+    if (visible&&!model_logged_drawing) {
+        model_logged_drawing=true;
+        report("CustomModel drawing: meshes and textures ready, local player replaced.");
+    }
+    // Enabled in a world but still vanilla: record which stage never finished, once.
+    const bool in_world=client->gameplay_view()!=nullptr;
+    if (requested&&mode==0&&in_world&&!visible&&!model_logged_drawing&&!model_logged_wait) {
+        const auto now=GetTickCount64();
+        if (!model_wait_since) model_wait_since=now;
+        else if (now-model_wait_since>15000) {
+            model_logged_wait=true;
+            const auto asset=model_assets.snapshot();
+            const auto status=model_probe.status();
+            report("CustomModel still vanilla after 15 s: P0 "+std::string(status==sdk::custom_model::Probe::Status::ready?"ready":
+                status==sdk::custom_model::Probe::Status::unavailable?"unavailable":"waiting")+
+                ", P1 "+(model_box.ready()?"ready":"unavailable")+", model "+model_status_name(model_assets.status())+
+                ", meshes "+std::to_string(progress.meshes)+"/"+std::to_string(asset?asset->parts.size():0)+
+                ", textures "+std::to_string(progress.textures)+"/"+std::to_string(asset?asset->textures.size():0)+
+                ", stock texture "+(model_box.texture_ready()?"ready":"waiting")+
+                ", view "+sdk::custom_model::view_mode_name(model_box.view_mode())+".",true);
+        }
+    } else if (!requested||mode!=0||!in_world) model_wait_since=0;
     model_box.set_static_mode(mode==0,visible);
     model_box.set_animation(module&&module->animation.get<bool>());
     model_probe.set_suppress_data_driven(mode != 0 || (visible&&model_box.first_person_ready()));
@@ -1532,6 +1582,7 @@ void Runtime::draw_model_probe() {
     constexpr auto flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing;
     if (ImGui::Begin("CustomModel diagnostic", nullptr, flags)) {
+        ImGui::Text("Core: %s", core_version.empty() ? "injected directly" : core_version.c_str());
         ImGui::Text("Skip local: %s | %s", requested&&(mode!=0||visible) ?
             (status == sdk::custom_model::Probe::Status::ready ? "ON" : "BLOCKED") : "OFF", readiness);
         ImGui::TextUnformatted("Toggle: CustomModel keybind (default F8)");
@@ -1786,17 +1837,20 @@ void Runtime::connect_model_static() {
     }
     if (!model_static_hooks.enable_all(error)) { report("P2 enable failed: "+error,true);return; }
     const auto data_directory=Client::default_config_path().parent_path();
-    auto directory=data_directory/L"models"/L"neon-t-pose";
+    std::array<std::filesystem::path,medicon::custom_model::builtin_model_count> directories;
+    for(unsigned i=0;i<directories.size();++i)
+        directories[i]=data_directory/L"models"/std::filesystem::u8path(medicon::custom_model::builtin_model_directory(static_cast<medicon::custom_model::BuiltinModel>(i)));
     HMODULE own{};std::array<wchar_t,32768> filename{};
     if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&hook_model_texture_get),&own)&&GetModuleFileNameW(own,filename.data(),static_cast<DWORD>(filename.size()))) {
-        const auto external=std::filesystem::path(filename.data()).parent_path()/L"models"/L"neon-t-pose";
-        if (std::filesystem::is_regular_file(external/L"model.fbx")) directory=external;
+        for(unsigned i=0;i<directories.size();++i) {
+            const auto external=std::filesystem::path(filename.data()).parent_path()/L"models"/
+                std::filesystem::u8path(medicon::custom_model::builtin_model_directory(static_cast<medicon::custom_model::BuiltinModel>(i)));
+            if (std::filesystem::is_regular_file(external/L"model.fbx")) directories[i]=external;
+        }
     }
-    model_assets.start(directory,data_directory/L"cache"/L"models");
-    // UTF-8: path::string() throws for profile folders outside the ANSI code page.
-    const auto shown=directory.u8string();
-    report("CustomModel worker started: external="+std::string(shown.begin(),shown.end())+"; embedded Neon fallback enabled. Mode=Custom model; vanilla retained until ready.");
+    model_assets.start_catalog(std::move(directories),data_directory/L"cache"/L"models");
+    report("CustomModel worker started: bundled Neon / Chocolat; Model selects the character. Mode=Custom model; vanilla retained until ready.");
 }
 
 void hook_send_packet(void* sender, void* packet) {
@@ -2331,7 +2385,8 @@ DWORD WINAPI start_worker(void*) {
         wchar_t override_path[32768]{};
         const auto length = GetEnvironmentVariableW(L"MEDICON_OVERLAY_CONFIG", override_path, static_cast<DWORD>(std::size(override_path)));
         state.config_path = length && length < std::size(override_path) ? std::filesystem::path(override_path) : default_config;
-        state.report("Starting automatic overlay in process " + std::to_string(GetCurrentProcessId()) + ".");
+        state.report("Starting automatic overlay in process " + std::to_string(GetCurrentProcessId()) + (state.core_version.empty()
+            ? std::string(" (DLL injected directly).") : " (Core " + state.core_version + " via MediconLoader)."));
         // The first overlay frame starts the intro clock. Resolve every native
         // profile (signature scan, menu PE profile, navigation hook) before
         // Present is hooked, so that frame can already observe the title
@@ -2460,6 +2515,7 @@ extern "C" MEDICON_API int Medicon_Initialize(const MediconHostAPI* host) {
     auto& state = runtime();
     if (host && host->size >= sizeof(MediconHostAPI) && host->api_version == 1 && host->core_version) {
         std::lock_guard lock(state.lifecycle_mutex);
+        state.core_version = ascii(host->core_version);
         state.server_version = loader_latest_version();
         if (state.server_version.empty()) state.server_version = ascii(host->core_version);
         // state 1 == MEDICON_UPDATE_UPDATED: a newer Core was downloaded this launch.

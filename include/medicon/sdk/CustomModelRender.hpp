@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <string>
 #include <string_view>
 
 namespace medicon::sdk::custom_model::bedrock_1_26_52_3 {
@@ -12,6 +15,27 @@ namespace medicon::sdk::custom_model::bedrock_1_26_52_3 {
 inline constexpr std::string_view file_version = "1.26.52.3";
 inline constexpr std::string_view investigated_sha256 =
     "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942";
+
+// The inspected link (one TimeDateStamp) ships in two packagings: the
+// LeviLauncher copy IDA saw, with an extra .levildr page, and the official
+// install, one page smaller. Same code at the same RVAs
+// (docs/main-menu-native-navigation.md). Every target still needs its unique
+// signature, so any other build fails closed.
+inline constexpr std::uint32_t time_date_stamp = 0x6AB54E37;
+inline constexpr std::uint32_t launcher_image_size = 0x12C02000;
+inline constexpr std::uint32_t official_image_size = 0x12C01000;
+[[nodiscard]] constexpr bool known_image(std::uint32_t timestamp, std::uint32_t image_size) noexcept {
+    return timestamp == time_date_stamp && (image_size == launcher_image_size || image_size == official_image_size);
+}
+// Names the observed header, so a log from another PC shows what differs.
+[[nodiscard]] inline std::string image_mismatch(std::string_view stage, std::uint32_t timestamp, std::uint32_t image_size) {
+    char text[192]{};
+    std::snprintf(text, sizeof text, " withheld: PE TimeDateStamp 0x%08X / SizeOfImage 0x%X is not the inspected "
+        "1.26.52.3 build (0x%08X with 0x%X or 0x%X).", static_cast<unsigned>(timestamp), static_cast<unsigned>(image_size),
+        static_cast<unsigned>(time_date_stamp), static_cast<unsigned>(launcher_image_size),
+        static_cast<unsigned>(official_image_size));
+    return std::string(stage) + text;
+}
 
 // 2026-10-28 runtime report: suppressing this entry hides first-person hands,
 // while the third-person player remains visible. Unique signature/valid ABI

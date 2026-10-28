@@ -1,10 +1,12 @@
 #pragma once
 #include <medicon/custom_model/Animation.hpp>
+#include <medicon/custom_model/BundledModel.hpp>
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <condition_variable>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -44,6 +46,11 @@ public:
     // Prefer an external override, then use the embedded default when a cache
     // root is supplied. All extraction/import work stays on the worker.
     void start(std::filesystem::path directory, std::filesystem::path bundled_cache = {});
+    // One persistent worker loads the requested character on demand and keeps
+    // both CPU generations alive until shutdown. select() never parses/joins.
+    void start_catalog(std::array<std::filesystem::path,builtin_model_count> directories,
+                       std::filesystem::path bundled_cache, BuiltinModel initial = BuiltinModel::neon);
+    bool select(BuiltinModel model) noexcept;
     // Shutdown after render callbacks drain. Keeps published generations alive
     // so releasing a render-thread snapshot never frees a large model there.
     void stop();
@@ -53,6 +60,11 @@ public:
 private:
     std::shared_ptr<const ModelAsset> current_;
     std::shared_ptr<const ModelAsset> retained_;
+    std::array<std::shared_ptr<const ModelAsset>,builtin_model_count> retained_models_;
+    std::atomic_bool catalog_active_{};
+    unsigned requested_model_{}; // mutex_; paired with wake_ to avoid lost wakeups
+    std::uint64_t requested_revision_{};
+    std::condition_variable_any wake_;
     std::atomic<Status> status_{Status::idle};
     mutable std::mutex mutex_;
     std::string diagnostic_;

@@ -9,6 +9,7 @@ public:
     CustomModelProbeModule();
     Setting& show_debug;
     Setting& mode;
+    Setting& model;
     Setting& animation;
     Setting& test_box;
     Setting& material;

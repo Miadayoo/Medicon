@@ -2,3 +2,6 @@
 assets/models/neon-t-pose/model.fbx -text
 assets/models/neon-t-pose/model.json -text
 assets/models/neon-t-pose/textures/*.png -text
+assets/models/chocolat-v1.02/model.fbx -text
+assets/models/chocolat-v1.02/model.json -text
+assets/models/chocolat-v1.02/textures/*.png -text

@@ -43,6 +43,14 @@ int main() {
         const auto ready_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
         while (registry.status()==cm::ModelRegistry::Status::loading&&std::chrono::steady_clock::now()<ready_deadline) std::this_thread::yield();
         require(registry.status()==cm::ModelRegistry::Status::ready&&registry.snapshot(),"Worker atomically publishes complete immutable generation");registry.stop();
+        const auto mapped=model_fixture::create("texture-overrides");
+        std::filesystem::copy_file(mapped/L"textures"/L"triangle.png",mapped/L"textures"/L"mapped.png",std::filesystem::copy_options::overwrite_existing);
+        model_fixture::text(mapped/L"textures"/L"triangle.png","obsolete exporter texture");
+        model_fixture::text(mapped/L"model.json",R"({"textures":{"Diffuse":"textures/mapped.png"}})");
+        auto mapped_model=cm::load_model(mapped,diagnostic);
+        require(mapped_model&&mapped_model->textures[0].path.filename()==L"mapped.png","Explicit material mapping replaces obsolete exporter/PSD references");
+        model_fixture::text(mapped/L"model.json",R"({"textures":{"Diffuse":"../../outside.png"}})");
+        require(!cm::load_model(mapped,diagnostic)&&diagnostic.find("escapes")!=std::string::npos,"Material PNG override cannot escape the model root");
         // Use the actual resources linked into this EXE: no model beside the
         // executable and no dependency on a developer's Downloads directory.
         const auto bundle_cache=root/L"bundled-cache";
@@ -78,6 +86,45 @@ int main() {
         require(registry.status()==cm::ModelRegistry::Status::ready&&registry.snapshot()&&
             registry.snapshot()->triangle_count==1,"Valid external model override takes precedence over embedded default");registry.stop();
         require(cm::materialize_bundled_neon({},diagnostic).empty(),"Empty bundle cache path fails explicitly");
-        std::cout<<"P2 importer / UV / cache / bundled Neon extraction / loader fallback passed\n";
+        const auto chocolat_directory=cm::materialize_bundled_model(cm::BuiltinModel::chocolat,bundle_cache,diagnostic);
+        if (chocolat_directory.empty()) throw std::runtime_error(diagnostic);
+        auto chocolat=cm::load_model(chocolat_directory,diagnostic);if (!chocolat) throw std::runtime_error(diagnostic);
+        require(chocolat->fbx_sha256=="b4e05dc30e9e139418ce054f6b65bb6332849b201c2b546aa988e74e43300fdb"&&
+            chocolat->textures.size()==5&&chocolat->maximum[1]>1.7F&&chocolat->maximum[1]<1.9F,"Bundled Chocolat uses five supplied PNGs and configured character scale");
+        require(chocolat->rig&&chocolat->rig->first_person.ready()&&chocolat->rig->bindings.size()<2048,
+            "Chocolat bone aliases provide arms and repeated clothing bindings fit the budget");
+        const auto& chocolat_rig=*chocolat->rig;
+        require(chocolat_rig.bones[chocolat_rig.roles.left_arm].name=="UpperArm.L"&&
+            chocolat_rig.bones[chocolat_rig.roles.right_leg].name=="UpperLeg.R","Explicit Chocolat humanoid roles drive generated motion");
+        for(unsigned pose=0;pose<3;++pose){
+            cm::AnimationInput input;input.valid=true;input.identity=1;input.world_identity=1;
+            input.attack_progress=pose==1?.5F:-1;input.using_item=pose==2;
+            chocolat->animation->update_first_person(chocolat_rig,input,1.0F/60,true);
+            const auto output=chocolat->animation->first_person_output();
+            unsigned hands{},visible_hands{};
+            for(std::size_t v=0;v<output.size();++v){
+                for(float f:output[v].position)require(std::isfinite(f),"Chocolat first-person poses remain finite");
+                bool hand=false;const auto& skin=chocolat_rig.first_person.vertices[v].skin;
+                for(unsigned k=0;k<4;++k)if(skin.weight[k]>.3F){
+                    int bone=static_cast<int>(chocolat_rig.bindings[skin.binding[k]].bone);
+                    for(;bone>=0;bone=chocolat_rig.bones[bone].parent)
+                        if(chocolat_rig.bones[bone].name=="Hand.L"||chocolat_rig.bones[bone].name=="Hand.R"){hand=true;break;}
+                }
+                if(!hand)continue;
+                const auto& p=output[v].position;++hands;
+                require(p[2]>.1F,"Chocolat hands stay in front of the first-person camera");
+                constexpr float tangent=.70020754F; // FOV 70 degrees, 16:9
+                if(std::abs(p[0]/p[2])<tangent*16/9&&std::abs(p[1]/p[2])<tangent)++visible_hands;
+            }
+            require(hands>0&&visible_hands>.9F*hands,"Chocolat hands are visible in idle, attack and use poses");
+        }
+        registry.start_catalog({root/L"missing-neon",root/L"missing-chocolat"},bundle_cache);wait_for_worker();
+        const auto first_neon=registry.snapshot();require(first_neon&&first_neon->fbx_sha256==neon->fbx_sha256,"Catalog defaults to Neon");
+        require(registry.select(cm::BuiltinModel::chocolat),"Catalog accepts character selection");wait_for_worker();
+        require(registry.status()==cm::ModelRegistry::Status::ready&&registry.snapshot()->fbx_sha256==chocolat->fbx_sha256,"Catalog worker publishes selected Chocolat pack");
+        registry.select(cm::BuiltinModel::neon);registry.select(cm::BuiltinModel::chocolat);registry.select(cm::BuiltinModel::neon);wait_for_worker();
+        require(registry.status()==cm::ModelRegistry::Status::ready&&registry.snapshot()==first_neon,"Rapid selection returning to original model reuses its retained generation");
+        require(!registry.select(cm::BuiltinModel::count),"Invalid catalog selection is rejected");registry.stop();
+        std::cout<<"P2 importer / PNG mappings / cache / bundled Neon and Chocolat / catalog selection passed\n";
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
 }

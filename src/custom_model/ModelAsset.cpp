@@ -19,7 +19,7 @@ namespace medicon::custom_model {
 namespace {
 using Json=nlohmann::json;
 constexpr std::size_t max_file=128*1024*1024, max_vertices=500000, chunk_vertices=4095;
-constexpr std::string_view importer="ufbx-0.20.1-13b5df8e89eff0ce898f7c37fa0716e3bc186573-p2-v1";
+constexpr std::string_view importer="ufbx-0.20.1-13b5df8e89eff0ce898f7c37fa0716e3bc186573-p2-v2";
 using Bytes=std::vector<std::byte>;
 Bytes read_file(const std::filesystem::path& path,std::size_t maximum=max_file) {
     std::ifstream in(path,std::ios::binary|std::ios::ate);
@@ -192,6 +192,7 @@ std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& direct
         if (!std::isfinite(scale)||scale<=0||scale>10||!std::isfinite(yaw)||std::abs(yaw)>36000)
             throw std::runtime_error("model.json scale/yawOffset is invalid.");
         ufbx_load_opts opts{};opts.target_axes=ufbx_axes_right_handed_y_up;opts.target_unit_meters=1.0;
+        opts.inherit_mode_handling=UFBX_INHERIT_MODE_HANDLING_COMPENSATE;
         opts.evaluate_skinning=true;opts.load_external_files=false;opts.generate_missing_normals=true;
         opts.temp_allocator.memory_limit=256*1024*1024;opts.result_allocator.memory_limit=256*1024*1024;
         ufbx_error error{};
@@ -231,7 +232,14 @@ std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& direct
                 if (material_index>=node->materials.count) throw std::runtime_error("FBX material index is invalid.");
                 const auto* material=node->materials.data[material_index];
                 const auto* diffuse=material->pbr.base_color.texture?material->pbr.base_color.texture:material->fbx.diffuse_color.texture;
-                const auto path=texture_path(root,diffuse);auto found=texture_indices.find(path);std::uint32_t texture{};
+                const std::string material_name(material->name.data,material->name.length);
+                // Unity avatars often retain PSD/exporter paths in the FBX.
+                // Explicit material-to-PNG bindings stay inside this model's root.
+                const auto overrides=config_json.find("textures");
+                const auto path=overrides!=config_json.end()&&overrides->contains(material_name)
+                    ? checked(root,root/std::filesystem::u8path(overrides->at(material_name).get<std::string>()))
+                    : texture_path(root,diffuse);
+                auto found=texture_indices.find(path);std::uint32_t texture{};
                 if (found==texture_indices.end()) {
                     if (model->textures.size()>=32) throw std::runtime_error("Too many FBX diffuse textures.");
                     texture=static_cast<std::uint32_t>(model->textures.size());model->textures.push_back(texture_info(path));texture_indices.emplace(path,texture);
@@ -276,8 +284,61 @@ void ModelRegistry::start(std::filesystem::path directory, std::filesystem::path
     });
 }
 void ModelRegistry::stop() {
+    catalog_active_.store(false,std::memory_order_release);
     if (worker_.joinable()) { worker_.request_stop();worker_.join(); }
     std::atomic_store_explicit(&current_,std::shared_ptr<const ModelAsset>{},std::memory_order_release);retained_.reset();status_.store(Status::idle,std::memory_order_release);
+    retained_models_={};
+}
+void ModelRegistry::start_catalog(std::array<std::filesystem::path,builtin_model_count> directories,
+    std::filesystem::path bundled_cache,BuiltinModel initial) {
+    stop();
+    { std::lock_guard lock(mutex_);requested_model_=std::min(static_cast<unsigned>(initial),builtin_model_count-1);requested_revision_=0;diagnostic_.clear(); }
+    status_.store(Status::loading,std::memory_order_release);
+    catalog_active_.store(true,std::memory_order_release);
+    worker_=std::jthread([this,directories=std::move(directories),bundled_cache=std::move(bundled_cache)](std::stop_token stop){
+        std::uint64_t served=UINT64_MAX;
+        std::array<std::string,builtin_model_count> diagnostics;
+        while (!stop.stop_requested()) {
+            unsigned selected{};std::uint64_t revision{};
+            { std::unique_lock lock(mutex_);
+              if (!wake_.wait(lock,stop,[&]{return requested_revision_!=served;})) return;
+              selected=requested_model_;revision=requested_revision_; }
+            auto model=retained_models_[selected];
+            auto& diagnostic=diagnostics[selected];
+            if (!model) {
+                model=load_model(directories[selected],diagnostic);
+                if (!model&&!stop.stop_requested()) {
+                    const auto external_error=diagnostic;
+                    std::string bundle_diagnostic;
+                    const auto directory=materialize_bundled_model(static_cast<BuiltinModel>(selected),bundled_cache,bundle_diagnostic);
+                    if (!directory.empty()&&!stop.stop_requested()) {
+                        model=load_model(directory,diagnostic);diagnostic=bundle_diagnostic+". "+diagnostic;
+                    } else diagnostic=bundle_diagnostic;
+                    diagnostic="External model unavailable ("+external_error+"). "+diagnostic;
+                }
+                // Keep even an obsolete completed request alive off the render
+                // thread; it can be selected again without importing another FBX.
+                retained_models_[selected]=model;
+            }
+            if (stop.stop_requested()) return;
+            { std::lock_guard lock(mutex_);
+              served=revision;
+              if (requested_revision_!=revision) continue;
+              diagnostic_=std::string(builtin_model_name(static_cast<BuiltinModel>(selected)))+": "+diagnostic;
+              std::atomic_store_explicit(&current_,std::move(model),std::memory_order_release);
+              status_.store(retained_models_[selected]?Status::ready:Status::failed,std::memory_order_release); }
+        }
+    });
+}
+bool ModelRegistry::select(BuiltinModel model) noexcept {
+    const auto selected=static_cast<unsigned>(model);
+    if (selected>=builtin_model_count||!catalog_active_.load(std::memory_order_acquire)) return false;
+    { std::lock_guard lock(mutex_);
+      if (selected==requested_model_) return false;
+      requested_model_=selected;++requested_revision_;
+      std::atomic_store_explicit(&current_,std::shared_ptr<const ModelAsset>{},std::memory_order_release);
+      status_.store(Status::loading,std::memory_order_release); }
+    wake_.notify_all();return true;
 }
 std::string ModelRegistry::diagnostic() const { std::lock_guard lock(mutex_);return diagnostic_; }
 }

@@ -220,6 +220,8 @@ void client_test(const std::filesystem::path& path) {
     require(model_probe&&model_probe->id()=="custommodel"&&model_probe->name()=="CustomModel"&&client.modules().find("custommodelprobe")==model_probe,"CustomModel rename retains legacy command lookup");
     require(model_probe && !model_probe->enabled() && model_probe->keybind() == VK_F8, "P0 defaults OFF with F8 binding");
     auto* model_options = dynamic_cast<medicon::CustomModelProbeModule*>(model_probe);
+    require(model_options&&model_options->model.name=="Model"&&model_options->model.get<medicon::Choice>().index==0&&
+        model_options->model.get<medicon::Choice>().options==std::vector<std::string>{"Neon","Chocolat"},"Model selection is separate from material and preserves Neon as default");
     require(model_options&&model_options->material.name=="Material"&&model_options->material.get<medicon::Choice>().options[0]=="Neon"&&model_options->material.get<medicon::Choice>().options[1]=="entity"&&model_options->material.get<medicon::Choice>().index==1,"Material keeps its name, the alphatest choice displays Neon, and legacy selection is migrated");
     require(model_options && model_options->show_debug.name == "Show Debug" && !model_options->show_debug.get<bool>(),
             "Show Debug is a module option and defaults OFF");

@@ -289,6 +289,35 @@ void static_model_test() {
     f.renderer.release_resources();f.renderer.release_resources();registry.stop();
     require(f.mesh_destroys==1&&f.binding_releases==3,"Native mesh and stock/custom references released exactly once after drain");
 }
+void model_switch_test() {
+    namespace cm=medicon::custom_model;
+    const auto first=model_fixture::create("switch-first"),second=model_fixture::create("switch-second");
+    model_fixture::text(second/L"model.json",R"({"scale":2,"yawOffset":180})");
+    cm::ModelRegistry registry;registry.start_catalog({first,second},{});
+    const auto wait=[&]{
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(registry.status()==cm::ModelRegistry::Status::loading&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+        require(registry.status()==cm::ModelRegistry::Status::ready,"Switch fixture CPU model ready");
+    };wait();
+    Fixture f;initialize(f);f.expected_vertices=3;
+    f.renderer.configure_static({fake_texture_get,fake_mesh_end,fake_mesh_draw,fake_mesh_destroy,fake_builder_clear,fake_view_id},registry);
+    f.renderer.set_static_mode(true,true);f.renderer.set_options(true,0,1);
+    put(f.texture.data(),0x20,std::uint8_t{1});put(f.texture_data.data(),8,f.gpu.data());put(f.gpu.data(),0x12,std::uint8_t{1});
+    f.renderer.after_submit(nullptr,nullptr,f.texture.data(),f.metadata.data(),fake_submit);
+    f.renderer.observe_texture_group(&f,fake_texture_get);
+    const auto world=[&]{BoxRenderer::WorldScope scope(f.renderer,f.context.data(),f.actor.data(),ViewMode::third_person);f.renderer.finish_world(fake_submit);};
+    world();world();require(f.renderer.static_progress().ready&&f.mesh_ends==1,"First model native resources ready");
+    registry.select(cm::BuiltinModel::chocolat);
+    require(!f.renderer.static_progress().ready&&!f.renderer.first_person_ready(),"A model change immediately invalidates readiness for vanilla suppression");wait();
+    f.renderer.observe_texture_group(&f,fake_texture_get);
+    require(f.texture_requests==1,"Old generation cannot accept a new model's PNG request");
+    world();
+    require(f.mesh_destroys==1&&f.mesh_ends==2&&!f.renderer.static_progress().ready,"World callback replaces old mesh and restarts texture warmup");
+    f.renderer.observe_texture_group(&f,fake_texture_get);world();
+    require(f.renderer.static_progress().ready&&f.texture_requests==2,"Selected model prepares its own PNG and becomes drawable");
+    f.renderer.release_resources();registry.stop();
+    require(f.mesh_destroys==2&&f.binding_releases==3,"Each generation releases its custom handles once and reuses the stock binding");
+}
 void resource_location_test() {
     const auto location=raw_texture_location("hello");
     require(get<std::uint32_t>(location.data(),0)==2&&get<std::uint64_t>(location.data(),0x18)==5&&get<std::uint64_t>(location.data(),0x20)==15,"Short native input envelope");
@@ -297,6 +326,6 @@ void resource_location_test() {
 }
 }
 int main() {
-    try { geometry_test(); view_reader_test(); lifecycle_test(); retained_binding_test(); resource_location_test(); static_model_test(); std::cout<<"Model geometry / native view / ABI / restoration / ownership passed\n"; }
+    try { geometry_test(); view_reader_test(); lifecycle_test(); retained_binding_test(); resource_location_test(); static_model_test(); model_switch_test(); std::cout<<"Model geometry / native view / ABI / restoration / ownership / character switch passed\n"; }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

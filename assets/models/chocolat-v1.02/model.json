@@ -1,0 +1,25 @@
+{
+  "scale": 1.5,
+  "yawOffset": 180.0,
+  "textures": {
+    "Chocolat_Face": "textures/Chocolat_Face.png",
+    "Chocolat_Face_effect": "textures/Chocolat_Face_effect.png",
+    "Chocolat_Body": "textures/Chocolat_Body.png",
+    "Chocolat_Hair": "textures/Chocolat_Hair.png",
+    "Chocolat_Costume": "textures/Chocolat_Costume.png"
+  },
+  "bones": {
+    "hips": "Hips",
+    "spine": "Spine",
+    "neck": "Neck",
+    "head": "Head",
+    "leftArm": "UpperArm.L",
+    "rightArm": "UpperArm.R",
+    "leftForeArm": "LowerArm.L",
+    "rightForeArm": "LowerArm.R",
+    "leftUpLeg": "UpperLeg.L",
+    "rightUpLeg": "UpperLeg.R",
+    "leftLeg": "LowerLeg.L",
+    "rightLeg": "LowerLeg.R"
+  }
+}
