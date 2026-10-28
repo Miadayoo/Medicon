@@ -88,6 +88,38 @@ inline constexpr float rim_idle = 0.65F, rim_hover = 0.95F;
 inline constexpr float glow_idle = 0.35F, glow_hover = 0.75F;
 } // namespace glass
 
+// In-game Watermark: one Main Menu glass plate at HUD size. Reference px,
+// multiplied by the HUD scale (resolution and DPI) and the module's Scale.
+namespace watermark {
+inline constexpr Color text = rgb(0x80C9FF);            // the Main Menu's label blue
+inline constexpr Color detail = rgb(0x8FA9C6);          // version, FPS, ping: greyish blue
+inline constexpr Color fill = rgb(0xF5FBFF);            // milky white with a little blue
+inline constexpr float fill_opacity = 0.86F;
+inline constexpr Color shadow = rgb(0xA9D9FF);
+inline constexpr float shadow_opacity = 0.55F;
+inline constexpr float shadow_blur = 22.0F;             // CSS blur; sigma is half
+inline constexpr float shadow_offset_y = 4.0F;
+inline constexpr float glow_opacity = 0.22F;            // around the plate (glass::glow), never a bloom
+inline constexpr float glow_blur = 12.0F;
+inline constexpr float accent_glow_opacity = 0.45F;
+inline constexpr float accent_glow_blur = 6.0F;         // around the accent line
+inline constexpr float margin = 16.0F;                  // from the window edges
+inline constexpr float height = 40.0F;
+inline constexpr float radius = 14.0F;
+inline constexpr float padding_left = 18.0F;            // past the accent line
+inline constexpr float padding_right = 14.0F;
+inline constexpr float accent_inset = 10.0F;            // above and below the accent line
+inline constexpr float gap = 7.0F;                      // between the name and the details
+inline constexpr float dot = 3.0F;                      // separator between details
+inline constexpr float font = 21.0F;
+inline constexpr float font_small = 11.0F;
+inline constexpr float rise = 5.0F;                     // enters from 5 px above
+inline constexpr float start_scale = 0.97F;
+inline constexpr float fade = 0.250F;                   // seconds, ease-out cubic
+inline constexpr float width_tau = 0.060F;              // width follows a changed detail
+inline constexpr float fps_window = 0.5F;               // seconds per FPS reading
+} // namespace watermark
+
 // Social (spec 4.6 / 4.7), styled after the Main Menu alone: the pastel blue,
 // white and pink palette, glass plates, blue light instead of black shadows,
 // and dusty blues instead of grey for text.
@@ -96,7 +128,7 @@ namespace social {
 inline constexpr Color pink = rgb(0xFFD1E3);
 inline constexpr Color blue = rgb(0x7FCBFF);
 inline constexpr Color pale_blue = rgb(0xD9F2FF);
-inline constexpr Color title = blue;                    // "Medicon Social", like the Main Menu labels
+inline constexpr Color title = blue;                    // the sign-in title "Medicon", like the Main Menu labels
 inline constexpr Color title_outline = rgb(0xFFFFFF, 0.95F);
 inline constexpr Color heading = rgb(0x5FAEE8);
 inline constexpr Color text = rgb(0x5884AE);            // body text: deep dusty blue, never grey
@@ -192,7 +224,7 @@ inline constexpr float panel_max_ratio = 0.92F;
 inline constexpr float login_panel_width = 480.0F;
 inline constexpr float login_panel_height = 400.0F;
 inline constexpr float login_padding = 44.0F;
-inline constexpr float title_outline = 1.6F;   // white rim around "Medicon Social"
+inline constexpr float title_outline = 1.6F;   // white rim around the sign-in title
 inline constexpr float panel_radius = 20.0F;
 inline constexpr float panel_open_scale = 0.96F;
 inline constexpr float sidebar_width = 200.0F;

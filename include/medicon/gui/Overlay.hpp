@@ -9,6 +9,7 @@
 #include "medicon/gui/MainMenu.hpp"
 #include "medicon/gui/Shadow.hpp"
 #include "medicon/gui/SocialUi.hpp"
+#include "medicon/gui/Watermark.hpp"
 
 #include <functional>
 
@@ -18,8 +19,8 @@ class ModuleManager;
 
 namespace medicon::gui {
 
-// Everything the client draws on top of the game: ArrayList HUD, then the
-// ClickGUI, then Social notifications. The DLL and the Preview drive the same object:
+// Everything the client draws on top of the game: the HUD (ArrayList and
+// Watermark), then the ClickGUI, then Social notifications. The DLL and the Preview drive the same object:
 //   backend NewFrame -> prepare_frame() [re-upload fonts if true] -> ImGui::NewFrame
 //   -> render() -> ImGui::Render
 class Overlay {
@@ -74,6 +75,7 @@ private:
     ModuleManager& modules_;
     ClickGui gui_;
     ArrayList hud_;
+    Watermark watermark_;
     FontManager fonts_;
     MeshShadowRenderer shadows_;
     FrameClock clock_;

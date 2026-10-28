@@ -17,7 +17,7 @@ namespace medicon::gui {
 class TextureHost;
 
 // Social text sizes: em px at a 1080 px tall window (spec 4.6 / 4.9).
-// Display is the "Medicon Social" title.
+// Display is the sign-in title "Medicon".
 enum class SocialText { Display, Heading, Title, Body, Small };
 inline constexpr std::size_t social_text_count = 5;
 

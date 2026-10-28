@@ -11,6 +11,7 @@ void register_builtin_modules(ModuleManager& modules) {
     modules.add<ExampleModule>();
     modules.add<ClickGuiModule>();
     modules.add<ArrayListModule>();
+    modules.add<WatermarkModule>();
     modules.add<ChinaHatModule>();
     modules.add<DerpModule>();
     modules.add<AimbotModule>();

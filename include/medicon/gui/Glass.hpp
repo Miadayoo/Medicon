@@ -20,6 +20,9 @@ struct GlassPlate {
     float accent_inset = 0.0F;
     bool drop = true;     // the soft blue drop under the plate
     Color fill{1.0F, 1.0F, 1.0F, 1.0F}; // white on the Main Menu; Social tints it toward blue
+    // Fill opacity; 0 = the Main Menu's idle/hover/pressed values. The HUD
+    // Watermark uses a denser milk so it reads over dark scenes as well.
+    float fill_opacity = 0.0F;
     float alpha = 1.0F;   // fades the whole plate
     // Optional pale-blue glow around the plate, stronger while hovered.
     IShadowRenderer* glow = nullptr;

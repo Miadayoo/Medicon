@@ -161,7 +161,7 @@ float login_form_width(ImVec2 display) {
     return std::min(metrics::login_width * s, panel_size(display, true).x - metrics::login_padding * s * 2.0F);
 }
 
-// "Medicon Social": the Main Menu's rounded face in pastel blue with a white rim,
+// The sign-in title "Medicon": the Main Menu's rounded face in pastel blue with a white rim,
 // the way the Main Menu logo carries a rim of its own.
 void draw_title(ImDrawList* list, const SocialFonts& fonts, const SocialRect& rect, float s, float alpha, std::string_view text) {
     const float x = std::round(rect.min.x + (rect.width() - fonts.measure(SocialText::Display, text)) * 0.5F);
@@ -184,7 +184,7 @@ void draw_centered(ImDrawList* list, const SocialFonts& fonts, SocialText role, 
 } // namespace
 
 void SocialScreen::request_glyphs(SocialFonts& fonts) {
-    fonts.request(SocialText::Display, "Medicon Social");
+    fonts.request(SocialText::Display, "Medicon");
     for (const char* text : {"Settings", "Global Chat", "Friends"})
         fonts.request(SocialText::Heading, text);
     for (const char* text : {"News", "Change Log", "Sign in", "Signing in…", "Sign out", "Medicon", "Global"})
@@ -1463,7 +1463,7 @@ void SocialScreen::draw_login(Context& context, const SocialRect& panel, float s
                         body + 6.0F * s + small;
     float y = panel.min.y + std::max(pad, (panel.height() - block) * 0.5F);
     const auto row = [&](float height) { return SocialRect{{x, y}, {x + width, y + height}}; };
-    draw_title(list, fonts, row(display), s, alpha, "Medicon Social");
+    draw_title(list, fonts, row(display), s, alpha, "Medicon");
     y += display + 8.0F * s;
     draw_centered(list, fonts, SocialText::Body, row(body), to_u32(style::description, alpha),
                   "Enter your license key to sign in");

@@ -26,6 +26,7 @@ float draw_glass_plate(ImDrawList* list, ImVec2 min, ImVec2 max, float radius, c
     }
     float fill = glass::fill_idle + (glass::fill_hover - glass::fill_idle) * hover;
     fill += (glass::fill_pressed - fill) * press;
+    if (plate.fill_opacity > 0.0F) fill = plate.fill_opacity;
     list->AddRectFilled(min, max, to_u32(plate.fill, fill * alpha), radius);
     const float rim = glass::rim_idle + (glass::rim_hover - glass::rim_idle) * hover;
     list->AddRect(min, max, to_u32(theme::white, rim * alpha), radius, 0, 1.0F);
