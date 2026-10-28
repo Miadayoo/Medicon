@@ -29,9 +29,9 @@ function(medicon_target target)
     target_include_directories(${target} PUBLIC "${PROJECT_SOURCE_DIR}/include")
     target_compile_features(${target} PUBLIC cxx_std_20)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:/W4;/permissive-;/utf-8;/EHsc>")
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:-Wall;-Wextra;-Wpedantic>")
     endif()
     if(WIN32)
         target_compile_definitions(${target} PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
@@ -117,6 +117,29 @@ if(BUILD_TESTING)
 endif()
 
 if(MEDICON_BUILD_WINDOWS)
+    enable_language(RC)
+    # Older build trees can reload a bare "windres" from CMakeRCCompiler.cmake
+    # even after -DCMAKE_RC_COMPILER supplies an absolute path. Resolve the
+    # loaded value beside the C++ compiler before generating the RC commands.
+    if(MINGW AND NOT IS_ABSOLUTE "${CMAKE_RC_COMPILER}")
+        get_filename_component(_medicon_toolchain_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        find_program(_medicon_resource_compiler NAMES "${CMAKE_RC_COMPILER}"
+            HINTS "${_medicon_toolchain_bin}" NO_CACHE REQUIRED)
+        set(CMAKE_RC_COMPILER "${_medicon_resource_compiler}")
+    endif()
+    include(cmake/EmbedModel.cmake)
+    # ufbx v0.20.1, commit 13b5df8e89eff0ce898f7c37fa0716e3bc186573.
+    # Vendored single C source; see third_party/ufbx/LICENSE.
+    add_library(medicon_ufbx STATIC third_party/ufbx/ufbx.c)
+    target_include_directories(medicon_ufbx PUBLIC third_party/ufbx)
+    set_target_properties(medicon_ufbx PROPERTIES C_STANDARD 99)
+    add_library(medicon_model_asset STATIC src/custom_model/ModelAsset.cpp src/custom_model/Animation.cpp src/custom_model/RigImporter.cpp src/custom_model/FirstPerson.cpp src/custom_model/BundledModel.cpp)
+    medicon_target(medicon_model_asset)
+    target_include_directories(medicon_model_asset PRIVATE "${MEDICON_EMBEDDED_MODEL_DIR}")
+    target_link_libraries(medicon_model_asset PUBLIC medicon_ufbx nlohmann_json::nlohmann_json bcrypt)
+    add_executable(MediconModelInspect tools/custom-model-inspect.cpp)
+    medicon_target(MediconModelInspect)
+    target_link_libraries(MediconModelInspect PRIVATE medicon_model_asset)
     include(cmake/EmbedFonts.cmake)
     if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(FATAL_ERROR "Medicon DLL and Preview require Windows x64.")
@@ -185,15 +208,16 @@ if(MEDICON_BUILD_WINDOWS)
     medicon_target(medicon_social_net)
     target_link_libraries(medicon_social_net PUBLIC medicon_social_core winhttp crypt32 winmm shell32 ole32)
 
-    add_library(medicon_bedrock STATIC src/sdk/BedrockChat.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp src/sdk/Gameplay.cpp)
+    add_library(medicon_bedrock STATIC src/sdk/BedrockChat.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp src/sdk/Gameplay.cpp src/sdk/CustomModelProbe.cpp src/sdk/CustomModelBox.cpp src/sdk/CustomModelStatic.cpp src/sdk/CustomModelAnimation.cpp src/sdk/CustomModelView.cpp)
     medicon_target(medicon_bedrock)
-    target_link_libraries(medicon_bedrock PUBLIC medicon_memory version)
+    target_link_libraries(medicon_bedrock PUBLIC medicon_memory medicon_model_asset version)
 
     add_library(medicon_runtime STATIC src/client/Client.cpp src/hooks/HookManager.cpp)
     medicon_target(medicon_runtime)
     target_link_libraries(medicon_runtime PUBLIC medicon_core medicon_memory medicon_gui medicon_bedrock medicon_mouse_capture minhook shell32 ole32)
 
     add_library(Medicon SHARED
+        "${MEDICON_EMBEDDED_MODEL_RC}"
         src/platform/DllMain.cpp
         src/platform/ClientApi.cpp
         src/platform/AutoOverlay.cpp
@@ -217,7 +241,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/update/Verify.cpp
         src/update/Storage.cpp)
     medicon_target(MediconLoader)
-    target_link_libraries(MediconLoader PRIVATE medicon_loader_core winhttp bcrypt shell32 ole32 version)
+    target_link_libraries(MediconLoader PRIVATE medicon_loader_core winhttp bcrypt shell32 ole32 version user32)
     target_compile_definitions(MediconLoader PRIVATE MEDICON_UPDATE_HOST="${MEDICON_UPDATE_HOST}")
     set_target_properties(MediconLoader PROPERTIES PREFIX "" OUTPUT_NAME "MediconLoader")
 
@@ -242,6 +266,22 @@ if(MEDICON_BUILD_WINDOWS)
     target_link_libraries(medicon_shadow_reference PRIVATE windowscodecs ole32)
 
     if(BUILD_TESTING)
+        add_executable(medicon_custom_model_animation_tests tests/custom_model_animation_tests.cpp)
+        medicon_target(medicon_custom_model_animation_tests)
+        target_link_libraries(medicon_custom_model_animation_tests PRIVATE medicon_bedrock)
+        add_test(NAME custom_model_animation COMMAND medicon_custom_model_animation_tests)
+        add_executable(medicon_custom_model_asset_tests tests/custom_model_asset_tests.cpp "${MEDICON_EMBEDDED_MODEL_RC}")
+        medicon_target(medicon_custom_model_asset_tests)
+        target_link_libraries(medicon_custom_model_asset_tests PRIVATE medicon_model_asset)
+        add_test(NAME custom_model_asset COMMAND medicon_custom_model_asset_tests)
+        add_executable(medicon_custom_model_probe_tests tests/custom_model_probe_tests.cpp)
+        medicon_target(medicon_custom_model_probe_tests)
+        target_link_libraries(medicon_custom_model_probe_tests PRIVATE medicon_bedrock)
+        add_test(NAME custom_model_probe COMMAND medicon_custom_model_probe_tests)
+        add_executable(medicon_custom_model_box_tests tests/custom_model_box_tests.cpp)
+        medicon_target(medicon_custom_model_box_tests)
+        target_link_libraries(medicon_custom_model_box_tests PRIVATE medicon_bedrock)
+        add_test(NAME custom_model_box COMMAND medicon_custom_model_box_tests)
         add_executable(medicon_bedrock_chat_tests tests/bedrock_chat_tests.cpp)
         medicon_target(medicon_bedrock_chat_tests)
         target_link_libraries(medicon_bedrock_chat_tests PRIVATE medicon_bedrock)

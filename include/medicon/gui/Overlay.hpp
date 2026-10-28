@@ -36,6 +36,8 @@ public:
     void set_main_menu_active(bool active) noexcept;
     MainMenu& main_menu() noexcept { return main_menu_; }
     const MainMenu& main_menu() const noexcept { return main_menu_; }
+    // Opens the Social screen in game (VK_HOME).
+    static constexpr int social_key = 0x24;
     // Routes a Win32 virtual-key event: GUI first (open key, Esc, keybind capture),
     // then module hotkeys. Returns true when the key must not reach the game.
     bool key_event(int virtual_key, bool down, bool repeat);
@@ -51,9 +53,9 @@ public:
     SocialUi& social() noexcept { return social_; }
     const SocialUi& social() const noexcept { return social_; }
     const FrameInfo& frame() const noexcept { return frame_; }
-    // The client draws its own cursor: the Medicon menu or the ClickGUI is open.
-    // Everything else counts as playing for Social (see SocialUi).
-    bool in_menu() const noexcept { return main_menu_.active() || gui_.open(); }
+    // The client draws its own cursor: the Medicon menu, the ClickGUI or the
+    // Social screen is open. Everything else counts as playing for Social (see SocialUi).
+    bool in_menu() const noexcept { return main_menu_.active() || gui_.open() || social_.screen_open(); }
 
     void set_save_handler(std::function<void()> handler) { save_ = std::move(handler); }
     // Connects Social. The channel belongs to the network service and must outlive this overlay.

@@ -52,7 +52,7 @@ class FileStore {
 public:
     virtual ~FileStore() = default;
     [[nodiscard]] virtual std::vector<InstalledCore> installed() = 0;
-    // Absolute path of an installed Core, for LoadLibraryExW.
+    // Absolute UTF-8 path of an installed Core, for LoadLibraryExW.
     [[nodiscard]] virtual std::string core_path(const std::string& version) = 0;
     // Lowercase hex SHA-256 of the installed Core file, or empty when unreadable.
     [[nodiscard]] virtual std::string core_sha256(const std::string& version) = 0;
@@ -66,13 +66,19 @@ public:
     virtual void log(std::string_view line) = 0;
 };
 
-// Loads a verified Core and runs the client's bootstrap. launch() returns true
-// only once the Core reported it started (Medicon_Initialize returned 1).
+enum class LaunchResult {
+    Started,     // Medicon_Initialize returned 1
+    LoadFailed,  // Windows could not map the verified file (path, permissions, antivirus): retried next launch
+    Rejected,    // the Core loaded but has the wrong API or would not start: remembered as bad
+};
+
+// Loads a verified Core and runs the client's bootstrap. `error` says why a
+// launch did not start, for the log and the failure message.
 class CoreLauncher {
 public:
     virtual ~CoreLauncher() = default;
-    [[nodiscard]] virtual bool launch(const std::string& version, const std::string& core_path, State state,
-                                      const std::string& previous_version) = 0;
+    [[nodiscard]] virtual LaunchResult launch(const std::string& version, const std::string& core_path, State state,
+                                              const std::string& previous_version, std::string& error) = 0;
 };
 
 struct UpdateConfig {
@@ -94,6 +100,7 @@ struct UpdateOutcome {
     State state = State::Failed;
     std::string started_version;   // empty when no Core could start
     std::string previous_version;  // what ran last, from state.json
+    std::string failure;           // when nothing started: one English sentence for the player
 };
 
 // The whole flow: check the server, verify and install a newer Core when there

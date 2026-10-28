@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "source": {
+    "method": "IDA Pro 9.2 MCP, bounded analysis of named source-location strings and selected callers/callees, then independent PE signature validation",
+    "date_jst": "2026-10-28",
+    "module": "Minecraft.Windows.exe",
+    "file_version": "1.26.52.3",
+    "sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+    "image_base": "0x140000000",
+    "size_of_image": "0x12C02000"
+  },
+  "runtime_registration": true,
+  "status": "User confirmed combined P0 works and requested P1; native P1 box now observed. See custom_model_p1.json and report.",
+  "runtime_implementation": {
+    "P0": "Three uniquely resolved entries register via SignatureRegistry/HookManager; F8 suppresses current local actor in near/ECS/DataDriven paths. Show Debug defaults OFF and is independent.",
+    "P1": "Implemented native box; world-scope direct submit with native-owned stock texture reference. Stops at P1; controlled FPS and isolated normal shading pending."
+  },
+  "signatures": [
+    {
+      "name": "DataDrivenRenderer_render",
+      "registered_in_code": true,
+      "live_hook_eligible": true,
+      "runtime_result": {
+        "source": "user report, 2026-10-28 JST",
+        "first_person": "hands disappear when suppression is enabled",
+        "third_person": "player body remains visible",
+        "p0_acceptance": "Failed as the sole world hook; now reused only in the combined three-hook experiment after explicit user request to hide first-person arms."
+      },
+      "stage": "P0",
+      "rva": "0x558D300",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 01 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4C 89 C6",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "identity and three-pointer void ABI statically supported; first-person/UI distinction unresolved; runtime coverage failed P0",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_558d300.asm.txt",
+          "sha256": "92054b5889c6cfe6ee642045c47b94ef0364f96444be8c0e34b9d3a620794647"
+        },
+        {
+          "path": "out/custom-model/ida/original_558d300.c",
+          "sha256": "97907f25af446d8c9c4c068dd784061e3fb0636beb8e0929a9f33f0dc7a54f45"
+        }
+      ],
+      "eligible_as_sole_world_hook": false
+    },
+    {
+      "name": "Tessellator_begin_candidate",
+      "stage": "P1",
+      "rva": "0x59CA2E0",
+      "pattern": "56 57 55 53 48 83 EC 38 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 80 B9",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "RCX object, R8B mode, R9D count, stack byte at entry RSP+0x28; incoming RDX unused by this body, original type unresolved",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_59ca2e0.asm.txt",
+          "sha256": "47e1c74b2d76632480e645ddf4860825b907c9f8fd038b8e51434093af8b49e9"
+        },
+        {
+          "path": "out/custom-model/ida/original_59ca2e0.c",
+          "sha256": "a9426307c1ca9c63a4be295d31e6b339e328441be93fb560a67008ebe3cd713c"
+        }
+      ]
+    },
+    {
+      "name": "Tessellator_vertex_candidate",
+      "stage": "P1",
+      "rva": "0x59CA7A0",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 00 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 0F 28 F3",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "RCX object and XMM1/XMM2/XMM3 position floats; decompiler argument inference is incomplete",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_59ca7a0.asm.txt",
+          "sha256": "b22e21c05d810dd29222ecbca7087b9cc8b6ff9c0063d5b703b1656015375163"
+        },
+        {
+          "path": "out/custom-model/ida/original_59ca7a0.c",
+          "sha256": "8231674496e22fc72c6aa1740f6bc8ef94ab5c4b37f01bf5d13ba3e49f714ad2"
+        }
+      ]
+    },
+    {
+      "name": "Tessellator_end_candidate",
+      "stage": "P1",
+      "rva": "0x59CBD50",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 03 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 A5",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "RCX tessellator, RDX native output storage, R8D mode, R9 pointer/length label, stack word; output type/ownership unresolved",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_59cbd50.asm.txt",
+          "sha256": "fd6b5bf1615882b284b8e3cdf2dd02b03f4834dc7a0e5d1acb573e77b2aa24ed"
+        },
+        {
+          "path": "out/custom-model/ida/original_59cbd50.c",
+          "sha256": "e85134fc0f52ee202fbb61c54953f587777eb33d58fb80525aa6d2b5fa03fc95"
+        }
+      ]
+    },
+    {
+      "name": "Tessellator_submit_wrapper_candidate",
+      "stage": "P1",
+      "rva": "0x46EEE30",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 81 EC D0 02 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 80 BA ? ? ? ? ? 0F 85 ? ? ? ? 48 89 D6 48 89 CF 4C 8B A5 ? ? ? ? 0F B7 85",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "six physical argument slots seen in caller; native material/texture/context types are not fully reconstructed",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_46eee30.asm.txt",
+          "sha256": "00ef0a6a73c60d71520a95ee2d39eff6e2df22fb35fa414b8f7dbb1b9819545a"
+        },
+        {
+          "path": "out/custom-model/ida/original_46eee30.c",
+          "sha256": "c90ff03e357fd14ec53475cdf84b53b22627839b144bcca62a8a0d40ead94c38"
+        }
+      ]
+    },
+    {
+      "name": "Mesh_immediate_candidate",
+      "stage": "P1",
+      "rva": "0x4B05040",
+      "pattern": "55 56 57 53 48 81 EC F8 01 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4C 89 C6",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "called after native tessellator finalization; material and texture binding ownership require more validation",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_4b05040.asm.txt",
+          "sha256": "8af5f52246ab704c53c915ce9ebb38f05af5f66edafda1d16574fc16a50a3810"
+        },
+        {
+          "path": "out/custom-model/ida/original_4b05040.c",
+          "sha256": "2e6b48b085741b83c46b3d4a34d4fdd87bfab2cdd89babfd249898ebbf23bff7"
+        }
+      ]
+    },
+    {
+      "name": "Matrix_stack_append_candidate",
+      "stage": "P1",
+      "rva": "0x46FD480",
+      "pattern": "41 57 41 56 56 57 53 48 83 EC 20 48 89 D7 48 89 CE 48 8B 59 ? 48 8B 41 ? 48 8D 48 ? 48 39 CB 77 ? BA 01 00 00 00 48 89 F1 E8 ? ? ? ? 48 8B 5E ? 48 8B 46 ? 48 FF CB 4C 8B 76 ? 49 21 DE 4C 89 76 ? 49 01 C6 4C 21 F3 48 8B 46 ? 48 8B 04 D8 48 85 C0 75 ? 48 8B 0D ? ? ? ? 48 8B 01 48 8B 40 ? BA 40 00 00 00",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "copies 64 bytes and increments native deque size; can allocate and is not a verified public matrix-stack API",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_46fd480.asm.txt",
+          "sha256": "8f02d88b16960d10cc73aac3b8f2c76ca2153fb30cfa39d6b8ad683cc561dcf2"
+        },
+        {
+          "path": "out/custom-model/ida/original_46fd480.c",
+          "sha256": "52bde991e3503e7af43a6596f5a54560701b212927ec7f3c39eae3a5c6ca6212"
+        }
+      ]
+    },
+    {
+      "name": "Entity_alphatest_material_getter_candidate",
+      "stage": "P1",
+      "rva": "0x1EB5410",
+      "pattern": "55 56 57 48 81 EC 80 00 00 00 48 8D AC 24 ? ? ? ? 48 C7 45 ? ? ? ? ? 48 89 CE 48 8B 41 ? 48 85 C0 74 ? 48 83 78",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "literal entity_alphatest and returned cached native handle address supported; owner acquisition unresolved",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_1eb5410.asm.txt",
+          "sha256": "df38cacee09427ba90c64663181d1e3fdabafd4487dea4f474d53e225957d539"
+        },
+        {
+          "path": "out/custom-model/ida/original_1eb5410.c",
+          "sha256": "6087ee6e17a906290f73a21c7883bf9bc4b66483af20546d72f6aa24881c09f1"
+        }
+      ]
+    },
+    {
+      "name": "Material_group_lookup_candidate",
+      "stage": "P1",
+      "rva": "0x52F1E00",
+      "pattern": "55 56 57 48 83 EC 50 48 8D 6C 24 ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 49 89 D1",
+      "resolution": "direct",
+      "executable_match_count": 1,
+      "static_validation": "native output/group/key physical registers supported by caller; forwards key to virtual group call, native key type/lifetime unresolved",
+      "runtime_validated": false,
+      "evidence": [
+        {
+          "path": "out/custom-model/ida/original_52f1e00.asm.txt",
+          "sha256": "7e04535246f47c60ebabaae2b32273c8f7c0774b576a868ca6bbd194a9e7a734"
+        },
+        {
+          "path": "out/custom-model/ida/original_52f1e00.c",
+          "sha256": "f16dc8d5bda2d5590d85bff4446fa97f585d93823cc91d90b93220dd78d48520"
+        }
+      ]
+    }
+  ],
+  "combined_p0_user_acceptance": "2026-10-28 JST: 動いた p1に進めて"
+}

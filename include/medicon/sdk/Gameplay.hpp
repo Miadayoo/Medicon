@@ -22,6 +22,10 @@ struct ActorSnapshot {
     // keeps overlays on the model at frame rate instead of stepping 20 times a second.
     Vec3 previous_position;
     bool has_previous = false;
+    // The local player only: where the game draws position this frame
+    // (RenderPositionComponent), reread every Present.
+    Vec3 render_position;
+    bool has_render_position = false;
 };
 
 struct GameplayFrame {

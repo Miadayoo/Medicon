@@ -47,6 +47,11 @@ public:
     bool consume(void* packet, const std::function<void(std::string)>& enqueue) const noexcept;
     [[nodiscard]] std::uintptr_t tick_target(std::string& diagnostic, bool require_feedback = true) const noexcept;
     [[nodiscard]] bool is_local_player(void* actor) const noexcept;
+    // Fresh native getter, for use only within a native render callback.
+    // Borrowed until that callback returns; never retain it across frames.
+    [[nodiscard]] void* local_player_for_render() const noexcept {
+        return reinterpret_cast<void*>(local_player());
+    }
     // Invoke only from the matching local-player baseTick callback, never from
     // Present or an arbitrary worker. Revalidates the current client/player/GUI.
     bool display_message(void* actor, std::string_view message, std::string& diagnostic) const noexcept;

@@ -32,6 +32,15 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
     live.current_version = persisted.last_run;
     UpdateOutcome outcome;
     outcome.previous_version = persisted.last_run;
+    // Older loaders also blamed a release when Windows could not map its file
+    // (a non-ASCII profile path, an antivirus lock); retry what they marked.
+    if (persisted.bad_rule != bad_rule_revision) {
+        if (!persisted.bad.empty()) store.log("retrying Cores an older loader marked as failed");
+        persisted.bad.clear();
+        persisted.bad_rule = bad_rule_revision;
+    }
+    // Why nothing newer is running, kept for the player when nothing starts.
+    std::string problem;
 
     // Verify every installed Core up front, so an interrupted or tampered file
     // is never a candidate, online or off.
@@ -59,9 +68,13 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
 
         if (!manifest) {
             store.log("update check rejected: " + (error.empty() ? manifest_fetch.error : error));
+            problem = "The release on the update server could not be verified (" +
+                      (error.empty() ? manifest_fetch.error : error) + ").";
         } else if (!mcbe_compatible(manifest->mcbe_version, config.game_version)) {
             store.log("latest Core " + manifest->version_text + " targets MCBE " + manifest->mcbe_version +
                       ", not " + config.game_version);
+            problem = "Medicon " + manifest->version_text + " supports Minecraft " + manifest->mcbe_version +
+                      ", but this game is " + (config.game_version.empty() ? "an unknown version" : config.game_version) + ".";
         } else {
             live.latest_version = manifest->version_text;
             const bool have_it = std::find(verified.begin(), verified.end(), manifest->version_text) != verified.end();
@@ -70,6 +83,7 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
             if (have_it || is_bad) {
                 // Already installed, or known not to start: never fetch it again.
                 store.log("latest Core " + manifest->version_text + (is_bad ? " previously failed to start" : " already installed"));
+                if (is_bad) problem = "Medicon " + manifest->version_text + " failed to start before.";
             } else {
                 publish(status, live, Phase::Downloading);
                 const auto core = fetcher.get("/medicon/releases/" + manifest->version_text + "/" +
@@ -78,14 +92,18 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
                 if (!core.reached) {
                     reached_server = false;
                     store.log("download failed: " + core.error);
+                    problem = "Downloading Medicon " + manifest->version_text + " failed (" + core.error + ").";
                 } else if (core.status != 200 || core.body.size() != manifest->size) {
                     store.log("download incomplete for " + manifest->version_text);
+                    problem = "The download of Medicon " + manifest->version_text + " was incomplete.";
                 } else {
                     publish(status, live, Phase::Verifying);
                     if (!same_digest(manifest->sha256, verifier.sha256_hex(core.body))) {
                         store.log("sha256 mismatch for " + manifest->version_text + "; discarded");
+                        problem = "The download of Medicon " + manifest->version_text + " did not match its release.";
                     } else if (!store.install(manifest->version_text, core.body, manifest_fetch.body, signature.body)) {
                         store.log("could not install " + manifest->version_text);
+                        problem = "Medicon " + manifest->version_text + " could not be saved to the Medicon data folder.";
                     } else {
                         store.log("installed Core " + manifest->version_text);
                         verified.push_back(manifest->version_text);
@@ -97,8 +115,10 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
         }
     } else if (manifest_fetch.reached) {
         store.log("update check: server returned HTTP " + std::to_string(manifest_fetch.status));
+        problem = "The update server returned HTTP " + std::to_string(manifest_fetch.status) + ".";
     } else {
         store.log("update check: server unreachable (" + manifest_fetch.error + ")");
+        problem = "The update server " + config.allowed_host + " could not be reached (" + manifest_fetch.error + ").";
     }
 
     // Start the newest verified Core that launches, oldest-known-bad excluded,
@@ -111,6 +131,7 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
         if (status) status(live);
         store.log("no verified Core could be started");
         outcome.state = State::Failed;
+        outcome.failure = problem.empty() ? "No usable Medicon version is installed." : problem;
         return outcome;
     }
 
@@ -125,7 +146,9 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
     publish(status, live, Phase::Loading);
     for (const auto& version : order) {
         const State intended = state_for(version);
-        if (launcher.launch(version, store.core_path(version), intended, persisted.last_run)) {
+        std::string error;
+        const auto result = launcher.launch(version, store.core_path(version), intended, persisted.last_run, error);
+        if (result == LaunchResult::Started) {
             mark_good(persisted, version);
             persisted.last_run = version;
             store.save_state(persisted);
@@ -146,8 +169,15 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
             }
             return outcome;
         }
-        store.log("Core " + version + " failed to start; trying an older version");
-        mark_bad(persisted, version);
+        if (result == LaunchResult::Rejected) {
+            store.log("Core " + version + " failed to start (" + error + "); trying an older version");
+            mark_bad(persisted, version);
+        } else {
+            // The verified file itself is fine; this PC could not map it. Not
+            // the release's fault, so the next launch tries it again.
+            store.log("Core " + version + " could not be loaded (" + error + "); trying an older version");
+        }
+        problem = "Medicon " + version + " could not be started (" + error + ").";
         persisted.last_run.clear();
         store.save_state(persisted);
     }
@@ -156,6 +186,7 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
     live.last_error = "core_launch_failed";
     if (status) status(live);
     outcome.state = State::Failed;
+    outcome.failure = problem;
     return outcome;
 }
 

@@ -199,17 +199,35 @@ void test_hat_camera_and_interpolation() {
     const auto current = render(modules, frame);
     check(!current.vertices.empty(), "hat shows in third person when the offset is in the view matrix");
 
-    // Drawn where the model is between ticks, not where the last tick left it.
+    const auto same_place = [](const Geometry& a, const Geometry& b) {
+        return !a.vertices.empty() && a.vertices.size() == b.vertices.size() &&
+               std::abs(a.vertices.front().pos.x - b.vertices.front().pos.x) < 0.001F &&
+               std::abs(a.vertices.front().pos.y - b.vertices.front().pos.y) < 0.001F;
+    };
+
+    // Without a render position, drawn between the last two ticks.
     frame.local.previous_position = {0.0F, 0.0F, 1.0F};
     frame.local.has_previous = true;
     const auto start = render(modules, frame, 0.0F, 0.0F);
     const auto end = render(modules, frame, 0.0F, 1.0F);
-    check(!start.vertices.empty() && start.vertices.size() == end.vertices.size() &&
-          std::abs(end.vertices.front().pos.x - current.vertices.front().pos.x) < 0.001F &&
-          std::abs(end.vertices.front().pos.y - current.vertices.front().pos.y) < 0.001F &&
+    check(!start.vertices.empty() && start.vertices.size() == end.vertices.size() && same_place(end, current) &&
           (std::abs(start.vertices.front().pos.x - end.vertices.front().pos.x) > 0.5F ||
            std::abs(start.vertices.front().pos.y - end.vertices.front().pos.y) > 0.5F),
           "hat follows the position between the last two ticks");
+
+    // The game draws the model a little past the tick snapshot: the hat sits
+    // on that render position whatever the tick timing.
+    auto drawn = frame;
+    drawn.local.has_previous = false;
+    drawn.local.position.z += 0.5F;
+    drawn.local.bounds.min.z += 0.5F;
+    drawn.local.bounds.max.z += 0.5F;
+    const auto on_model = render(modules, drawn);
+    frame.local.render_position = drawn.local.position;
+    frame.local.has_render_position = true;
+    check(same_place(render(modules, frame, 0.0F, 0.0F), on_model) &&
+          same_place(render(modules, frame, 0.0F, 1.0F), on_model) && !same_place(on_model, current),
+          "hat sits on the render position instead of the trailing tick position");
 }
 } // namespace
 

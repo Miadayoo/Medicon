@@ -1,6 +1,7 @@
 #include <medicon/client/Client.hpp>
 #include <medicon/modules/BuiltinModules.hpp>
 #include <medicon/modules/GameplayModules.hpp>
+#include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/gui/GameplayVisuals.hpp>
 #include <medicon/memory/module_view.hpp>
 #include <Windows.h>
@@ -36,6 +37,9 @@ bool Client::start() {
     // A saved enabled ClickGUI is a previous session's open state, not a request
     // to capture input on injection. Only its bound key opens the new session.
     overlay_.gui().set_open(false);
+    // CustomModel starts OFF on injection, even if the previous session saved
+    // it ON. F8 enables it after the model's native resources are prepared.
+    if (auto* probe = modules_.find(CustomModelProbeModule::module_id)) probe->set_enabled(false);
     overlay_.set_main_menu_active(false);
     overlay_.start_splash();
     running_ = true;

@@ -10,10 +10,14 @@
 #include <medicon/gui/Log.hpp>
 #include <medicon/modules/ClientModules.hpp>
 #include <medicon/modules/GameplayModules.hpp>
+#include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/BedrockMenu.hpp>
 #include <medicon/sdk/VanillaNavigation.hpp>
+#include <medicon/sdk/CustomModelProbe.hpp>
+#include <medicon/sdk/CustomModelBox.hpp>
+#include <medicon/sdk/CustomModelAnimation.hpp>
 #include <medicon/update/HostApi.h>
 #include <medicon/social/Service.hpp>
 #include <backends/imgui_impl_win32.h>
@@ -60,6 +64,7 @@ using SendPacketFn = void(*)(void*, void*);
 using BaseTickFn = void(*)(void*);
 using GrabMouseFn = void(*)(void*);
 using MainMenuUpdateFn = std::uint32_t(*)(void*);
+namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
 
 constexpr GUID queue_guid{0xf6fe7dea, 0x438b, 0x49d6, {0x95, 0xb8, 0xe3, 0x67, 0x45, 0xd4, 0xea, 0xa2}};
 constexpr IID core_interop_iid{0x45d64a29, 0xa63e, 0x4cb6, {0xb4, 0x98, 0x57, 0x81, 0xd2, 0x98, 0xcb, 0x4f}};
@@ -77,6 +82,7 @@ thread_local bool inside_overlay{};
 thread_local bool inside_present{};
 thread_local bool inside_navigation{};
 thread_local bool inside_gameplay{};
+thread_local bool inside_model_probe{};
 struct FlagScope {
     bool& flag;
     bool previous;
@@ -123,6 +129,9 @@ struct Perf {
 
 class Runtime {
 public:
+    // Before any window is subclassed, so the window thread never sees it change.
+    Runtime() { ime.set_reporter([this](std::string_view message) { report(message); }); }
+
     std::atomic_uint status{};
     std::atomic_bool stopping{true};
     std::atomic_bool gui_open{};
@@ -154,6 +163,27 @@ public:
     HookManager tick_hooks;
     HookManager mouse_hooks;
     HookManager navigation_hooks;
+    HookManager model_hooks;
+    HookManager model_box_hooks;
+    HookManager model_static_hooks;
+    medicon::custom_model::ModelRegistry model_assets;
+    sdk::custom_model::TextureGetFn model_texture_get{};
+    bool model_static_registered{};
+    sdk::custom_model::Probe model_probe;
+    sdk::custom_model::BoxRenderer model_box;
+    sdk::custom_model::WorldRenderFn model_world_render{};
+    sdk::custom_model::MeshImmediateFn model_mesh_immediate{};
+    sdk::custom_model::MeshImmediateViewFn model_mesh_view{};
+    sdk::custom_model::MeshSubmitFn model_native_submit{};
+    bool model_box_registered{};
+    model_native::NearActorQueueFn model_near_queue{};
+    model_native::EcsActorQueueFn model_ecs_queue{};
+    model_native::DataDrivenRenderFn model_data_render{};
+    bool model_registered{}; // Bootstrap worker; original retained across stop/start.
+    // Present-thread diagnostic samples, excluding intervals crossing ON/OFF.
+    std::array<double, 2> model_sample_seconds{};
+    std::array<std::uint64_t, 2> model_sample_frames{};
+    bool model_previous_enabled{}, model_has_interval{};
     sdk::BedrockChat bedrock_chat;
     sdk::BedrockGameplay gameplay;
     std::atomic_bool gameplay_ready{false};
@@ -529,6 +559,15 @@ public:
         gameplay.clear();
         last_game_tick = {};
         gameplay_diagnostic.clear();
+        model_probe.reset(); // Stop has already disabled the hook and drained callbacks.
+        model_box.set_options(false,0,1);
+        model_box.set_ready(false);
+        model_box.release_resources();
+        model_assets.stop();
+        (void)model_box.take_frame();
+        model_sample_seconds = {};
+        model_sample_frames = {};
+        model_has_interval = false;
         std::lock_guard lock(input_mutex);
         messages.clear();
     }
@@ -550,6 +589,10 @@ public:
     void connect_chat_feedback();
     void connect_mouse();
     void connect_navigation();
+    void connect_model_probe();
+    void connect_model_box();
+    void connect_model_static();
+    void draw_model_probe();
 };
 
 // Intentionally process-lifetime. Never destroy hook trampolines, C++ locks or
@@ -1413,6 +1456,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     if (gameplay_ready.load(std::memory_order_acquire))
         if (auto* view = client->gameplay_view()) gameplay.refresh_view(*view);
     client->render();
+    draw_model_probe();
     set_open(client->gui().open() || client->overlay().social().screen_open());
     ImGui::Render();
     const auto submit_start = perf_now();
@@ -1449,6 +1493,310 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     }
     if (status.exchange(3) != 3) report("Overlay drawing. Insert opens/closes the GUI.");
     return true;
+}
+
+void Runtime::draw_model_probe() {
+    auto* module = dynamic_cast<CustomModelProbeModule*>(client->modules().find(CustomModelProbeModule::module_id));
+    const bool requested = module && module->enabled();
+    const auto mode=module?module->mode.get<Choice>().index:0;
+    const auto progress=model_box.static_progress();
+    const bool visible=requested&&mode==0&&progress.ready&&model_box.view_mode()!=sdk::custom_model::ViewMode::unknown;
+    model_box.set_static_mode(mode==0,visible);
+    model_box.set_animation(module&&module->animation.get<bool>());
+    model_probe.set_suppress_data_driven(mode != 0 || (visible&&model_box.first_person_ready()));
+    model_probe.set_enabled(requested&&(mode!=0||visible));
+    model_box.set_options(requested && module && (mode==0||(mode==1&&module->test_box.get<bool>())),
+        module ? static_cast<unsigned>(module->material.get<Choice>().index) : 0,
+        module ? module->brightness.get<float>() : 1.0F);
+    const auto sample = model_probe.take_frame();
+    const auto box = model_box.take_frame();
+    const auto animation=model_box.take_animation_frame();
+    const auto& io = ImGui::GetIO();
+    const auto index = requested ? 1U : 0U;
+    // DeltaTime belongs to the preceding interval. Do not assign a transition
+    // interval to either mode, or mix the splash/title screen into FPS samples.
+    if (model_has_interval && requested == model_previous_enabled && client->gameplay_view() &&
+        !client->overlay().splash_active() && !client->capturing_input() &&
+        io.DeltaTime > 0.0F && io.DeltaTime < 1.0F) {
+        model_sample_seconds[index] += io.DeltaTime;
+        ++model_sample_frames[index];
+    }
+    model_has_interval = true;
+    model_previous_enabled = requested;
+    if (!module || !module->show_debug.get<bool>()) return;
+    const auto status = model_probe.status();
+    const char* readiness = status == sdk::custom_model::Probe::Status::ready ? "hook ready" :
+        status == sdk::custom_model::Probe::Status::unavailable ? "unavailable (see inject.log)" : "waiting for native profile";
+    ImGui::SetNextWindowPos(ImVec2(18.0F, 90.0F), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.82F);
+    constexpr auto flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing;
+    if (ImGui::Begin("CustomModel diagnostic", nullptr, flags)) {
+        ImGui::Text("Skip local: %s | %s", requested&&(mode!=0||visible) ?
+            (status == sdk::custom_model::Probe::Status::ready ? "ON" : "BLOCKED") : "OFF", readiness);
+        ImGui::TextUnformatted("Toggle: CustomModel keybind (default F8)");
+        ImGui::TextUnformatted("World queue candidates: near 0x4716E80 / ECS 0x47172D0");
+        ImGui::Text("DataDriven 0x558D300: %s", mode != 0 || model_box.first_person_ready() ? "native arms suppressed" : "native arms while custom arms prepare");
+        ImGui::Text("Custom model view: %s", sdk::custom_model::view_mode_name(model_box.view_mode()));
+        ImGui::Text("Candidates / Present: %llu | local: %llu | skipped: %llu | invalid: %llu",
+            static_cast<unsigned long long>(sample.calls), static_cast<unsigned long long>(sample.local),
+            static_cast<unsigned long long>(sample.skipped), static_cast<unsigned long long>(sample.invalid));
+        for (std::size_t path = 0; path < sample.paths.size(); ++path) {
+            const auto& part = sample.paths[path];
+            ImGui::Text("%s: calls %llu | local %llu | skipped %llu | invalid %llu",
+                path == 0 ? "Near" : path == 1 ? "ECS" : "DataDriven", static_cast<unsigned long long>(part.calls),
+                static_cast<unsigned long long>(part.local), static_cast<unsigned long long>(part.skipped),
+                static_cast<unsigned long long>(part.invalid));
+            ImGui::Text("  Actor: 0x%llX | callback: 0x%llX",
+                static_cast<unsigned long long>(part.actor), static_cast<unsigned long long>(part.callback));
+        }
+        ImGui::Text("Probe CPU / Present: %.4f ms (excludes original callback)", perf_ms(sample.overhead_ticks));
+        ImGui::Text("Current FPS: %.1f", io.Framerate);
+        for (unsigned mode = 0; mode < 2; ++mode) {
+            if (model_sample_seconds[mode] > 0)
+                ImGui::Text("%s mean FPS: %.1f (%llu frames)", mode ? "ON" : "OFF",
+                    model_sample_frames[mode] / model_sample_seconds[mode],
+                    static_cast<unsigned long long>(model_sample_frames[mode]));
+            else ImGui::Text("%s mean FPS: --", mode ? "ON" : "OFF");
+        }
+        ImGui::Separator();
+        ImGui::Text("P1: %s | %s", model_box.ready() ? "hooks ready" : "unavailable (see inject.log)",
+            module->test_box.get<bool>() ? "test box enabled" : "test box disabled");
+        ImGui::Text("World / submits / matched / drawn: %llu / %llu / %llu / %llu",
+            static_cast<unsigned long long>(box.worlds), static_cast<unsigned long long>(box.submits),
+            static_cast<unsigned long long>(box.in_world), static_cast<unsigned long long>(box.drawn));
+        ImGui::Text("Native MeshSubmit / in world / other screen: %llu / %llu / %llu",
+            static_cast<unsigned long long>(box.native_submits),static_cast<unsigned long long>(box.scoped_submits),
+            static_cast<unsigned long long>(box.other_screen));
+        for (unsigned i=1; i<box.failures.size(); ++i) if (box.failures[i])
+            ImGui::Text("P1 rejected %s: %llu", sdk::custom_model::box_failure_name(static_cast<sdk::custom_model::BoxFailure>(i)),
+                static_cast<unsigned long long>(box.failures[i]));
+        ImGui::Text("P1 draw CPU / Present: %.4f ms", perf_ms(box.ticks));
+        ImGui::Text("P1 retained stock texture: %s",model_box.texture_ready() ? "ready" : "waiting for textured native submit with empty metadata");
+        ImGui::TextUnformatted("P1 retains a stock binding; custom models use their own PNGs.");
+        ImGui::Separator();
+        const auto asset=model_assets.snapshot();
+        ImGui::Text("P2: %s | native meshes %u / %u | PNG %u / %u",progress.ready?"ready":"loading / vanilla fallback",
+            progress.meshes,asset?static_cast<unsigned>(asset->parts.size()):0,progress.textures,asset?static_cast<unsigned>(asset->textures.size()):0);
+        ImGui::TextWrapped("%s",model_assets.diagnostic().c_str());
+        if (asset) ImGui::Text("Triangles: %llu | cache: %s | scale %.2f | yaw %.1f",
+            static_cast<unsigned long long>(asset->triangle_count),asset->from_cache?"hit":"imported",asset->scale,asset->yaw_offset);
+        ImGui::Text("P2 texture requests: %llu | total upload/draw CPU: %.3f ms",static_cast<unsigned long long>(progress.requests),perf_ms(progress.ticks));
+        ImGui::Text("P3: %s | %s | input %s | frames %llu",module->animation.get<bool>()?"ON":"OFF",
+            medicon::custom_model::motion_name(static_cast<medicon::custom_model::Motion>(animation.motion)),animation.input_ready?"ready":"waiting",static_cast<unsigned long long>(animation.frames));
+        if(asset&&asset->rig)ImGui::Text("Bones %u | skin vertices %u | rig cache %s",static_cast<unsigned>(asset->rig->bones.size()),static_cast<unsigned>(asset->rig->vertices.size()),asset->rig->from_cache?"hit":"imported");
+        if(asset&&asset->rig)ImGui::Text("First-person arms: %s | vertices %u",model_box.first_person_ready()?"drawn":"preparing / native fallback",static_cast<unsigned>(asset->rig->first_person.vertices.size()));
+        if(animation.frames)ImGui::Text("P3 CPU skin %.4f ms | native draw %.4f ms / world",perf_ms(animation.cpu_ticks)/animation.frames,perf_ms(animation.draw_ticks)/animation.frames);
+        ImGui::Text("P3 bulk/fallback batches %llu/%llu | input failures %llu",static_cast<unsigned long long>(animation.bulk_batches),static_cast<unsigned long long>(animation.fallback_batches),static_cast<unsigned long long>(animation.read_failures));
+    }
+    ImGui::End();
+}
+
+bool model_actor_is_local(void* actor, void* owner) noexcept {
+    return static_cast<Runtime*>(owner)->bedrock_chat.is_local_player(actor);
+}
+
+void hook_model_near_queue(model_native::NearActorQueueCallback* candidate_callback,
+                           model_native::PlayerCandidate* actor) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.model_near_queue;
+    if (!original) return;
+    if (state.stopping.load(std::memory_order_acquire) || inside_model_probe) {
+        return original(candidate_callback, actor);
+    }
+    FlagScope entered(inside_model_probe);
+    // Caller 0x144692C93 ignores return and advances to the next actor. This
+    // is not the rejected addPlayers bool callback. No game fields are written.
+    if (state.model_probe.inspect_near(candidate_callback, actor, model_actor_is_local, &state)) return;
+    return original(candidate_callback, actor);
+}
+
+void hook_model_ecs_queue(model_native::EcsActorQueueContext* context,
+                          model_native::ActorOwnerRef* component) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.model_ecs_queue;
+    if (!original) return;
+    if (state.stopping.load(std::memory_order_acquire) || inside_model_probe)
+        return original(context, component);
+    FlagScope entered(inside_model_probe);
+    // Native 0x1447172E9 reads the actor at component +0. Probe performs a
+    // checked copy only while enabled; failure/nonlocal/OFF passes unchanged.
+    if (state.model_probe.inspect_ecs(context, component, model_actor_is_local, &state)) return;
+    return original(context, component);
+}
+
+void hook_model_data_render(model_native::DataDrivenRenderer* renderer,
+                            model_native::BaseActorRenderContext* context,
+                            model_native::ActorRenderData* data) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.model_data_render;
+    if (!original) return;
+    if (state.stopping.load(std::memory_order_acquire) || inside_model_probe)
+        return original(renderer, context, data);
+    FlagScope entered(inside_model_probe);
+    // CustomModel replaces native arms only after its arm-only draw succeeded.
+    // Failed/missing current pose input immediately restores native hands.
+    // Proven void(this, context*, renderData*) ABI; actor at renderData +0.
+    const bool allow_suppression=!state.model_box.custom_model_mode()||state.model_box.first_person_ready();
+    if (state.model_probe.inspect_render(renderer, context, data, model_actor_is_local, &state,allow_suppression)) return;
+    return original(renderer, context, data);
+}
+
+void Runtime::connect_model_probe() {
+    if (stopping) return;
+    // connect_chat has finished publishing its immutable, validated current-
+    // client/local-player bridge before any render callback can use it.
+    if (!chat_installed) {
+        model_probe.set_ready(false);
+        report("P0 probe unavailable: validated local-player bridge is not ready.");
+        return;
+    }
+    std::string error;
+    if (!model_registered) {
+        const auto targets = model_probe.locate(error);
+        if (!targets) { report("CustomModel: " + error); return; }
+        report("CustomModel: " + error);
+        // Register all three disabled before enabling any. A missing/ambiguous
+        // target prevents a partially connected combined experiment.
+        if (!model_hooks.create("CustomModel P0 near actor queue", reinterpret_cast<void*>(targets.near_actor),
+                reinterpret_cast<void*>(&hook_model_near_queue), reinterpret_cast<void**>(&model_near_queue), error) ||
+            !model_hooks.create("CustomModel P0 ECS actor queue", reinterpret_cast<void*>(targets.ecs_actor),
+                reinterpret_cast<void*>(&hook_model_ecs_queue), reinterpret_cast<void**>(&model_ecs_queue), error) ||
+            !model_hooks.create("CustomModel P0 combined DataDriven render", reinterpret_cast<void*>(targets.data_driven),
+                reinterpret_cast<void*>(&hook_model_data_render), reinterpret_cast<void**>(&model_data_render), error)) {
+            model_probe.set_ready(false);
+            report("P0 queue hooks unavailable: " + error, true);
+            std::string cleanup_error;
+            if (!model_hooks.clear(cleanup_error)) report("P0 queue registration cleanup: " + cleanup_error, true);
+            else { model_near_queue = nullptr; model_ecs_queue = nullptr; model_data_render = nullptr; }
+            return;
+        }
+        model_registered = true;
+    }
+    if (!model_hooks.enable_all(error)) {
+        model_probe.set_ready(false);
+        report("P0 queue hooks unavailable: " + error, true);
+        return;
+    }
+    model_probe.set_ready(true);
+    report("CustomModel P0 combined hooks ready (RVAs 0x4716E80 / 0x47172D0 / 0x558D300); F8 toggles local body and arms. Combined coverage unverified.");
+}
+
+void hook_model_world_render(void* camera, void* context, const void* view, void* client) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.model_world_render;
+    if (!original) return;
+    if (state.stopping.load(std::memory_order_acquire) || !state.model_box.enabled())
+        return original(camera,context,view,client);
+    const auto view_mode = sdk::custom_model::read_local_view(state.bedrock_chat.mouse_client());
+    sdk::custom_model::BoxRenderer::WorldScope world(state.model_box,context,state.bedrock_chat.local_player_for_render(),view_mode);
+    original(camera,context,view,client);
+    if (!state.stopping.load(std::memory_order_acquire)) state.model_box.finish_world(state.model_mesh_immediate);
+}
+
+void hook_model_mesh_immediate(void* screen, void* tess, const void* material, const void* texture, const void* metadata) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.model_mesh_immediate;
+    if (!original) return;
+    original(screen,tess,material,texture,metadata);
+    if (!state.stopping.load(std::memory_order_acquire)) state.model_box.after_submit(screen,tess,texture,metadata,original);
+}
+
+void hook_model_mesh_view(void* screen, void* tess, const void* material, const void* texture, std::uint16_t view, const void* metadata) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.model_mesh_view;
+    if (!original) return;
+    original(screen,tess,material,texture,view,metadata);
+    if (!state.stopping.load(std::memory_order_acquire))
+        state.model_box.after_submit(screen,tess,texture,metadata,state.model_mesh_immediate);
+}
+
+void hook_model_native_submit(void* mesh, void* context, const void* material, void* bindings,
+    std::uintptr_t unused5, std::uintptr_t unused6, const void* metadata, std::uintptr_t unused8, void* optional) {
+    CallbackScope callback;
+    auto& state=callback.state;
+    const auto original=state.model_native_submit;
+    if (!original) return;
+    if (!state.stopping.load(std::memory_order_acquire))
+        state.model_box.before_mesh_submit(context,bindings,metadata,state.model_mesh_immediate);
+    return original(mesh,context,material,bindings,unused5,unused6,metadata,unused8,optional);
+}
+
+void Runtime::connect_model_box() {
+    if (stopping || model_probe.status() != sdk::custom_model::Probe::Status::ready) return;
+    std::string error;
+    if (!model_box_registered) {
+        const auto targets = sdk::custom_model::locate_box_targets(error);
+        if (!targets) { report("CustomModel " + error,true); return; }
+        model_box.configure(targets);
+        std::string view_diagnostic;
+        const bool view_ready=sdk::custom_model::initialize_view_reader(view_diagnostic);
+        report(view_diagnostic,!view_ready);
+        // Append disabled P1 hooks after P0; existing hook order is preserved.
+        if (!model_box_hooks.create("CustomModel P1 world render",reinterpret_cast<void*>(targets.world),
+                reinterpret_cast<void*>(&hook_model_world_render),reinterpret_cast<void**>(&model_world_render),error) ||
+            !model_box_hooks.create("CustomModel P1 native mesh submit",reinterpret_cast<void*>(targets.mesh),
+                reinterpret_cast<void*>(&hook_model_mesh_immediate),reinterpret_cast<void**>(&model_mesh_immediate),error) ||
+            !model_box_hooks.create("CustomModel P1 native mesh view submit",reinterpret_cast<void*>(targets.mesh_view),
+                reinterpret_cast<void*>(&hook_model_mesh_view),reinterpret_cast<void**>(&model_mesh_view),error) ||
+            !model_box_hooks.create("CustomModel P1 native MeshSubmit",reinterpret_cast<void*>(targets.submit),
+                reinterpret_cast<void*>(&hook_model_native_submit),reinterpret_cast<void**>(&model_native_submit),error)) {
+            model_box.set_ready(false);
+            report("CustomModel P1 hook registration failed: " + error,true);
+            std::string cleanup;
+            if (!model_box_hooks.clear(cleanup)) report("P1 registration cleanup: " + cleanup,true);
+            else { model_world_render=nullptr; model_mesh_immediate=nullptr; model_mesh_view=nullptr; model_native_submit=nullptr; }
+            return;
+        }
+        model_box_registered=true;
+        report("CustomModel " + error);
+    }
+    if (!model_box_hooks.enable_all(error)) { model_box.set_ready(false); report("P1 enable failed: " + error,true); return; }
+    model_box.set_ready(true);
+    report("CustomModel P1 hooks ready. P1 Test Box / Material / Brightness / Show Debug are in CustomModel. Visual validation pending.");
+}
+
+void* hook_model_texture_get(void* group,void* output,const void* location,bool flag,std::uint64_t optional,std::uint8_t mode) {
+    CallbackScope callback;auto& state=callback.state;const auto original=state.model_texture_get;
+    if (!original) return output;
+    auto* result=original(group,output,location,flag,optional,mode);
+    if (!state.stopping.load(std::memory_order_acquire)) state.model_box.observe_texture_group(group,original);
+    return result;
+}
+void Runtime::connect_model_static() {
+    if (stopping||!model_box.ready()) return;
+    std::string error;
+    if (!model_static_registered) {
+        const auto targets=sdk::custom_model::locate_static_targets(error);
+        if (!targets) { report("CustomModel "+error,true);return; }
+        model_box.configure_static(targets,model_assets);
+        std::string animation_diagnostic;const bool animation_reader=sdk::custom_model::initialize_animation_reader(animation_diagnostic);
+        report(animation_diagnostic,!animation_reader);
+        if (!model_static_hooks.create("CustomModel P2 async texture request",reinterpret_cast<void*>(targets.texture_get),
+            reinterpret_cast<void*>(&hook_model_texture_get),reinterpret_cast<void**>(&model_texture_get),error)) {
+            report("P2 hook registration failed: "+error,true);return;
+        }
+        model_static_registered=true;
+    }
+    if (!model_static_hooks.enable_all(error)) { report("P2 enable failed: "+error,true);return; }
+    const auto data_directory=Client::default_config_path().parent_path();
+    auto directory=data_directory/L"models"/L"neon-t-pose";
+    HMODULE own{};std::array<wchar_t,32768> filename{};
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&hook_model_texture_get),&own)&&GetModuleFileNameW(own,filename.data(),static_cast<DWORD>(filename.size()))) {
+        const auto external=std::filesystem::path(filename.data()).parent_path()/L"models"/L"neon-t-pose";
+        if (std::filesystem::is_regular_file(external/L"model.fbx")) directory=external;
+    }
+    model_assets.start(directory,data_directory/L"cache"/L"models");
+    // UTF-8: path::string() throws for profile folders outside the ANSI code page.
+    const auto shown=directory.u8string();
+    report("CustomModel worker started: external="+std::string(shown.begin(),shown.end())+"; embedded Neon fallback enabled. Mode=Custom model; vanilla retained until ready.");
 }
 
 void hook_send_packet(void* sender, void* packet) {
@@ -2035,10 +2383,20 @@ DWORD WINAPI start_worker(void*) {
         if (state.social) state.social->start();
         try { state.connect_mouse(); state.connect_chat(); state.connect_chat_feedback(); }
         catch (const std::exception& error) { state.report(std::string("Minecraft native chat SDK unavailable: ") + error.what(), true); }
+        // Append P0 after the existing native startup sequence; preserve the
+        // relative order and readiness contracts of every existing hook.
+        try { state.connect_model_probe(); state.connect_model_box(); state.connect_model_static(); }
+        catch (const std::exception& error) {
+            state.model_probe.set_ready(false);
+            state.model_box.set_ready(false);
+            state.report(std::string("CustomModel P0 unavailable: ") + error.what(), true);
+        }
         return 0;
     } catch (const std::exception& error) { state.report(error.what(), true); }
     catch (...) { state.report("Overlay bootstrap failed.", true); }
     state.stopping = true;
+    state.model_probe.set_enabled(false);
+    state.model_box.set_options(false,0,1);
     state.navigation_ready.store(false, std::memory_order_release);
     state.navigation.stop();
     state.status = 4;
@@ -2133,6 +2491,8 @@ int MediconStopOverlay() {
     auto& state = runtime();
     std::lock_guard lifecycle(state.lifecycle_mutex);
     state.stopping = true;
+    state.model_probe.set_enabled(false);
+    state.model_box.set_options(false,0,1);
     state.navigation_ready.store(false, std::memory_order_release);
     state.navigation.stop();
     state.publish_menu_visible(false);
@@ -2151,6 +2511,9 @@ int MediconStopOverlay() {
         }
     }
     std::string error;
+    if (!state.model_static_hooks.disable_all(error)) { state.report(error, true); return 0; }
+    if (!state.model_box_hooks.disable_all(error)) { state.report(error, true); return 0; }
+    if (!state.model_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.navigation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.mouse_hooks.disable_all(error)) { state.report(error, true); return 0; }
     state.mouse_ready = false;

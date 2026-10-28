@@ -48,11 +48,16 @@ struct Manifest {
 
 [[nodiscard]] bool same_digest(std::string_view a, std::string_view b) noexcept;
 
+// Bumped when the loader changes what makes a Core "bad". Marks recorded under
+// an older rule are dropped, so those Cores get another chance.
+inline constexpr std::uint32_t bad_rule_revision = 2;
+
 // state.json: which installed versions started fine or failed, and the one that ran last.
 struct LoaderState {
     std::vector<std::string> good;
     std::vector<std::string> bad;
     std::string last_run;
+    std::uint32_t bad_rule = 0;  // the bad_rule_revision that recorded `bad`
 };
 [[nodiscard]] LoaderState parse_state(std::string_view json) noexcept;
 [[nodiscard]] std::string serialize_state(const LoaderState& state);

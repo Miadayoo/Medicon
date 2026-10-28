@@ -28,6 +28,7 @@ constexpr std::uint32_t state_hash = 0x1B5D5238, bounds_hash = 0xBAC1B3CF;
 constexpr std::uint32_t rotation_hash = 0x75DF36B7, type_hash = 0x4F6BA419;
 constexpr std::uint32_t owner_hash = 0x85B93800, dead_hash = 0x710A62C4;
 constexpr std::uint32_t head_hash = 0xBABE7211, body_hash = 0xD7F64BBA;
+constexpr std::uint32_t render_position_hash = 0xE53C7221;
 constexpr std::uint32_t entity_mask = 0x3FFFF;
 constexpr std::size_t maximum_entities = 65536;
 
@@ -183,6 +184,9 @@ struct BedrockGameplay::Impl {
     std::uintptr_t client = 0, player = 0, registry = 0, block_source = 0;
     // The LevelRenderer child whose camera fields the last capture validated.
     std::uintptr_t view_player = 0;
+    // The local player's RenderPositionComponent, which the game moves every
+    // frame to where it draws the model. Resolved again by every capture.
+    std::uintptr_t render_position = 0;
     // Auto Select keeps the block slot selected while placing (like Solstice's
     // default Full switch) so the game reports it to the server on its own
     // tick before a placement uses it. The original slot comes back once
@@ -370,6 +374,21 @@ struct BedrockGameplay::Impl {
         return true;
     }
 
+    // A copy only. The drawn position stays within a couple of ticks' motion
+    // of the tick position; anything else (a moved component, a teleport) is
+    // dropped and the overlay falls back to the tick positions.
+    void read_render_position(ActorSnapshot& local) const noexcept {
+        Vec3 position{};
+        local.has_render_position = false;
+        if (!read_at(render_position, 0, position) || !valid_position(position)) return;
+        float step = distance_squared(local.velocity, {});
+        if (local.has_previous) step = std::max(step, distance_squared(local.position, local.previous_position));
+        const float reach = 1.0F + 2.0F * std::sqrt(step);
+        if (!(distance_squared(position, local.position) <= reach * reach)) return;
+        local.render_position = position;
+        local.has_render_position = true;
+    }
+
     void projection() noexcept {
         const auto get_renderer = method(client, 187);
         if (!get_renderer) return;
@@ -418,6 +437,7 @@ void BedrockGameplay::clear() noexcept {
     impl_->switched_this_tick = false;
     impl_->frame = {};
     impl_->client = impl_->player = impl_->registry = impl_->block_source = impl_->view_player = 0;
+    impl_->render_position = 0;
     impl_->local_entity = 0;
     impl_->pools.clear();
 }
@@ -429,6 +449,7 @@ bool BedrockGameplay::slot_restore_pending() const noexcept { return impl_->swit
 bool BedrockGameplay::refresh_view(GameplayFrame& frame) const noexcept {
     const auto& state = *impl_;
     if (!state.supported || !frame.ready || !frame.projection_ready) return false;
+    state.read_render_position(frame.local);
     Vec3 camera{};
     Vec2 fov{};
     std::array<float, 16> matrix{};
@@ -464,6 +485,9 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         clear();
         return false;
     }
+    // Verified on 1.26.52.3: 12-byte elements (lea [i+i*2], shl 2 at 0x28A56C3).
+    state.render_position = state.component(state.local_entity, render_position_hash, sizeof(Vec3));
+    state.read_render_position(state.frame.local);
     struct Rotation { float pitch, yaw, old_pitch, old_yaw; } rotation{};
     if (!read_at(state.component(state.local_entity, rotation_hash, sizeof(rotation)), 0, rotation) ||
         !std::isfinite(rotation.pitch) || !std::isfinite(rotation.yaw) || std::abs(rotation.pitch) > 180 ||

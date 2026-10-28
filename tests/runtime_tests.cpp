@@ -1,5 +1,7 @@
 #include <medicon/client/Client.hpp>
 #include <medicon/gui/InjectSplash.hpp>
+#include <medicon/sdk/CustomModelProbe.hpp>
+#include <medicon/modules/CustomModelProbeModule.hpp>
 #include <Windows.h>
 #include <imgui.h>
 #include <chrono>
@@ -17,6 +19,116 @@ Function original;
 Function second_original;
 int detour() { return original() + 5; }
 int second_detour() { return second_original() + 9; }
+
+namespace native_model = medicon::sdk::custom_model::bedrock_1_26_52_3;
+medicon::sdk::custom_model::Probe render_probe;
+native_model::NearActorQueueFn near_original;
+native_model::EcsActorQueueFn ecs_original;
+native_model::DataDrivenRenderFn render_original;
+int fixture_local_actor;
+bool fixture_is_local(void* actor, void*) noexcept { return actor == &fixture_local_actor; }
+void near_detour(native_model::NearActorQueueCallback* callback, native_model::PlayerCandidate* actor) {
+    if (render_probe.inspect_near(callback, actor, fixture_is_local, nullptr)) return;
+    near_original(callback, actor);
+}
+void ecs_detour(native_model::EcsActorQueueContext* context, native_model::ActorOwnerRef* component) {
+    if (render_probe.inspect_ecs(context, component, fixture_is_local, nullptr)) return;
+    ecs_original(context, component);
+}
+void render_detour(native_model::DataDrivenRenderer* renderer, native_model::BaseActorRenderContext* context,
+                   native_model::ActorRenderData* data) {
+    if (render_probe.inspect_render(renderer, context, data, fixture_is_local, nullptr)) return;
+    render_original(renderer, context, data);
+}
+
+void custom_model_hook_test() {
+    auto* code = static_cast<unsigned char*>(VirtualAlloc(nullptr, 192, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    require(code != nullptr, "Allocate all three combined ABI fixtures");
+    struct Free { void* code; ~Free() { VirtualFree(code, 0, MEM_RELEASE); } } free_code{code};
+    std::memset(code, 0x90, 192);
+    // Observed Windows x64 two-pointer, ignored-return boundary: increment
+    // [rcx], record unchanged RDX at +8, return. No native game code involved.
+    const unsigned char function[]{0x48, 0xFF, 0x01, 0x48, 0x89, 0x51, 0x08, 0xC3};
+    std::memcpy(code, function, sizeof(function));
+    std::memcpy(code + 64, function, sizeof(function));
+    // Three-pointer render ABI additionally records original R8 at +16.
+    const unsigned char render_function[]{0x48, 0xFF, 0x01, 0x48, 0x89, 0x51, 0x08, 0x4C, 0x89, 0x41, 0x10, 0xC3};
+    std::memcpy(code + 128, render_function, sizeof(render_function));
+    FlushInstructionCache(GetCurrentProcess(), code, 192);
+    const auto call_near = reinterpret_cast<native_model::NearActorQueueFn>(code);
+    const auto call_ecs = reinterpret_cast<native_model::EcsActorQueueFn>(code + 64);
+    const auto call_render = reinterpret_cast<native_model::DataDrivenRenderFn>(code + 128);
+    struct Recorder { std::uint64_t calls{}; void* argument{}; void* render_data{}; } near_record, ecs_record, render_record;
+    static_assert(offsetof(Recorder, argument) == 8 && offsetof(Recorder, render_data) == 16);
+    auto* callback = reinterpret_cast<native_model::NearActorQueueCallback*>(&near_record);
+    auto* context = reinterpret_cast<native_model::EcsActorQueueContext*>(&ecs_record);
+    auto* renderer = reinterpret_cast<native_model::DataDrivenRenderer*>(&render_record);
+    auto* render_context = reinterpret_cast<native_model::BaseActorRenderContext*>(&fixture_local_actor);
+    auto* local = reinterpret_cast<native_model::PlayerCandidate*>(&fixture_local_actor);
+    int other_actor;
+    auto* other = reinterpret_cast<native_model::PlayerCandidate*>(&other_actor);
+    medicon::HookManager hooks;
+    std::string error;
+    require(hooks.create("P0 near fixture", code, reinterpret_cast<void*>(&near_detour),
+                        reinterpret_cast<void**>(&near_original), error), error.c_str());
+    require(hooks.create("P0 ECS fixture", code + 64, reinterpret_cast<void*>(&ecs_detour),
+                        reinterpret_cast<void**>(&ecs_original), error), error.c_str());
+    require(hooks.create("P0 render fixture", code + 128, reinterpret_cast<void*>(&render_detour),
+                        reinterpret_cast<void**>(&render_original), error), error.c_str());
+    require(hooks.enable_all(error), error.c_str());
+    render_probe.reset();
+    render_probe.set_ready(true);
+    auto* component_actor = local;
+    auto* component = reinterpret_cast<native_model::ActorOwnerRef*>(&component_actor);
+    auto* data = reinterpret_cast<native_model::ActorRenderData*>(&component_actor);
+    call_near(callback, local);
+    call_ecs(context, component);
+    call_render(renderer, render_context, data);
+    require(near_record.calls == 1 && near_record.argument == local &&
+            ecs_record.calls == 1 && ecs_record.argument == component && render_record.calls == 1 &&
+            render_record.argument == render_context && render_record.render_data == data,
+            "OFF forwards all native arguments, including render R8, through their trampolines");
+    render_probe.set_enabled(true);
+    call_near(callback, local);
+    call_ecs(context, component);
+    call_render(renderer, render_context, data);
+    require(near_record.calls == 1 && ecs_record.calls == 1 && render_record.calls == 1, "All local routes skip original");
+    component_actor = other;
+    call_near(callback, other);
+    call_ecs(context, component);
+    call_render(renderer, render_context, data);
+    require(near_record.calls == 2 && near_record.argument == other &&
+            ecs_record.calls == 2 && ecs_record.argument == component && render_record.calls == 2 &&
+            render_record.argument == render_context && render_record.render_data == data, "Other actor arguments pass unchanged");
+    int processed = 0;
+    for (auto* actor : {local, other, other}) {
+        component_actor = actor;
+        call_near(callback, actor);
+        call_ecs(context, component);
+        call_render(renderer, render_context, data);
+        ++processed;
+    }
+    require(processed == 3 && near_record.calls == 4 && ecs_record.calls == 4 && render_record.calls == 4,
+            "Skipping local still visits later actors in all paths");
+    const auto sample = render_probe.take_frame();
+    require(sample.paths[0].calls == 6 && sample.paths[1].calls == 6 && sample.paths[2].calls == 6 &&
+            sample.paths[0].skipped == 2 && sample.paths[1].skipped == 2 && sample.paths[2].skipped == 2,
+            "All native detours publish separate counts");
+    render_probe.set_enabled(false);
+    component_actor = local;
+    call_near(callback, local);
+    call_ecs(context, component);
+    call_render(renderer, render_context, data);
+    require(near_record.calls == 5 && ecs_record.calls == 5 && render_record.calls == 5, "OFF restores all originals");
+    require(hooks.disable_all(error), error.c_str());
+    render_probe.set_enabled(true);
+    call_near(callback, local);
+    call_ecs(context, component);
+    call_render(renderer, render_context, data);
+    require(near_record.calls == 6 && ecs_record.calls == 6 && render_record.calls == 6, "Hook stop restores all native code");
+    require(hooks.clear(error), error.c_str());
+    render_probe.reset();
+}
 
 void hooks_test() {
     auto* code = static_cast<unsigned char*>(VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
@@ -73,7 +185,7 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     game.current.local.local = true;
     medicon::Client client(path);
     require(client.start(), "Gameplay client starts");
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp"})
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "custommodel"})
         require(client.modules().find(id) && !client.modules().find(id)->enabled(), "Gameplay module registered disabled");
     client.game_tick(game, 0.05F);
     require(game.rotations == 0, "Disabled gameplay modules do not act");
@@ -98,17 +210,45 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
 }
 
 void client_test(const std::filesystem::path& path) {
-    { std::ofstream config(path); config << R"({"version":1,"modules":{"clickgui":{"enabled":true}}})"; }
+    { std::ofstream config(path); config << R"({"version":1,"modules":{"clickgui":{"enabled":true},"custommodelprobe":{"enabled":true,"settings":{"material":1}}}})"; }
     medicon::Client client(path);
     require(!client.execute_command(".bind clickgui rshift").success, "Commands require an initialized client");
     require(client.start(), "Client starts");
     require(client.start(), "Start is idempotent");
     require(client.modules().find("example") != nullptr, "Built-in module registered");
+    auto* model_probe = client.modules().find("custommodel");
+    require(model_probe&&model_probe->id()=="custommodel"&&model_probe->name()=="CustomModel"&&client.modules().find("custommodelprobe")==model_probe,"CustomModel rename retains legacy command lookup");
+    require(model_probe && !model_probe->enabled() && model_probe->keybind() == VK_F8, "P0 defaults OFF with F8 binding");
+    auto* model_options = dynamic_cast<medicon::CustomModelProbeModule*>(model_probe);
+    require(model_options&&model_options->material.name=="Material"&&model_options->material.get<medicon::Choice>().options[0]=="Neon"&&model_options->material.get<medicon::Choice>().options[1]=="entity"&&model_options->material.get<medicon::Choice>().index==1,"Material keeps its name, the alphatest choice displays Neon, and legacy selection is migrated");
+    require(model_options && model_options->show_debug.name == "Show Debug" && !model_options->show_debug.get<bool>(),
+            "Show Debug is a module option and defaults OFF");
+    client.key_event(VK_F8, true);
+    require(model_probe->enabled(), "F8 enables P0 through existing module dispatch");
+    require(!model_options->show_debug.get<bool>(), "F8 never enables Show Debug");
+    client.key_event(VK_F8, true, true);
+    require(model_probe->enabled(), "F8 repeat does not toggle P0");
+    client.key_event(VK_F8, false);
+    client.key_event(VK_F8, true);
+    client.key_event(VK_F8, false);
+    require(!model_probe->enabled(), "F8 restores P0 OFF");
+    model_options->show_debug.get<bool>() = true;
+    require(!model_probe->enabled() && model_options->show_debug.get<bool>(), "Show Debug can be ON while suppression is OFF");
+    client.key_event(VK_F8, true);
+    client.key_event(VK_F8, false);
+    require(model_probe->enabled() && model_options->show_debug.get<bool>(), "F8 preserves explicit Show Debug choice");
+    client.key_event(VK_F8, true);
+    client.key_event(VK_F8, false);
+    model_options->show_debug.get<bool>() = false;
     require(!client.gui().open() && !client.capturing_input(), "Startup leaves ClickGUI closed and game input free");
     require(client.overlay().splash_active(), "Startup arms the injection splash");
 
     const auto remap = client.execute_command(".bind clickgui rshift");
     require(remap.handled && remap.changed && remap.success, "Bind command changes and persists the GUI key");
+    {
+        std::ifstream saved(path);const std::string text((std::istreambuf_iterator<char>(saved)),{});
+        require(text.find("\"custommodel\"")!=std::string::npos&&text.find("\"custommodelprobe\"")==std::string::npos,"Saved config uses only the new CustomModel ID");
+    }
     require(client.modules().find("clickgui")->keybind() == VK_RSHIFT, "GUI binding is shared with the module registry");
     client.key_event(VK_INSERT, true);
     require(!client.gui().open(), "Old GUI key cannot open the GUI after a bind command");
@@ -300,6 +440,7 @@ int main() {
     try {
         std::filesystem::create_directories(directory);
         hooks_test();
+        custom_model_hook_test();
         gameplay_dispatch_test(directory / "gameplay-config.json");
         client_test(directory / "config.json");
         main_menu_input_test(directory / "main-menu-config.json");

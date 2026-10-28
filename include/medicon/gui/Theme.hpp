@@ -375,6 +375,12 @@ inline constexpr float picker_spacing = 6.0F;
 inline constexpr float picker_hex_line = 16.0F;
 inline constexpr float control_gap = 6.0F;
 
+// Social button, bottom centre: the Main Menu's glass plate at ClickGUI size.
+inline constexpr float social_button_width = 128.0F;
+inline constexpr float social_button_height = 34.0F;
+inline constexpr float social_button_radius = 8.0F;
+inline constexpr float social_button_bottom = 16.0F; // gap above the window's bottom edge
+
 // Input (physical px).
 inline constexpr float click_slop_px = 3.0F;
 

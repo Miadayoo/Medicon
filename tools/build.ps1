@@ -21,6 +21,7 @@ if ($Toolchain -eq 'Auto') {
     else { $Toolchain = 'MSVC' }
 }
 
+$previousBuildPath = $env:PATH
 Push-Location $projectRoot
 try {
     if ($Toolchain -eq 'LLVM') {
@@ -28,10 +29,14 @@ try {
             throw 'Local LLVM MinGW and Ninja were not found under .tools. Use -Toolchain MSVC with Visual Studio 2022 C++ tools, or provision the local toolchain.'
         }
         $buildDirectory = Join-Path $projectRoot 'out/build/local'
+        # The resource compiler and any helper it launches must be available
+        # for existing CMake trees as well as newly configured ones.
+        $env:PATH = "$(Split-Path $localCompiler);$previousBuildPath"
         $cCompiler = Join-Path (Split-Path $localCompiler) 'clang.exe'
+        $resourceCompiler = Join-Path (Split-Path $localCompiler) 'windres.exe'
         & $cmakeExe -S $projectRoot -B $buildDirectory -G Ninja `
             "-DCMAKE_BUILD_TYPE=$Configuration" "-DCMAKE_C_COMPILER=$cCompiler" `
-            "-DCMAKE_CXX_COMPILER=$localCompiler" "-DCMAKE_MAKE_PROGRAM=$localNinja" `
+            "-DCMAKE_CXX_COMPILER=$localCompiler" "-DCMAKE_RC_COMPILER=$resourceCompiler" "-DCMAKE_MAKE_PROGRAM=$localNinja" `
             '-DBUILD_TESTING=ON' '-DMEDICON_BUILD_WINDOWS=ON' `
             '-DCMAKE_EXE_LINKER_FLAGS=-static' '-DCMAKE_SHARED_LINKER_FLAGS=-static'
     } else {
@@ -47,5 +52,6 @@ try {
     }
     Write-Host "Build complete: $buildDirectory/bin"
 } finally {
+    $env:PATH = $previousBuildPath
     Pop-Location
 }

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "status": "rejected after runtime trial: user reports no player suppression in any camera view; live registration disabled in source",
+  "binary": {
+    "module": "Minecraft.Windows.exe",
+    "file_version": "1.26.52.3",
+    "sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+    "image_base": "0x140000000"
+  },
+  "candidate": {
+    "name": "ActorRenderCandidates_addPlayers_lambda_invoke",
+    "va": "0x14480E6C0",
+    "rva": "0x480E6C0",
+    "end_va_exclusive": "0x14480EE9E",
+    "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 48 89 D3 48 89 CF 48 8B 41 ? 48 8B 8A ? ? ? ? F3 44 0F 10 01 F3 0F 10 79 ? F3 44 0F 5C 00 F3 0F 5C 78 ? 48 8B 77 ? F3 0F 10 71 ? F3 0F 5C 70 ? 48 8D 55 ? 48 89 D9 E8 ? ? ? ?",
+    "pattern_length_bytes": 111,
+    "executable_match_count": 1,
+    "ida_entry_and_original_pe_match": true,
+    "live_hook_eligible": false,
+    "observation": {
+      "rcx": "callback object at entry; its table links this code to the addPlayers lambda type",
+      "rdx": "pointer to player/actor-like object; entry uses it directly, including access at +0x1D8 matching the upstream Actor_mLevel reference; exact original C++ type and this-adjustment are not proven",
+      "return": "Normal paths return AL=1; the trial preserved this value when skipping. This did not establish the required visual effect.",
+      "coverage": "Runtime failed: user reports no suppression in any camera view. Near local player coverage is not provided by this distant-player addition path."
+    },
+    "evidence": {
+      "callback_table": "0x14E8E3F30, slot +0x10 -> 0x14480E6C0, slot +0x18 -> 0x14480EF60",
+      "type_thunk": "0x14480EF60 loads 0x151917F60 and returns; its type name at +0x10 is .?AV<lambda_1>@?0??addPlayers@ActorRenderCandidates@@QEAAXAEAVILevel@@AEBUDimensionType@@AEBVVec3@@M@Z@",
+      "construction": "0x1446929A9 loads the callback table; 0x1446929FD calls a virtual method with the callback object",
+      "argument_read": "0x14480E6F0 copies RDX; 0x14480E6FA reads [RDX+0x218]; 0x14480E776 reads [RDX+0x1D8]",
+      "candidate_append": "0x14480E8E3..0x14480E8F4 uses the captured vector and stores an actor-like pointer",
+      "normal_return": "0x14480EE46 sets AL to 1 before the normal epilogue",
+      "runtime_batch_context": "0x14470EDA8 calls the larger v2 batch routine 0x145FE3770; batch handles multiple entities and its entry is not a per-player hook"
+    },
+    "known_risks": [
+      "This candidate assembles candidates and traverses related entities; suppressing it may affect mounted entities or attachments.",
+      "It does not expose a proven game render context for drawing a P1 mesh.",
+      "Player inclusion in this callback is subject to runtime conditions, including dimension and distance checks."
+    ]
+  },
+  "runtime_trial": {
+    "date": "2026-10-28 JST",
+    "result": "failed",
+    "user_report": "起動したけどプレイヤーどの視点も非表示にならない",
+    "follow_up": "custom_model_p0_queue_candidates.json",
+    "static_explanation": "Caller constructs lower squared distance (D - 10)^2 at 0x14469297C..0x14469298C. Callback 0x14480E75C/75F bypasses actors at or below this threshold. Separate near collector has already populated candidates. This explains why it cannot be the sole hook for a near local player; no runtime trace was captured to isolate every failure cause."
+  }
+}

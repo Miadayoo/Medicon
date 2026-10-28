@@ -141,7 +141,11 @@ bool ConfigStore::load(ModuleManager& modules, std::string& error) const {
         std::vector<PendingModule> pending;
         const auto& entries = root.at("modules");
         for (const auto& module : modules.all()) {
-            const auto found = entries.find(module->id());
+            auto found = entries.find(module->id());
+            // Preserve existing CustomModelProbe settings on the rename. A
+            // new-name entry wins if both are present; saves use custommodel.
+            if (found == entries.end() && module->id() == "custommodel")
+                found = entries.find("custommodelprobe");
             if (found == entries.end()) continue;
             const auto location = "modules." + module->id();
             if (!found->is_object()) invalid(location, "expected an object");

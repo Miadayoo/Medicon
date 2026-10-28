@@ -41,6 +41,11 @@ public:
     [[nodiscard]] bool open() const noexcept;
     void set_open(bool open);
     [[nodiscard]] bool capturing_keybind() const noexcept;
+    /// The Social button at the bottom centre, like the Main Menu's. Hidden
+    /// without a Social service; `badge` marks unread DMs or pending requests.
+    void set_social(bool shown, bool badge) noexcept;
+    /// True once after the Social button was clicked.
+    [[nodiscard]] bool consume_social_request() noexcept;
 
     /// Adds an independent ImGui window, visible while the client GUI is open.
     void add_panel(std::string title, PanelCallback draw);

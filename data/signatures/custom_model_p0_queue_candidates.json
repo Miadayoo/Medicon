@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-10-28 JST",
+  "status": "User confirmed combined near/ECS/DataDriven build works and requested P1. See P1 report for subsequent native box validation.",
+  "binary": {
+    "module": "Minecraft.Windows.exe",
+    "file_version": "1.26.52.3",
+    "sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+    "image_base": "0x140000000",
+    "timestamp": "0x6AB54E37",
+    "size_of_image": "0x12C02000"
+  },
+  "candidates": [
+    {
+      "name": "near_actor_queue",
+      "va": "0x144716e80",
+      "rva": "0x4716e80",
+      "end_va_exclusive": "0x14471727d",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 48 89 D6 48 89 CF 48 8B 41 ? 48 8B 59 ? 80 78 ? ? 75 ? 48 8B 47 ? 80 78 ? ? 75 ? 80 78 ? ? 75 ? 48 89 F1 E8 ? ? ? ?",
+      "pattern_length_bytes": 81,
+      "executable_matches": [
+        "0x4716e80"
+      ],
+      "ida_entry_and_original_pe_128_bytes_match": true,
+      "pe_unwind_range_verified": true,
+      "original_entry_128_bytes_hex": "554157415641545657534881ec80000000488dac24800000000f2975f048c745e8feffffff4889d64889cf488b4108488b592080784c017533488b47108078100175298078110075234889f1e8ffbd2dfd4885c07416488b4f10483b01410f94c780be69020000007418eb0c4531ff80be6902000000740a4584ff757de90c03",
+      "runtime_coverage_verified": false,
+      "identification": {
+        "type_descriptor_va": "0x151915D10",
+        "type_name": ".?AV<lambda_78>@?0??queueRenderEntities@LevelRendererCamera@@MEAAXAEBULevelRenderPreRenderUpdateParameters@@@Z@",
+        "callback_table_va": "0x14E8DFED0",
+        "invoke_slot": "0x10",
+        "type_thunk_va": "0x1447172C0"
+      },
+      "machine_abi_observed": {
+        "rcx": "opaque callback object",
+        "rdx": "direct borrowed actor pointer, copied to RSI at 0x144716EA5",
+        "return": "caller ignores return; normal return 0x144717223 has no fixed AL result; do not reuse the rejected bool/return-true hook"
+      },
+      "callsites": [
+        "0x144692C89 loads [candidate_iterator] into RDX; +0x10 callback call at 0x144692C93; iterator advances independently at 0x144692C99"
+      ],
+      "queue_evidence": [
+        "0x1447171B8 stores actor RSI at stack slot; 0x1447171D0 passes its address to a nested callback at 0x1447171D4",
+        "Nested callbacks have queueRenderEntities lambda_76/lambda_77 RTTI and append to graphics-mode-dependent queues",
+        "0x1447170AD obtains a renderer; +0x40 virtual call at 0x1447170CD and +0x50 virtual call at 0x144717193 occur before queuing"
+      ],
+      "runtime_hook_implemented": true,
+      "live_installation_verified": false
+    },
+    {
+      "name": "global_actor_queue",
+      "va": "0x1447172d0",
+      "rva": "0x47172d0",
+      "end_va_exclusive": "0x144717446",
+      "pattern": "41 56 56 57 55 53 48 83 EC ? 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 48 8B 3A 80 BF ? ? ? ? ? 0F 85 ? ? ? ? 48 89 CB 48 8B 31 4C 8B 71 ? 41 80 7E ? ? 75 ? 48 8D 4F ? E8 ? ? ? ?",
+      "pattern_length_bytes": 67,
+      "executable_matches": [
+        "0x47172d0"
+      ],
+      "ida_entry_and_original_pe_128_bytes_match": true,
+      "pe_unwind_range_verified": true,
+      "original_entry_128_bytes_hex": "4156565755534883ec60488b059f2d0c0d4831e04889442458488b3a80bf69020000000f852b0100004889cb488b314c8b710841807e1200753e488d4f08e8cd66e2fd83f8ff743089c5488b8fd8010000488b01488b8060040000ff1577479e0a83fd060f84ea00000083fd05750983f8060f84dc00000041807e1001750b41",
+      "runtime_coverage_verified": false,
+      "identification": {
+        "source": "bounded callsite/control-flow trace inside the RTTI-identified queueRenderEntities function; original C++ helper name not recovered",
+        "actor_owner_component_hash": "0x85B93800, matches the existing solstice EnttHashs.hpp/ActorOwnerComponent reference"
+      },
+      "machine_abi_observed": {
+        "rcx": "opaque closure/context with three captured pointers as constructed at 0x144693BF4..0x144693C0E",
+        "rdx": "pointer to ActorOwner-like component; 0x1447172E9 reads its +0x00 actor pointer into RDI (one dereference required)",
+        "return": "callers ignore return; normal return at 0x14471743F; exact original C++ return type not recovered"
+      },
+      "callsites": [
+        "0x144693E40",
+        "0x144693FD5",
+        "0x144694C2D"
+      ],
+      "queue_evidence": [
+        "0x144693C20..0x144693C45 acquires ECS pools for 0x85B93800, 0x8DAB9612, 0x3890AFF6",
+        "0x1447173C2..0x1447173E3 searches the queue for actor RDI; if absent, 0x144717403 calls insertion helper 0x144716A80",
+        "This is an independent append route after the near-candidate callback; suppressing the first callback alone does not establish complete coverage"
+      ],
+      "runtime_hook_implemented": true,
+      "live_installation_verified": false
+    }
+  ],
+  "pipeline": {
+    "outer_function_va": "0x144692740",
+    "outer_unwind_end_exclusive": "0x144694D28",
+    "near_collection": "0x14469293F calls 0x14479A820 before addPlayers",
+    "near_callback": "0x144692C93",
+    "independent_ecs_callback": "0x144693E40 / 0x144693FD5 / 0x144694C2D",
+    "legacy_list_append": "0x144694932..0x144694938 copies actors from the later queue into camera +0x940/+0x948; no SDK layout added"
+  },
+  "rejected_previous_candidate": {
+    "rva": "0x480E6C0",
+    "user_runtime_result": "no player suppression in any camera view",
+    "static_reason": "Caller constructs lower squared distance (D - 10)^2 at 0x14469297C..0x14469298C. Callback 0x14480E75C/75F bypasses actors at or below this threshold. Separate near collector has already populated candidates. This explains why it cannot be the sole hook for a near local player; no runtime trace was captured to isolate every failure cause."
+  },
+  "limits": [
+    "All three hooks are implemented as a combined experiment. Current local identity, per-route game calls and combined visual coverage still need runtime validation.",
+    "No proof yet that body, armor, held items and cape all consume only these queues.",
+    "A separate optional actor-list traversal at 0x1446940E4..0x1446943F1 also invokes renderer virtual +0x50; its mode/coverage is not established.",
+    "First-person arm suppression is now explicitly requested. Its combined effect and inventory preview coverage remain unverified.",
+    "No native C++ STL layout, renderer virtual table or guessed offsets were added to the runtime SDK.",
+    "The generic insertion helper 0x144716A80 and whole entity batch 0x145FE3770 are not proposed as unconditional skip hooks."
+  ],
+  "analysis_method": "Verified original input SHA-256; paused background autoanalysis and performed bounded instruction/data reads. Validated signatures and PE unwind ranges against original disk PE outside IDA; no global autoanalysis requested.",
+  "audit_files": [
+    "out/custom-model/ida/p0_queue_candidates_raw.json",
+    "out/custom-model/ida/p0_queue_patterns_validation.json",
+    "out/custom-model/ida/p0_local_pipeline_full.asm.txt",
+    "out/custom-model/ida/p0_nearby_follow_evidence.json"
+  ],
+  "runtime_observation": {
+    "source": "user report, 2026-10-28 JST",
+    "two_hook_build_third_person": "player hidden",
+    "two_hook_build_first_person": "remains visible",
+    "combined_three_hook_build": "built, not runtime verified",
+    "other_requirements": "armor/held items/cape individually, other actors, OFF restoration, inventory preview and performance remain unverified"
+  },
+  "combined_render_hook": {
+    "rva": "0x558D300",
+    "abi": "void(DataDrivenRenderer*, BaseActorRenderContext*, ActorRenderData*)",
+    "actor_field": "ActorRenderData +0, checked copy inside callback",
+    "registration": "all three must uniquely resolve before any are enabled",
+    "authorization": "User explicitly requested combining the original sig to hide first-person as well as third-person; replaces the original preserve-arms preference."
+  },
+  "debug_ui": {
+    "module": "CustomModelProbe",
+    "setting_id": "show_debug",
+    "label": "Show Debug",
+    "default": false,
+    "behavior": "Independent of F8/suppression state. F8 never enables the debug window; explicit Show Debug permits viewing ON/OFF diagnostics."
+  },
+  "combined_p0_user_acceptance": "2026-10-28 JST: 動いた p1に進めて"
+}

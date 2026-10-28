@@ -30,10 +30,30 @@ void set_status(const Status& status) {
     g_status = status;
 }
 
+std::wstring widen(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(size < 0 ? 0 : size), L'\0');
+    if (size > 0) MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), size);
+    return wide;
+}
+
+// Without this the game simply runs without Medicon and the player cannot
+// tell why. Shown from the worker, never from DllMain.
+void show_failure(const std::wstring& data_dir, const std::string& reason) {
+    std::wstring text = L"Medicon could not start.\n\n" + widen(reason);
+    if (!data_dir.empty()) text += L"\n\nDetails: " + data_dir + L"\\logs\\updater.log";
+    MessageBoxW(nullptr, text.c_str(), L"Medicon", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+}
+
 DWORD WINAPI worker(void*) {
+    std::wstring data_dir;
     try {
-        const std::wstring data_dir = default_data_dir();
-        if (data_dir.empty()) return 1;
+        data_dir = default_data_dir();
+        if (data_dir.empty()) {
+            show_failure(data_dir, "The Medicon data folder in %LOCALAPPDATA% could not be created.");
+            return 1;
+        }
         auto fetcher = make_winhttp_fetcher(MEDICON_UPDATE_HOST, "MediconLoader/1");
         auto verifier = make_cng_verifier();
         auto store = make_file_store(data_dir);
@@ -41,9 +61,15 @@ DWORD WINAPI worker(void*) {
         store->log("MediconLoader starting");
         UpdateConfig config{MEDICON_UPDATE_HOST, game_file_version()};
         const auto outcome = run_update(*fetcher, *verifier, *store, *launcher, config, set_status);
-        if (outcome.started_version.empty()) store->log("MediconLoader could not start any Core");
-    } catch (...) {
+        if (outcome.started_version.empty()) {
+            store->log("MediconLoader could not start any Core: " + outcome.failure);
+            show_failure(data_dir, outcome.failure);
+        }
+    } catch (const std::exception& error) {
         // Never let an exception escape the worker into the game.
+        show_failure(data_dir, std::string("Unexpected loader error: ") + error.what());
+    } catch (...) {
+        show_failure(data_dir, "Unexpected loader error.");
     }
     return 0;
 }

@@ -5,11 +5,13 @@
 namespace medicon {
 
 Module* ModuleManager::find(std::string_view id) noexcept {
+    if (id == "custommodelprobe") id = "custommodel"; // Legacy command/config name.
     for (const auto& module : modules_) if (module->id() == id) return module.get();
     return nullptr;
 }
 
 const Module* ModuleManager::find(std::string_view id) const noexcept {
+    if (id == "custommodelprobe") id = "custommodel";
     for (const auto& module : modules_) if (module->id() == id) return module.get();
     return nullptr;
 }

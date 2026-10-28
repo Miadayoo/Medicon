@@ -1,0 +1,4 @@
+# Bundled resource hashes cover the original bytes, including model.json.
+assets/models/neon-t-pose/model.fbx -text
+assets/models/neon-t-pose/model.json -text
+assets/models/neon-t-pose/textures/*.png -text

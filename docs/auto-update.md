@@ -24,6 +24,9 @@ Loader はパスで読み込むので、サーバー／Loader 上ではファイ
 7. `%LOCALAPPDATA%\Medicon\versions\<version>\` にアトミックに配置（検証が終わるまで正式版にしない。実行中の Core は上書きしない）。
 8. いちばん新しい検証済み Core を `LoadLibraryExW`（絶対パス）で読み込み、`Medicon_GetAPIVersion` で API を確認し、`Medicon_Initialize` を呼ぶ。
 9. 起動に失敗したら古い検証済み Core へフォールバック。オフラインなら手元の検証済み Core を起動。
+10. どの Core も起動できなかったら、理由（MCBE バージョン違い、サーバーに届かない、読み込み失敗など）と `updater.log` の場所をダイアログで表示する。
+
+`state.json` の `bad` に入るのは「読み込めたが API が違う／`Medicon_Initialize` が失敗した」Core だけです。Windows がファイルを読み込めなかった場合（パス、権限、ウイルス対策ソフト）はリリースのせいではないので、次回起動で再試行します。以前の Loader はこれも `bad` にしていたため、`bad_rule` が古い `state.json` の `bad` は一度クリアします。Core のパスは UTF-8 で受け渡すので、ユーザー名が日本語の `%LOCALAPPDATA%` でも読み込めます（以前の Loader は ANSI のパスを UTF-8 として読み、`LoadLibraryExW` に失敗していました）。
 
 更新は **次回のゲーム起動時** に反映します。実行中の Core は入れ替えません（Hook や描画スレッドが参照を持つため）。Loader 自身の自己上書きもしません。
 
@@ -138,6 +141,12 @@ void     Medicon_Shutdown(void);
 
 - ユーザーへ：**MediconLoader.dll** のみ。
 - サーバーへ：ビルドした **Medicon.dll**（アップロード時に MediconCore.dll として保存される）。
+
+CustomModelの既定Neonモデル（FBX・設定・diffuse PNG 3枚）はCore DLLのresourceへ同梱する。
+Loaderによる別のモデルダウンロードやDLL隣への手動コピーは不要。
+Coreのworkerが`%LOCALAPPDATA%/Medicon/cache/models/neon-<pack SHA-256>/`へ検証・展開して読み込む。
+有効な外部`models/neon-t-pose`がある場合はそちらを優先する。
+同梱対応前の配信済みDLLは変わらないため、この修正を含むCoreを新しいバージョンで公開する必要がある。
 
 ```powershell
 # Windows

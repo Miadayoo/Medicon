@@ -55,6 +55,16 @@ sdk::Vec3 drawn_offset(const sdk::ActorSnapshot& actor, float partial_tick) {
             (actor.previous_position.z - actor.position.z) * back};
 }
 
+// The local player sits where the game draws it this frame, its render position.
+// The tick snapshot is copied in baseTick, ahead of that tick's movement, so
+// interpolating it left the hat a tick behind the model.
+sdk::Vec3 local_drawn_offset(const sdk::ActorSnapshot& local, float partial_tick) {
+    if (local.has_render_position && finite(local.render_position) && finite(local.position))
+        return {local.render_position.x - local.position.x, local.render_position.y - local.position.y,
+                local.render_position.z - local.position.z};
+    return drawn_offset(local, partial_tick);
+}
+
 sdk::Bounds moved(const sdk::Bounds& bounds, sdk::Vec3 offset) {
     return {{bounds.min.x + offset.x, bounds.min.y + offset.y, bounds.min.z + offset.z},
             {bounds.max.x + offset.x, bounds.max.y + offset.y, bounds.max.z + offset.z}};
@@ -147,7 +157,7 @@ void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFr
 void render_hat(ImDrawList& draw, const ChinaHatModule& module, const sdk::GameplayFrame& frame,
                 sdk::Vec2 viewport, float seconds, float partial_tick) {
     // Where the model is drawn this frame, not where the last tick left it.
-    const auto bounds = moved(frame.local.bounds, drawn_offset(frame.local, partial_tick));
+    const auto bounds = moved(frame.local.bounds, local_drawn_offset(frame.local, partial_tick));
     // In first person the camera sits inside the local player's bounds. A hat
     // there would cover the entire view; the cone is intended for third person.
     // The render origin alone can stay at the eye in third person, with the

@@ -76,8 +76,11 @@ void test_state_and_order() {
     check(state.bad.empty() && state.good.back() == "1.0.6", "a version that starts is no longer bad");
     mark_bad(state, "1.0.4");
     check(state.bad == std::vector<std::string>{"1.0.4"}, "a failing version is bad");
+    check(state.bad_rule == 0, "state from an older loader has no bad rule");
+    state.bad_rule = bad_rule_revision;
     const auto again = parse_state(serialize_state(state));
-    check(again.good == state.good && again.bad == state.bad && again.last_run == state.last_run, "state round trip");
+    check(again.good == state.good && again.bad == state.bad && again.last_run == state.last_run &&
+              again.bad_rule == bad_rule_revision, "state round trip");
 }
 
 void test_prune() {

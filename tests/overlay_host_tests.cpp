@@ -141,7 +141,10 @@ public:
         // background capture, Gaussian passes and D3D11On12 resource lifetime.
         // Category panels alone would leave that complete path untested.
         std::ofstream config(path_, std::ios::binary);
-        config << R"({"version":1,"modules":{"example":{"enabled":true},"arraylist":{"enabled":true},"clickgui":{"enabled":true}}})";
+        // The closed-GUI pixel assertion below deliberately expects only the
+        // right-hand Example row. Watermark defaults ON and must be isolated
+        // out of this fixture, rather than mistaken for an opened ClickGUI.
+        config << R"({"version":1,"modules":{"example":{"enabled":true},"arraylist":{"enabled":true},"watermark":{"enabled":false},"clickgui":{"enabled":true}}})";
         config.close();
         require(static_cast<bool>(config), "Write isolated config with an enabled HUD module");
         require(SetEnvironmentVariableW(L"MEDICON_OVERLAY_CONFIG", path_.c_str()) != 0,
@@ -178,6 +181,25 @@ struct Image {
     UINT height = 0;
     std::vector<std::uint8_t> pixels;
 };
+
+void save_debug_image(const Image& image, const char* name) {
+    BITMAPFILEHEADER file{};
+    BITMAPINFOHEADER info{};
+    file.bfType = 0x4D42;
+    file.bfOffBits = sizeof(file) + sizeof(info);
+    file.bfSize = file.bfOffBits + static_cast<DWORD>(image.pixels.size());
+    info.biSize = sizeof(info);
+    info.biWidth = static_cast<LONG>(image.width);
+    info.biHeight = -static_cast<LONG>(image.height);
+    info.biPlanes = 1;
+    info.biBitCount = 32;
+    auto pixels = image.pixels;
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]);
+    std::ofstream output(name, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(&file), sizeof(file));
+    output.write(reinterpret_cast<const char*>(&info), sizeof(info));
+    output.write(reinterpret_cast<const char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
+}
 
 std::size_t changed_pixels(const Image& image, UINT right) {
     std::size_t changed = 0;
@@ -532,6 +554,14 @@ void insert(HWND window) {
             "Post Insert key up");
 }
 
+void model_probe_key(HWND window) {
+    const LPARAM key = 1 | (static_cast<LPARAM>(0x42) << 16);
+    require(PostMessageW(window, WM_KEYDOWN, VK_F8, key) != 0, "Post P0 key down");
+    require(PostMessageW(window, WM_KEYUP, VK_F8,
+                        key | (static_cast<LPARAM>(1) << 30) | (static_cast<LPARAM>(1) << 31)) != 0,
+            "Post P0 key up");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -610,6 +640,7 @@ int main(int argc, char** argv) {
         } while (std::chrono::steady_clock::now() < deadline);
         const auto startup_image = host->read_last_presented();
         const auto startup_closed = overlay_pixels(startup_image);
+        if (category_panel_pixels(startup_image) != 0) save_debug_image(startup_image, "overlay-startup-failure.bmp");
         require(category_panel_pixels(startup_image) == 0,
                 "Injection intro automatically opened ClickGUI despite its saved enabled state");
         require(edge_lit_tube_rows(startup_image) == 20,
@@ -645,6 +676,16 @@ int main(int argc, char** argv) {
         frames(*host);
         require(edge_lit_tube_rows(host->read_last_presented()) == 20,
                 "Edge-lit did not release/recreate back-buffer resources and render at the resized right edge");
+        // F8 toggles suppression only. Show Debug defaults OFF independently,
+        // so neither edge may add a floating diagnostic window.
+        model_probe_key(window->get());
+        frames(*host);
+        require(category_panel_pixels(host->read_last_presented()) == 0,
+                "F8 unexpectedly displayed the debug window with Show Debug OFF");
+        model_probe_key(window->get());
+        frames(*host);
+        require(category_panel_pixels(host->read_last_presented()) == 0,
+                "F8 OFF unexpectedly displayed the debug window");
         insert(window->get());
         frames(*host);
 

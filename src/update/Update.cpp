@@ -118,6 +118,8 @@ LoaderState parse_state(std::string_view json) noexcept {
         if (const auto last = root.find("last_run"); last != root.end() && last->is_string() &&
                                                      parse_version(last->get<std::string>()))
             state.last_run = last->get<std::string>();
+        if (const auto rule = root.find("bad_rule"); rule != root.end() && rule->is_number_unsigned())
+            state.bad_rule = rule->get<std::uint32_t>();
     } catch (...) {
         return {};
     }
@@ -129,6 +131,7 @@ std::string serialize_state(const LoaderState& state) {
     root["good"] = state.good;
     root["bad"] = state.bad;
     root["last_run"] = state.last_run;
+    root["bad_rule"] = state.bad_rule;
     return root.dump(2) + "\n";
 }
 

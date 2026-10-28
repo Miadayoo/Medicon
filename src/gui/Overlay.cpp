@@ -77,6 +77,15 @@ bool Overlay::key_event(int virtual_key, bool down, bool repeat) {
         if (!down) modules_.key_event(virtual_key, false, repeat);
         return true;
     }
+    // Home opens Social in game, over the ClickGUI or without it. A keybind
+    // being captured takes Home like any other key.
+    if (virtual_key == social_key && down && social_.attached() && !gui_.capturing_keybind()) {
+        if (!repeat) {
+            modules_.reset_keys();
+            social_.open_screen();
+        }
+        return true;
+    }
     const bool was_open = gui_.open();
     const bool owned = gui_.key_event(virtual_key, down, repeat);
     const bool toggled = was_open != gui_.open();
@@ -221,8 +230,10 @@ void Overlay::render() {
         GuiContext context{modules_, fonts_, shadows_, frame_, below, ImGui::GetBackgroundDrawList()};
         hud_.render(context);
         watermark_.render(context, clock_.elapsed());
+        gui_.set_social(social_.attached(), social_.badge());
         gui_.render(context);
         if (gui_.consume_save_request() && save_) save_();
+        if (gui_.consume_social_request()) social_.open_screen();
     }
     // Last on the foreground list: above the menu and the ClickGUI (spec 4.7).
     // TODO(social): the pause screen and other vanilla menus cannot be told apart

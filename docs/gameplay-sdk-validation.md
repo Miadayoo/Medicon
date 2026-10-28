@@ -29,6 +29,7 @@
 | payload page | **128 components** (`and 0x7F`) | `0x5DAEC8A..0x5DAECAB`、`0x20F38C..0x20F3AE` |
 | StateVector / Rotation / AABBShape の要素幅 | 36 / 16 / 32 bytes | `0x20F38C..0x20F3AE`、`0x19E3F10..0x19E4062` |
 | ActorOwner / ActorType の要素幅 | 8 / 4 bytes | `0x5DAECAB`、`0x2277B7..0x2277CF` |
+| RenderPosition の要素幅 | 12 bytes (`lea [i+i*2]` / `shl 2`) | hash `E53C7221`、`0x28A5664..0x28A56C7`、`0x253E28F..0x253E2F4` |
 
 使用する hash は古い `Components/ComponentHashes.hpp` の一覧ではなく、現在の `EnttHashs.hpp` の override と実ファイルで一致する値。StateVector `1B5D5238`、AABBShape `BAC1B3CF`、Rotation `75DF36B7`、ActorType `4F6BA419`、ActorOwner `85B93800`。
 
@@ -53,6 +54,8 @@ Scaffold は空気/液体の target と、空気・液体以外の支持 neighbo
 ## 描画と残る制約
 
 ClientInstance slot 187 (`0x5DC3730`) は `client +0x1C0` の LevelRenderer を返す。renderer `+0x468` の child、client matrix `+0x420`、child FOV `+0xF58 / +0xF6C` と render origin `+0x9CC` を上流描画式に合わせてコピーする。matrix の identity 初期化は `0x5D97B78` 付近、FOV のコピーは `0x4BABC3` 以降、render origin xyz の参照は `0x4691E91` 以降で確認した。
+
+render origin `+0x9CC` は Solstice の `LevelRendererPlayer_mCameraPos` と同じでカメラ位置にあたり、プレイヤーの頭ではない。ChinaHat はローカルプレイヤーの RenderPositionComponent（Solstice の ChinaHat と同じく、毎フレーム描画される位置）を capture で解決し、Present ごとにコピーで読み直す。tick 位置から直近の移動量の2倍 + 1 block を超える値は捨てて tick 補間に戻る。
 
 combat の eye と描画用 camera origin は別フィールドで保持する。camera profile が成立しない場合は projection を無効にする。render origin は更新・補間を含むため、Present と baseTick の間の描画ずれや三人称切り替え直後の表示は実ゲームでの確認が残る。
 

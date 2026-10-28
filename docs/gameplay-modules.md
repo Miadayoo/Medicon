@@ -48,7 +48,12 @@ slot meanwhile.
 ESP and ChinaHat reread the camera (view matrix, render origin, FOV) every
 Present from the fields the last tick validated: plain copies, no native call.
 Actors are drawn between their previous and current tick positions, as the game
-draws its models. ChinaHat decides first person from the real camera position,
+draws its models. ChinaHat instead sits on the local player's render position
+(`RenderPositionComponent`), which the game moves every frame to where it draws
+the model, also reread every Present: the snapshot is copied in baseTick, before
+that tick's movement, so it trails the model by a tick. A render position more
+than a couple of ticks' motion from the tick position is dropped and the hat
+falls back to the tick positions. ChinaHat decides first person from the real camera position,
 the render origin moved by the view matrix translation, so a third-person
 offset carried by the matrix still shows the hat. Missing player data clears the
 frame; rendering expires snapshots after 250 ms without a new game tick. Objects

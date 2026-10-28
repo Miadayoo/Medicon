@@ -2,9 +2,12 @@
 
 #include <imgui.h>
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 namespace medicon::gui {
 
@@ -44,10 +47,16 @@ public:
     bool window_message(Window window, unsigned message, WParam wparam, LParam lparam, LParam& result);
     // The window the bridge posts its wake message to.
     void set_window(Window window) noexcept;
+    // Diagnostics, called on the window thread (a few lines per session at most).
+    void set_reporter(std::function<void(std::string_view)> report);
 
 private:
     void sync(Window window);           // window thread: applies want_ to the window
+    void ensure_context(Window window); // window thread: undoes the game removing the IME
+    void key_down(Window window, unsigned message, WParam key);
+    void check_toggle(Window window);
     void place_windows(void* context);  // HIMC
+    void report(std::string_view message) const;
 
     mutable std::mutex mutex_;
     Window window_ = nullptr;
@@ -56,11 +65,19 @@ private:
     bool want_ = false;
     ImVec2 caret_{};
     float line_height_ = 0.0F;
+    std::chrono::steady_clock::time_point last_wake_{};
     // Window side.
     bool applied_ = false;
     bool game_had_context_ = true; // the game's own IME state, restored on deactivate
     Composition composition_;
     std::wstring result_;
+    // Window thread only: the IME on/off key fallback (see key_down).
+    std::uint64_t open_notify_tick_ = 0; // last IMN_SETOPENSTATUS
+    std::uint64_t toggle_tick_ = 0;
+    bool toggle_before_ = false;
+    bool toggle_pending_ = false;
+    bool reported_on_ = false, reported_restore_ = false, reported_toggle_ = false, reported_compose_ = false;
+    std::function<void(std::string_view)> report_;
 };
 
 } // namespace medicon::gui

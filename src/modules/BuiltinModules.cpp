@@ -3,6 +3,7 @@
 #include "medicon/modules/ExampleModule.hpp"
 #include "medicon/modules/GameplayModules.hpp"
 #include "medicon/modules/VisualModules.hpp"
+#include "medicon/modules/CustomModelProbeModule.hpp"
 #include "medicon/core/ModuleManager.hpp"
 
 namespace medicon {
@@ -18,6 +19,7 @@ void register_builtin_modules(ModuleManager& modules) {
     modules.add<KillauraModule>();
     modules.add<ScaffoldModule>();
     modules.add<EspModule>();
+    modules.add<CustomModelProbeModule>();
 }
 
 } // namespace medicon

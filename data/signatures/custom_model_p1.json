@@ -1,0 +1,196 @@
+{
+  "version": "1.26.52.3",
+  "sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+  "functions": [
+    {
+      "name": "world_render",
+      "rva": "0x4686f20",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 0C 00 00 48 8D AC 24 80 00 00 00 44 0F 29 A5 00 0C 00 00 44 0F 29 9D F0 0B 00 00 44 0F 29 95 E0 0B 00 00 44 0F 29 8D D0 0B 00 00 44 0F 29 85 C0 0B 00 00 0F 29 BD B0 0B 00 00 0F 29 B5 A0 0B 00",
+      "executable_matches": 1
+    },
+    {
+      "name": "mesh_immediate",
+      "rva": "0x46b95f0",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 81 EC D0 02 00 00 48 8D AC 24 80 00 00 00 48 C7 85 48 02 00 00 FE FF FF FF 80 BA 55 02 00 00 00 0F 85 03 01 00 00 48 89 D6 48 89 CF 4C 8B A5 B0 02 00 00 4C 89",
+      "executable_matches": 1
+    },
+    {
+      "name": "mesh_submit",
+      "rva": "0x4b04540",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC E8 04 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 50 04 00 00 48 C7 85 48 04 00 00 FE FF FF FF 4C 89 8D 38 04 00 00 4C 89 C3 48 89 D7 48 89 CE E8 3E FB",
+      "executable_matches": 1
+    },
+    {
+      "name": "interpolated_position",
+      "rva": "0x19f7980",
+      "pattern": "56 57 53 48 81 EC 90 00 00 00 44 0F 29 94 24 80 00 00 00 44 0F 29 4C 24 70 44 0F 29 44 24 60 0F 29 7C 24 50 0F 29 74 24 40 0F 28 F2 48 89 D6 48 89 CB E8 19 B3 FF FF 48 85 C0 0F 84 F1 00 00 00",
+      "executable_matches": 1
+    },
+    {
+      "name": "riding_offset",
+      "rva": "0x7cb5ad0",
+      "pattern": "48 89 C8 4C 8B 42 10 8B 4A 18 49 8B 50 48 4D 8B 48 50 49 29 D1 49 C1 E9 03 41 FF C9 41 81 E1 F2 5B 67 33 4E 8D 14 CA 49 8B 50 68 0F 1F 44 00 00",
+      "executable_matches": 1
+    },
+    {
+      "name": "body_yaw",
+      "rva": "0x20874b0",
+      "pattern": "48 83 EC 58 44 0F 29 44 24 40 0F 29 7C 24 30 0F 29 74 24 20 0F 28 F1 48 8B 51 10 8B 41 18 48 8B 4A 48 4C 8B 42 50 49 29 C8 49 C1 E8 03 41 FF C8 41 81 E0 BA 4B F6 D7 4E 8D 0C C1 48 8B 4A 68 90",
+      "executable_matches": 1
+    },
+    {
+      "name": "height_offset",
+      "rva": "0x253cc80",
+      "pattern": "48 83 EC 28 48 8B 51 08 8B 41 10 48 8B 4A 48 4C 8B 42 50 49 29 C8 49 C1 E8 03 41 FF C8 41 81 E0 16 C3 21 DE 4E 8D 0C C1 48 8B 4A 68 0F 1F 40 00 4D 8B 01 49 83 F8 FF 0F 84 A1 00 00 00 49 C1 E0 05 4E 8D 0C 01 42 81 7C 01 08 16 C3 21 DE 75 E0 4C 01 C1 48 39 4A 70 0F 84 81 00 00 00 48 8B 49 10 48 85 C9 74 78 89 C2 81 E2 FF FF 03 00 41 89 D0 41 C1 E8 0B 4C 8B 49 08 4C 8B 51 10 4D 29 CA 49 C1 FA 03 4D 39 D0 73 55 4F 8B 04 C1 4D 85 C0 74 4C 81 E2 FF 07 00 00 25 00 00 FC FF 41 8B 14 90 31 D0 3D FE FF 03 00 77 34 48 8B 41 50 89 D1 C1 E9 04 81 E1 F8 3F 00 00 48 8B 04 08 48 85 C0 74 1C 81 E2 FF FF 03 00 83 E2 7F 89 D1 C1 E1 06 48 8D 0C 91 F3 0F 10 04 08 48 83 C4 28 C3 E8 3D",
+      "executable_matches": 1
+    },
+    {
+      "name": "material_release",
+      "rva": "0x7e380",
+      "pattern": "56 48 83 EC 20 48 8B 71 08 48 85 F6 74 34 F0 FF 4E 08 75 2E 48 8B 06 48 8B 00 48 89 F1 FF 15 05 D7 07 0F F0 FF 4E 0C 75",
+      "executable_matches": 1
+    },
+    {
+      "name": "material_anchor",
+      "rva": "0x56020fc",
+      "pattern": "48 8D 15 ? ? ? ? 4C 8D 05 ? ? ? ? 48 8D 4D B0 E8 ? ? ? ? 48 89 7C 24 28 66 C7 44 24 20 02 00 4C 8D 45 B0 4C 8D 4D 08 48 89 D9 48 89",
+      "executable_matches": 1
+    },
+    {
+      "name": "binding_copy",
+      "rva": "0x4b17b20",
+      "pattern": "56 57 53 48 83 EC 20 48 8D 05 DA FE DD 09 48 63 0C 88 48 01 C1 FF E1 31 C0 E9 1A 01 00 00 48 8B 02 48 8D 0D 18 D9 C5 09 48 89 08 0F 57 C0 0F 11 40 08 49 8B 48 10 48 85 C9 74 04 F0 FF 41 08 49",
+      "executable_matches": 1
+    },
+    {
+      "name": "binding_release",
+      "rva": "0x963f80",
+      "pattern": "56 57 48 83 EC 28 0F B6 41 20 48 83 F8 03 0F 87 A3 00 00 00 48 8D 15 5D 79 E1 0D 48 63 04 82 48 01 D0 FF E0 48 8B 01 48 8B 00 4C 8B 05 F7 7A 79 0E 31 D2 48 83 C4 28 5F 5E 49 FF E0 48 8B 71 18",
+      "executable_matches": 1
+    },
+    {
+      "name": "tess_begin",
+      "rva": "0x59CA2E0",
+      "pattern": "56 57 55 53 48 83 EC 38 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 80 B9",
+      "executable_matches": 1
+    },
+    {
+      "name": "tess_vertex",
+      "rva": "0x59CA7A0",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 00 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 0F 28 F3",
+      "executable_matches": 1
+    },
+    {
+      "name": "material_lookup",
+      "rva": "0x52F1E00",
+      "pattern": "55 56 57 48 83 EC 50 48 8D 6C 24 ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 49 89 D1",
+      "executable_matches": 1
+    },
+    {
+      "name": "mesh_view",
+      "rva": "0x46EEE30",
+      "pattern": "55 41 57 41 56 41 54 56 57 53 48 81 EC D0 02 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 80 BA ? ? ? ? ? 0F 85 ? ? ? ? 48 89 D6 48 89 CF 4C 8B A5 ? ? ? ? 0F B7 85",
+      "executable_matches": 1
+    }
+  ],
+  "recorded_date": "2026-10-28 JST",
+  "stage": "P1 stopped; P2 not started",
+  "report": "docs/custom_model_p1_report.md",
+  "runtime_validation": {
+    "native_box_observed": true,
+    "one_draw_per_world_scope_observed": true,
+    "off_restores_vanilla_observed": true,
+    "material_comparison_observed": [
+      "entity_alphatest",
+      "entity"
+    ],
+    "brightness_1_to_025_observed": true,
+    "movement_body_rotation_walls_glass_water": "user confirms all pass",
+    "normal_attributes": "forwarded, isolated native shading effect unverified",
+    "controlled_fps_comparison": "unfinished; Computer Use stopped by physical Escape",
+    "observed_draw_cpu_ms": [
+      0.028,
+      0.06
+    ],
+    "cpu_scope": "geometry and native wrapper only; excludes pose and material lookup",
+    "texture_identity": "game-owned binding retained via native copy/release; asset name unresolved"
+  },
+  "tested_binary": {
+    "path": "out/build/local/bin/Medicon-P1b.dll",
+    "sha256": "21acfce2fbcc91ea88812ede1f9d3a30ab4a2a98f856350fc455bea4e13db291"
+  },
+  "evidence": [
+    {
+      "path": "out/custom-model/ida/p1_world_render_prefix.asm.txt",
+      "sha256": "9c489fb63759949604b6bcc970fa33f704b50d174759245dfba7a51fc2d524c4"
+    },
+    {
+      "path": "out/custom-model/ida/p1_1446b95f0.asm.txt",
+      "sha256": "1c594507359d68b3a157ba395572d4197e534b2dc78a4391e230f2f7aa1937e8"
+    },
+    {
+      "path": "out/custom-model/ida/original_46eee30.asm.txt",
+      "sha256": "00ef0a6a73c60d71520a95ee2d39eff6e2df22fb35fa414b8f7dbb1b9819545a"
+    },
+    {
+      "path": "out/custom-model/ida/p1_mesh_submit.asm.txt",
+      "sha256": "10671901a81ac566fe06d256be12e41824df534d086adf6c2d7d190120d6a106"
+    },
+    {
+      "path": "out/custom-model/ida/original_59ca2e0.asm.txt",
+      "sha256": "47e1c74b2d76632480e645ddf4860825b907c9f8fd038b8e51434093af8b49e9"
+    },
+    {
+      "path": "out/custom-model/ida/original_59ca7a0.asm.txt",
+      "sha256": "b22e21c05d810dd29222ecbca7087b9cc8b6ff9c0063d5b703b1656015375163"
+    },
+    {
+      "path": "out/custom-model/ida/p1_actor_interpolated_position.asm.txt",
+      "sha256": "31b67dfc59e4442655946251c57047c33ef593c8d0373809484881cc9c4f75fe"
+    },
+    {
+      "path": "out/custom-model/ida/p1_actor_offset_complete.asm.txt",
+      "sha256": "4515ca58b76148226222bca8f35194d8472031237bfe1f4cc13b80744134afb0"
+    },
+    {
+      "path": "out/custom-model/ida/p1_actor_offset_fallback.asm.txt",
+      "sha256": "228ff4111c9238a86a8377e74ea54635e555e84f06dbf8c2bbb5def8c904025e"
+    },
+    {
+      "path": "out/custom-model/ida/p1_virtual68.asm.txt",
+      "sha256": "936127f45be9f3a632964209fe6308dd3df4586e75b3bac0312dabbd80e4a4e2"
+    },
+    {
+      "path": "out/custom-model/ida/p1_geometry_anchor.asm.txt",
+      "sha256": "eda95d64cbe4b55a37d63ed48ad20c046bc1eaf1f7d2c32d524954d019113137"
+    },
+    {
+      "path": "out/custom-model/ida/p1_material_anchor.asm.txt",
+      "sha256": "26ad35217d507237983bdcc502b4043d0940040cd879f864b0575db2f7599ed2"
+    },
+    {
+      "path": "out/custom-model/ida/p1_material_release.asm.txt",
+      "sha256": "d23c3d55bf584f6d2db09b235cef1697ad553add8316e55bce3bc61c60645845"
+    },
+    {
+      "path": "out/custom-model/ida/p1_texture_binding_copy.asm.txt",
+      "sha256": "06aef62c25615492824614fff396639030d42726ef657e18933f4c0ab7a92c99"
+    },
+    {
+      "path": "out/custom-model/ida/p1_binding_release.asm.txt",
+      "sha256": "0839fcbf51ec90384968154f684e5845556e701bb7127f41c01a381f802d5707"
+    },
+    {
+      "path": "out/custom-model/ida/p1_variant_tables.json",
+      "sha256": "5e567ea0f9ebc070136667b1edfed71f2b1727811787064425dd6e201f5d287a"
+    },
+    {
+      "path": "out/custom-model/ida/p1_live_actor_audit.json",
+      "sha256": "3e479f22129c3d4b9d2a7b59dec93ac60c20af1034cb63bfc214ac5b6827e4c2"
+    },
+    {
+      "path": "out/custom-model/ida/p1_live_material_keys.json",
+      "sha256": "4a362c370be777fee78d63ace96bf6bab5503ff2627cc258b1cbf4c2ff361747"
+    }
+  ]
+}

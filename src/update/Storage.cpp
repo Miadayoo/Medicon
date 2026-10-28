@@ -59,7 +59,9 @@ public:
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(root_ / "versions", ec)) {
             if (!entry.is_directory(ec)) continue;
-            const auto version = entry.path().filename().string();
+            // path::string() is the ANSI code page and throws on characters it
+            // cannot hold; every narrow path here is UTF-8 instead.
+            const auto version = narrow(entry.path().filename().wstring());
             const auto dir = entry.path();
             auto manifest = read_file(dir / "manifest.json", max_manifest_bytes);
             auto signature = read_file(dir / "manifest.sig", max_signature_bytes);
@@ -71,7 +73,9 @@ public:
     }
 
     std::string core_path(const std::string& version) override {
-        return (root_ / "versions" / version / std::string(core_file_name)).string();
+        // UTF-8, which the launcher widens back: a profile folder such as
+        // C:\Users\<Japanese name> must survive the round trip.
+        return narrow((root_ / "versions" / version / std::string(core_file_name)).wstring());
     }
 
     std::string core_sha256(const std::string& version) override {

@@ -3,6 +3,7 @@
 #include <medicon/core/Module.hpp>
 #include <medicon/core/ModuleManager.hpp>
 #include <medicon/gui/Draw.hpp>
+#include <medicon/gui/Glass.hpp>
 #include <medicon/gui/GuiContext.hpp>
 #include <medicon/gui/GuiMath.hpp>
 #include <medicon/gui/KeyNames.hpp>
@@ -32,7 +33,7 @@ namespace tm = theme::timing;
 namespace {
 
 enum class HitKind {
-    None, Header, Module, Setting, Scrollbar, Body,
+    None, Header, Module, Setting, Scrollbar, Body, SocialButton,
     OverlayItem, OverlayBody, OverlayScrollbar, PickerSV, PickerHue, PickerAlpha
 };
 
@@ -206,6 +207,13 @@ struct ClickGui::Impl {
     // Row pitch for the current frame. panel_height_limit used to recompute it
     // per panel (scanning all panels + rounding); compute once per render().
     float frame_pitch = mt::panel_wrap_step_y;
+    // Social button (physical px, laid out each frame).
+    bool social_shown = false;
+    bool social_badge = false;
+    bool social_requested = false;
+    bool social_held = false;
+    float social_hover = 0.0F;
+    ImVec2 social_min{}, social_max{};
 
     // --- State storage (ClickGuiModule settings, or local fallback) ---------
     void resolve_cfg() { cfg = dynamic_cast<ClickGuiModule*>(modules.find(ClickGuiModule::module_id)); }
@@ -584,6 +592,14 @@ struct ClickGui::Impl {
         }
     }
 
+    void layout_social_button() {
+        const float width = px(mt::social_button_width, scale);
+        const float height = px(mt::social_button_height, scale);
+        const float bottom = frame.client_h - px(mt::social_button_bottom, scale);
+        social_min = {std::round((frame.client_w - width) * 0.5F), bottom - height};
+        social_max = {social_min.x + width, bottom};
+    }
+
     const ModuleLayout* find_module_layout(int panel, const Module* module) const {
         for (const auto& ml : panels[static_cast<std::size_t>(panel)].layout.modules) {
             if (ml.module == module) return &ml;
@@ -701,6 +717,8 @@ struct ClickGui::Impl {
 
     Hit hit_test(ImVec2 p) {
         if (overlay.kind != OverlayKind::None && inside(p, overlay.x0, overlay.y0, overlay.x1, overlay.y1)) return hit_overlay(p);
+        // Drawn above every panel, so it takes the pointer first.
+        if (social_shown && inside(p, social_min.x, social_min.y, social_max.x, social_max.y)) return Hit{HitKind::SocialButton};
         for (auto it = z_order.rbegin(); it != z_order.rend(); ++it) {
             const int index = *it;
             const auto& L = panels[static_cast<std::size_t>(index)].layout;
@@ -1017,6 +1035,9 @@ struct ClickGui::Impl {
             }
             break;
         }
+        case HitKind::SocialButton:
+            if (button == 0) social_requested = true;
+            break;
         case HitKind::OverlayItem:
             if (button == 0) {
                 auto& choice = overlay.module->settings()[static_cast<std::size_t>(overlay.setting)].get<Choice>();
@@ -1068,6 +1089,8 @@ struct ClickGui::Impl {
         hovered = Hit{};
         if (press && press->drag == DragKind::Scrollbar) hovered = press->target;
         else if (!press && in.valid && !in.owned_by_imgui) hovered = hit_test(in.position);
+        social_held = press && !press->swallowed && press->target.kind == HitKind::SocialButton &&
+                      hit_test(in.position).kind == HitKind::SocialButton;
         if (in.wheel != 0.0F && in.valid && !in.owned_by_imgui) handle_wheel(in);
     }
 
@@ -1103,6 +1126,7 @@ struct ClickGui::Impl {
         const float overlay_before = overlay.scroll;
         overlay.scroll = follow(overlay.scroll, overlay.scroll_target, dt, tm::scroll_tau);
         note(overlay_before, overlay.scroll);
+        social_hover = tween(social_hover, hovered.kind == HitKind::SocialButton || social_held, dt, tm::hover);
         return geometry;
     }
 
@@ -1511,6 +1535,30 @@ struct ClickGui::Impl {
         list->PopClipRect();
     }
 
+    void draw_social_button(float alpha) {
+        if (!social_shown) return;
+        auto* list = ctx->draw_list;
+        auto& fonts = ctx->fonts;
+        const float radius = mt::social_button_radius * scale;
+        // The Main Menu's small centred Social button: no accent line.
+        GlassPlate plate;
+        plate.hover = social_hover;
+        plate.press = social_held ? 1.0F : 0.0F;
+        plate.accent = false;
+        plate.alpha = alpha;
+        draw_glass_plate(list, social_min, social_max, radius, plate);
+        constexpr std::string_view label = "Social";
+        const float x = std::round((social_min.x + social_max.x - fonts.measure(FontRole::Header, label)) * 0.5F);
+        fonts.draw(list, FontRole::Header, x, fonts.centered_baseline(FontRole::Header, social_min.y, social_max.y - social_min.y),
+                   to_u32(theme::social::blue, alpha), label);
+        if (!social_badge) return;
+        // Unread DMs or pending requests: a small dot on the top-right corner.
+        const float dot = std::max(3.0F, radius * 0.42F);
+        const ImVec2 center{social_max.x - radius * 0.55F, social_min.y + radius * 0.55F};
+        list->AddCircleFilled(center, dot + std::max(1.0F, dot * 0.3F), to_u32(theme::white, alpha), 20);
+        list->AddCircleFilled(center, dot, to_u32(theme::social::alert, alpha), 20);
+    }
+
     void on_closed() {
         close_overlay();
         capture = nullptr;
@@ -1549,6 +1597,7 @@ struct ClickGui::Impl {
         migrate_default_layout();
         separate_stacked_panels();
         for (const int index : z_order) layout(index);
+        layout_social_button();
         if (pending_overlay.first) {
             open_overlay_for(static_cast<int>(pending_overlay.first->category()), pending_overlay.first, pending_overlay.second);
             pending_overlay = {nullptr, -1};
@@ -1567,6 +1616,7 @@ struct ClickGui::Impl {
         const float alpha = fade.value();
         draw_backdrop(alpha);
         for (const int index : z_order) draw_panel(index, alpha);
+        draw_social_button(alpha);
         draw_overlay(alpha);
 
         if (open_now) {
@@ -1648,6 +1698,15 @@ void ClickGui::set_open(bool value) {
 }
 
 bool ClickGui::capturing_keybind() const noexcept { return impl_->capture != nullptr; }
+
+void ClickGui::set_social(bool shown, bool badge) noexcept {
+    auto& d = *impl_;
+    d.social_shown = shown;
+    d.social_badge = shown && badge;
+    if (!shown) d.social_requested = d.social_held = false;
+}
+
+bool ClickGui::consume_social_request() noexcept { return std::exchange(impl_->social_requested, false); }
 
 void ClickGui::add_panel(std::string title, PanelCallback draw) { impl_->windows.push_back({std::move(title), std::move(draw)}); }
 

@@ -103,11 +103,21 @@ struct FakeStore : FileStore {
 };
 
 struct FakeLauncher : CoreLauncher {
-    std::vector<std::string> fail;  // versions that fail to start
+    std::vector<std::string> fail;        // versions whose Core refuses to start
+    std::vector<std::string> unloadable;  // versions Windows cannot map on this PC
     std::vector<std::pair<std::string, State>> launched;
-    bool launch(const std::string& version, const std::string&, State state, const std::string&) override {
+    LaunchResult launch(const std::string& version, const std::string&, State state, const std::string&,
+                        std::string& error) override {
         launched.emplace_back(version, state);
-        return std::find(fail.begin(), fail.end(), version) == fail.end();
+        if (std::find(unloadable.begin(), unloadable.end(), version) != unloadable.end()) {
+            error = "Windows error 126 loading the file";
+            return LaunchResult::LoadFailed;
+        }
+        if (std::find(fail.begin(), fail.end(), version) != fail.end()) {
+            error = "Medicon_Initialize failed";
+            return LaunchResult::Rejected;
+        }
+        return LaunchResult::Started;
     }
 };
 
@@ -230,6 +240,63 @@ void test_launch_failure_falls_back() {
           "a Core known to be bad is not downloaded or tried again");
 }
 
+void test_load_failure_is_retried() {
+    FakeVerifier v;
+    Server server;
+    server.publish(v, "1.0.7", "CORE0007");
+    FakeFetcher fetcher(server);
+    FakeStore store(v);
+    FakeLauncher launcher;
+    launcher.unloadable = {"1.0.7"};  // e.g. the old non-UTF-8 path or an antivirus lock
+    const auto outcome = run_update(fetcher, v, store, launcher, config(), nullptr);
+    check(outcome.started_version.empty() && store.state.bad.empty(), "a file Windows cannot load is not blamed on the release");
+    check(outcome.failure.find("1.0.7") != std::string::npos && outcome.failure.find("126") != std::string::npos,
+          "the player is told which Core failed and why");
+    FakeFetcher again(server);
+    FakeLauncher relaunch;
+    const auto retry = run_update(again, v, store, relaunch, config(), nullptr);
+    check(again.downloads == 0 && retry.started_version == "1.0.7", "the installed Core is tried again next launch");
+}
+
+void test_old_bad_marks_are_retried() {
+    FakeVerifier v;
+    Server server;
+    server.publish(v, "1.0.2", "CORE0002");
+    FakeFetcher fetcher(server);
+    FakeStore store(v);
+    store.seed("1.0.2", "CORE0002");
+    store.state.bad = {"1.0.2"};  // recorded by a loader that blamed load failures on the release
+    FakeLauncher launcher;
+    const auto outcome = run_update(fetcher, v, store, launcher, config(), nullptr);
+    check(outcome.started_version == "1.0.2" && store.state.bad.empty() && store.state.bad_rule == bad_rule_revision,
+          "bad marks from an older rule are dropped");
+
+    store.state.bad = {"1.0.2"};  // marked under the current rule: stays bad
+    FakeFetcher again(server);
+    FakeLauncher relaunch;
+    const auto skipped = run_update(again, v, store, relaunch, config(), nullptr);
+    check(relaunch.launched.empty() && skipped.started_version.empty() &&
+          skipped.failure.find("failed to start before") != std::string::npos, "current bad marks are kept");
+}
+
+void test_failure_names_the_game_version() {
+    FakeVerifier v;
+    Server server;
+    server.publish(v, "1.0.5", "CORE0005");
+    FakeFetcher fetcher(server);
+    FakeStore store(v);
+    FakeLauncher launcher;
+    const auto outcome = run_update(fetcher, v, store, launcher, {host, "1.26.60.1"}, nullptr);
+    check(outcome.started_version.empty() && outcome.failure.find("1.26.52") != std::string::npos &&
+              outcome.failure.find("1.26.60.1") != std::string::npos,
+          "a fresh install on another Minecraft version says which versions differ");
+
+    server.reachable = false;
+    FakeFetcher offline(server);
+    const auto unreachable = run_update(offline, v, store, launcher, config(), nullptr);
+    check(unreachable.failure.find("could not be reached") != std::string::npos, "an unreachable server is explained");
+}
+
 void test_unverifiable_local_is_ignored() {
     FakeVerifier v;
     Server server;
@@ -269,6 +336,9 @@ int main() {
         test_sha_mismatch_is_discarded();
         test_interrupted_download_keeps_old();
         test_launch_failure_falls_back();
+        test_load_failure_is_retried();
+        test_old_bad_marks_are_retried();
+        test_failure_names_the_game_version();
         test_unverifiable_local_is_ignored();
         test_wrong_game_version_is_skipped();
         std::cout << "Loader tests passed\n";
