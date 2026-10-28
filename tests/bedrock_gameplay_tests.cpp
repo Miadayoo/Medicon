@@ -104,10 +104,21 @@ void native_boundary() {
     access.clear();
     require(access.frame().actors.empty() && !access.frame().ready, "world clear retained actor handles");
 }
+
+void slot_restore_rules() {
+    using medicon::sdk::SlotRestore;
+    using medicon::sdk::slot_restore;
+    static_assert(slot_restore(true, true, 0) == SlotRestore::wait);
+    require(slot_restore(true, true, 999) == SlotRestore::wait, "Scaffold on: block slot kept within the idle second");
+    require(slot_restore(true, true, 1000) == SlotRestore::restore, "Scaffold on: slot restored after a second unused");
+    require(slot_restore(true, false, 0) == SlotRestore::restore, "Scaffold off: slot restored at once, no idle wait");
+    require(slot_restore(false, true, 0) == SlotRestore::forget && slot_restore(false, false, 5000) == SlotRestore::forget,
+            "A slot the user picked meanwhile is never overwritten");
+}
 } // namespace
 
 int main() {
-    try { components(); pools(); native_boundary(); }
+    try { components(); pools(); native_boundary(); slot_restore_rules(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Bedrock gameplay ABI tests passed\n";
 }

@@ -2,10 +2,22 @@
 
 #include <medicon/sdk/Gameplay.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 namespace medicon::sdk {
+
+// Auto Select's switched slot, decided by every capture. The player no longer
+// holding it (another slot, player or world) means nothing to undo. While
+// Scaffold runs, the slot comes back after a second without a placement from
+// it; once Scaffold is off it comes back at once.
+enum class SlotRestore { forget, wait, restore };
+[[nodiscard]] constexpr SlotRestore slot_restore(bool still_held, bool auto_select_active,
+                                                 std::uint64_t idle_ms) noexcept {
+    if (!still_held) return SlotRestore::forget;
+    return auto_select_active && idle_ms < 1000 ? SlotRestore::wait : SlotRestore::restore;
+}
 
 // Native calls and ECS reads are confined to the local-player baseTick thread.
 // Call capture() with the client/player validated by BedrockChat, dispatch
@@ -28,6 +40,9 @@ public:
     bool refresh_view(GameplayFrame& frame) const noexcept;
     // Auto Select still holds a block slot that a later capture puts back.
     [[nodiscard]] bool slot_restore_pending() const noexcept;
+    // Game thread, before capture(): false once Scaffold is off, so the next
+    // capture puts a switched slot back without the one-second wait.
+    void set_auto_select_active(bool active) noexcept;
     void clear() noexcept;
     [[nodiscard]] const GameplayFrame& frame() const noexcept override;
     bool rotate(float yaw, float pitch) override;
