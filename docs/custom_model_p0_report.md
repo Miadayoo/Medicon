@@ -115,6 +115,15 @@ local-player bridgeがreadyになっていなければHookを有効化しない�
 - ON/OFF FPSはワールドsnapshotがあるフレームの件数÷経過秒。切替をまたぐ区間と1秒以上の中断を除外する。同じ視点・条件で比較する必要がある。
 - Hook内にファイルI/O、FBXパース、DLL側の動的メモリ確保、UIロック、ゲーム状態の書き換えはない。OFF時も呼出数とQPC集計は続く。
 
+### 別PCでCustomModelが描画されない報告（2026-10-28）
+
+別PCのinject.logに `CustomModel: P0 probe withheld: PE identity differs from the IDA evidence.` が出て、モデルが描画されなかった。
+同じログでは純正メニュー遷移（`VanillaNavigation`）が成功しており、そちらはtimestamp `0x6AB54E37` と既知の2パッケージだけを受理する。
+したがってこのPCのexeは同じリンクの公式版（SizeOfImage `0x12C01000`、[メニュー側の記録](main-menu-native-navigation.md)）と判断した。
+P0/P1/P2は解析したLeviLauncher版のSizeOfImage `0x12C02000` だけを受理していたため、最初のP0で止まっていた。
+他機能はFileVersionとsig照合だけなので、同じPCでも動いていた。
+修正後の判定は上記の`known_image`。公式版での実ゲームの描画確認はまだ無い。
+
 ## 現時点のP0結果
 
 | 完了条件 | 結果 |

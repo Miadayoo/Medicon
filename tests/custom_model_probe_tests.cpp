@@ -36,8 +36,13 @@ void resolution_test() {
     require(resolve_probe_targets(0x6AB54E37, 0x12C01000, regions, {0x1000, code.size()}, error),
             "The official install's packaging resolves the same entries");
     require(!resolve_probe_targets(0, 0x12C02000, regions, {0x1000, code.size()}, error), "Reject different timestamp");
+    require(!resolve_probe_targets(0, 0x12C01000, regions, {0x1000, code.size()}, error),
+            "Reject the official size with a different timestamp");
     require(!resolve_probe_targets(0x6AB54E37, 1, regions, {0x1000, code.size()}, error), "Reject different PE size");
     require(error.find("SizeOfImage 0x1 ") != std::string::npos, "A rejected image names its observed header");
+    require(!resolve_probe_targets(0x6AB54E37, 0x12C03000, regions, {0x1000, code.size()}, error) &&
+            error.find("TimeDateStamp 0x6AB54E37 / SizeOfImage 0x12C03000 ") != std::string::npos,
+            "Reject a third packaging and name its observed header");
     require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, ecs}, error), "No partial target set");
     for (const auto offset : {near_offset, ecs, render_offset}) {
         const auto saved = code[offset];
