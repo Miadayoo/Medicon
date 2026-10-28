@@ -21,7 +21,12 @@ constexpr char title[] = "Medicon";
 
 } // namespace
 
-const char* Watermark::version() noexcept { return "v" MEDICON_VERSION; }
+Watermark::Watermark() : version_("v" MEDICON_VERSION) {}
+
+void Watermark::set_version(std::string_view text) {
+    if (!text.empty() && (text.front() == 'v' || text.front() == 'V')) text.remove_prefix(1);
+    if (!text.empty()) version_ = "v" + std::string(text);
+}
 
 void Watermark::hide() noexcept {
     fade_.snap(false);
@@ -56,7 +61,7 @@ void Watermark::render(GuiContext& context, float wall_dt) {
     // server latency (no ping source exists in the SDK yet).
     const char* details[2]{};
     int detail_count = 0;
-    if (module->show_version.get<bool>()) details[detail_count++] = version();
+    if (module->show_version.get<bool>()) details[detail_count++] = version_.c_str();
     if (module->show_fps.get<bool>() && fps_ > 0) {
         fps_text_ = std::to_string(fps_) + " FPS";
         details[detail_count++] = fps_text_.c_str();

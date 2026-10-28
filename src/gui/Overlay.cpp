@@ -148,7 +148,7 @@ void Overlay::collect_text() {
     for (std::size_t i = 0; i < category_count; ++i) fonts_.add_text(category_name(static_cast<Category>(i)));
     fonts_.add_text("Keybind[...]#");
     fonts_.add_text("Medicon Play Settings Quit Social");
-    fonts_.add_text(Watermark::version());
+    fonts_.add_text(watermark_.version());
     fonts_.add_text("0123456789 FPS ms");
     for (const auto& module : modules_.all()) {
         fonts_.add_text(module->name());

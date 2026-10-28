@@ -66,6 +66,8 @@ public:
     // 0 = query the host window (GetDpiForWindow on ImGui's main viewport).
     void set_dpi_override(float dpi) { dpi_override_ = dpi; }
     void set_owns_font_atlas(bool owns) { fonts_.set_owns_atlas(owns); }
+    // The version the Watermark shows (from the update server, via the loader).
+    void set_client_version(std::string_view version) { watermark_.set_version(version); }
 
 private:
     FrameInfo compute_frame() const;
