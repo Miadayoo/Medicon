@@ -19,14 +19,7 @@ bool check(MH_STATUS status, std::string_view operation, std::string& error) {
 
 HookManager::~HookManager() {
     std::string ignored;
-    clear(ignored);
-    if (initialized_ && hooks_.empty()) {
-        std::lock_guard lock(library_mutex);
-        if (--library_users == 0 && library_owned) {
-            MH_Uninitialize();
-            library_owned = false;
-        }
-    }
+    shutdown(ignored);
 }
 
 bool HookManager::initialize(std::string& error) {
@@ -108,5 +101,22 @@ bool HookManager::clear(std::string& error) {
     return true;
 }
 
-} // namespace medicon
+bool HookManager::shutdown(std::string& error) {
+    if (!initialized_) return true;
+    if (!clear(error)) return false;
+    std::lock_guard lock(library_mutex);
+    if (!initialized_) return true;
+    initialized_ = false;
+    if (--library_users == 0 && library_owned) {
+        const auto status = MH_Uninitialize();
+        if (status != MH_OK) {
+            ++library_users;
+            initialized_ = true;
+            return check(status, "MH_Uninitialize", error);
+        }
+        library_owned = false;
+    }
+    return true;
+}
 
+} // namespace medicon

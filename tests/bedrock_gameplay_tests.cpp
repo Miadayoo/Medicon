@@ -99,7 +99,8 @@ void native_boundary() {
     require(!access.locate(diagnostic) && !diagnostic.empty(), "test executable passed Minecraft version gate");
     require(!access.capture(nullptr, nullptr), "absent world produced a ready frame");
     access.end_tick();
-    require(!access.rotate(0, 0) && !access.attack(1) && !access.place_block({}, true) && !access.replaceable({}),
+    require(!access.rotate(0, 0) && !access.rotate_head_and_body(0) && !access.attack(1) &&
+            !access.place_block({}, true) && !access.replaceable({}),
             "native action escaped closed tick scope");
     access.clear();
     require(access.frame().actors.empty() && !access.frame().ready, "world clear retained actor handles");

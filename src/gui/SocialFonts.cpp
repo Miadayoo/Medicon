@@ -97,6 +97,8 @@ struct SocialFonts::Build {
     int width = 0, height = 0;
 };
 
+void SocialFonts::BuildDeleter::operator()(Build* build) const noexcept { delete build; }
+
 SocialFonts::SocialFonts() = default;
 SocialFonts::~SocialFonts() = default;
 
@@ -112,10 +114,10 @@ std::shared_ptr<const SocialFonts::Face> SocialFonts::load_face() {
     return face;
 }
 
-std::unique_ptr<SocialFonts::Build> SocialFonts::build(std::shared_ptr<const Face> face, Sizes sizes, Glyphs glyphs) {
+SocialFonts::BuildPtr SocialFonts::build(std::shared_ptr<const Face> face, Sizes sizes, Glyphs glyphs) {
     // Worker thread. GImGui is per thread (ImGuiConfig.hpp), so ImGui's allocator
     // never touches the render thread's context from here.
-    auto result = std::make_unique<Build>();
+    BuildPtr result(new Build());
     result->face = std::move(face);
     result->atlas = std::make_unique<ImFontAtlas>();
     auto& atlas = *result->atlas;

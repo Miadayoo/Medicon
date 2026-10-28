@@ -8,8 +8,11 @@
 #include <medicon/client/Client.hpp>
 #include <medicon/gui/Ime.hpp>
 #include <medicon/gui/Log.hpp>
-#include <medicon/modules/ClientModules.hpp>
-#include <medicon/modules/GameplayModules.hpp>
+#include <medicon/modules/ClickGuiModule.hpp>
+#include <medicon/modules/AimbotModule.hpp>
+#include <medicon/modules/KillauraModule.hpp>
+#include <medicon/modules/RotationsModule.hpp>
+#include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
 #include <medicon/sdk/BedrockGameplay.hpp>
@@ -18,6 +21,7 @@
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/sdk/CustomModelBox.hpp>
 #include <medicon/sdk/CustomModelAnimation.hpp>
+#include <medicon/sdk/CustomModelView.hpp>
 #include <medicon/update/HostApi.h>
 #include <medicon/social/Service.hpp>
 #include <backends/imgui_impl_win32.h>
@@ -28,10 +32,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <fstream>
 #include <cfloat>
 #include <mutex>
@@ -46,6 +53,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 namespace medicon::platform {
 namespace {
 using Microsoft::WRL::ComPtr;
+std::atomic_bool auto_unload_enabled{};
 using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 using Present1Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 using ResizeFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
@@ -64,6 +72,7 @@ using SendPacketFn = void(*)(void*, void*);
 using BaseTickFn = void(*)(void*);
 using GrabMouseFn = void(*)(void*);
 using MainMenuUpdateFn = std::uint32_t(*)(void*);
+using YawInterpolationFn = float(__fastcall*)(void*, float);
 namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
 
 constexpr GUID queue_guid{0xf6fe7dea, 0x438b, 0x49d6, {0x95, 0xb8, 0xe3, 0x67, 0x45, 0xd4, 0xea, 0xa2}};
@@ -163,6 +172,7 @@ public:
     HookManager tick_hooks;
     HookManager mouse_hooks;
     HookManager navigation_hooks;
+    HookManager rotation_hooks;
     HookManager model_hooks;
     HookManager model_box_hooks;
     HookManager model_static_hooks;
@@ -191,6 +201,29 @@ public:
     ULONGLONG model_wait_since{};
     sdk::BedrockChat bedrock_chat;
     sdk::BedrockGameplay gameplay;
+    YawInterpolationFn body_yaw_interpolator{};
+    YawInterpolationFn head_yaw_interpolator{};
+    std::atomic_bool rotation_override_enabled{};
+    std::atomic<std::uintptr_t> rotation_override_actor{};
+    std::atomic<std::uint64_t> rotation_override_yaws{};
+    std::atomic<std::uint64_t> rotation_override_pitches{};
+    std::atomic<std::uint64_t> rotation_visual_angles{};
+    std::atomic_bool rotation_visual_ready{};
+    std::atomic<std::uintptr_t> rotation_override_render_component{};
+    std::atomic<std::uintptr_t> rotation_override_component{};
+    std::atomic<sdk::custom_model::ViewMode> rotation_view_mode{sdk::custom_model::ViewMode::unknown};
+    std::atomic_bool sprint_packet_override_enabled{};
+    std::atomic_bool sprint_packet_requested{};
+    std::atomic_bool sprint_packet_route_reported{};
+    std::atomic_bool sprint_packet_layout_error_reported{};
+    std::atomic<ULONGLONG> pitch_render_diagnostic_last{};
+    bool rotation_getter_identity_reported{}; // Game thread.
+    ULONGLONG killaura_rotation_diagnostic_last{}; // Game thread, under render_mutex.
+    ULONGLONG pitch_diagnostic_last{}; // Game thread, under render_mutex.
+    unsigned pitch_diagnostic_count{};
+    bool rotation_visual_initialized{}; // Present thread, under render_mutex.
+    std::uintptr_t rotation_visual_actor{};
+    std::chrono::steady_clock::time_point rotation_visual_updated{};
     std::atomic_bool gameplay_ready{false};
     std::chrono::steady_clock::time_point last_game_tick{}; // Under render_mutex.
     std::string gameplay_diagnostic; // Under render_mutex.
@@ -242,6 +275,9 @@ public:
     bool tick_registered{};
     std::string feedback_error;
     HANDLE worker{};
+    std::atomic_bool eject_requested{};
+    std::atomic<HANDLE> eject_worker{};
+    bool window_callbacks_restored{true};
     bool installed{};
     std::ofstream log;
     std::string last_error;
@@ -601,6 +637,7 @@ public:
     void connect_chat_feedback();
     void connect_mouse();
     void connect_navigation();
+    void connect_rotation();
     void connect_model_probe();
     void connect_model_box();
     void connect_model_static();
@@ -615,6 +652,44 @@ struct CallbackScope {
     CallbackScope() { state.callbacks.fetch_add(1); }
     ~CallbackScope() { state.callbacks.fetch_sub(1); }
 };
+
+DWORD WINAPI eject_overlay_worker(void*) {
+    auto& state = runtime();
+    DWORD retry_delay = 250;
+    for (;;) {
+        try {
+            if (MediconStopOverlay()) return 0;
+        } catch (const std::exception& error) {
+            try { state.report(std::string("Safe eject failed: ") + error.what(), true); }
+            catch (...) { OutputDebugStringA("[Medicon] Safe eject failed; see debugger output.\n"); }
+        } catch (...) {
+            try { state.report("Safe eject failed with an unknown error.", true); }
+            catch (...) { OutputDebugStringA("[Medicon] Safe eject failed; see debugger output.\n"); }
+        }
+        Sleep(retry_delay);
+        retry_delay = retry_delay >= 2500 ? 5000 : retry_delay * 2;
+    }
+    return 1;
+}
+
+bool request_eject(Runtime& state) {
+    bool expected = false;
+    if (!state.eject_requested.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return true;
+    HANDLE thread = CreateThread(nullptr, 0, eject_overlay_worker, nullptr, 0, nullptr);
+    if (thread) {
+        state.eject_worker.store(thread, std::memory_order_release);
+        return true;
+    }
+    state.eject_requested.store(false, std::memory_order_release);
+    const DWORD error = GetLastError();
+    try {
+        state.report("Could not start the safe-eject worker (Windows error " +
+                     std::to_string(error) + ").", true);
+    } catch (...) {
+        OutputDebugStringA("[Medicon] Could not start the safe-eject worker.\n");
+    }
+    return false;
+}
 
 void cache_client_cursor(Runtime& state, HWND window);
 void reset_relative_cursor(Runtime& state) noexcept;
@@ -1049,6 +1124,10 @@ LRESULT CALLBACK overlay_window_proc(HWND window, UINT message, WPARAM wparam, L
 LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     CallbackScope callback;
     auto& state = callback.state;
+    if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && wparam == VK_END) {
+        request_eject(state);
+        return 0;
+    }
     if (message == WM_IME_STARTCOMPOSITION) state.ime_composing = true;
     else if (message == WM_IME_ENDCOMPOSITION || message == WM_KILLFOCUS) state.ime_composing = false;
     if (!state.stopping && state.input_open() && keyboard_message(message) && wparam == VK_ESCAPE) {
@@ -1117,6 +1196,9 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
     }
     RAWINPUT raw{};
     const bool decoded_raw = !state.stopping && state.menu_visible && message == WM_INPUT && decode_raw_input(lparam, raw);
+    if (decoded_raw && raw.header.dwType == RIM_TYPEKEYBOARD &&
+            raw.data.keyboard.VKey == VK_END && !(raw.data.keyboard.Flags & RI_KEY_BREAK))
+        request_eject(state);
     // High-rate motion uses the state published by Present. State-changing
     // input still gets a fresh screen check before taking its capture snapshot.
     if (!state.stopping && state.menu_visible && menu_input_requires_screen_validation(message, decoded_raw ? &raw : nullptr)) {
@@ -1289,10 +1371,86 @@ HWND swap_window(IDXGISwapChain* swap) {
     return search.window;
 }
 
+void advance_rotation_render(Runtime& state) noexcept {
+    const auto reset = [&] {
+        state.rotation_visual_initialized = false;
+        state.rotation_visual_actor = 0;
+        state.rotation_visual_updated = {};
+        state.rotation_visual_ready.store(false, std::memory_order_release);
+    };
+    if (!state.client || !state.rotation_override_enabled.load(std::memory_order_acquire) ||
+        !sdk::custom_model::third_person(state.rotation_view_mode.load(std::memory_order_acquire))) {
+        reset();
+        return;
+    }
+
+    const auto actor = state.rotation_override_actor.load(std::memory_order_acquire);
+    const auto yaws = state.rotation_override_yaws.load(std::memory_order_acquire);
+    const auto pitches = state.rotation_override_pitches.load(std::memory_order_acquire);
+    const float previous_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws));
+    const float target_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws >> 32));
+    const float previous_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches));
+    const float target_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches >> 32));
+    if (!actor || !std::isfinite(previous_yaw) || !std::isfinite(target_yaw) ||
+        !std::isfinite(previous_pitch) || !std::isfinite(target_pitch)) {
+        reset();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    float yaw = previous_yaw;
+    float pitch = previous_pitch;
+    if (state.rotation_visual_initialized && state.rotation_visual_actor == actor) {
+        const auto current = state.rotation_visual_angles.load(std::memory_order_acquire);
+        yaw = std::bit_cast<float>(static_cast<std::uint32_t>(current));
+        pitch = std::bit_cast<float>(static_cast<std::uint32_t>(current >> 32));
+    } else {
+        state.rotation_visual_initialized = true;
+        state.rotation_visual_actor = actor;
+    }
+
+    float delta_seconds = 0.0F;
+    if (state.rotation_visual_updated != std::chrono::steady_clock::time_point{}) {
+        delta_seconds = std::clamp(
+            std::chrono::duration<float>(now - state.rotation_visual_updated).count(), 0.0F, 0.1F);
+    }
+    state.rotation_visual_updated = now;
+
+    float maximum_speed = 1300.0F;
+    if (const auto* module = dynamic_cast<const RotationsModule*>(
+            state.client->modules().find(RotationsModule::module_id))) {
+        maximum_speed = module->speed.get<float>();
+    }
+    if (!std::isfinite(maximum_speed)) maximum_speed = 1300.0F;
+    maximum_speed = std::clamp(maximum_speed, 0.0F, 10000.0F);
+
+    const float yaw_delta = std::remainder(target_yaw - yaw, 360.0F);
+    const float pitch_delta = std::clamp(target_pitch, -90.0F, 90.0F) - pitch;
+    const float distance = std::hypot(yaw_delta, pitch_delta);
+    if (distance > 0.0001F && delta_seconds > 0.0F) {
+        const float speed_scale = std::clamp(distance / 180.0F, 0.0F, 1.0F);
+        const float step = maximum_speed * speed_scale * delta_seconds;
+        const float fraction = std::min(1.0F, step / distance);
+        yaw = std::remainder(yaw + yaw_delta * fraction, 360.0F);
+        pitch = std::clamp(pitch + pitch_delta * fraction, -90.0F, 90.0F);
+        if (fraction >= 1.0F) {
+            yaw = std::remainder(target_yaw, 360.0F);
+            pitch = std::clamp(target_pitch, -90.0F, 90.0F);
+        }
+    }
+
+    const auto packed = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(yaw)) |
+        (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(pitch)) << 32);
+    state.rotation_visual_angles.store(packed, std::memory_order_release);
+    state.rotation_visual_ready.store(true, std::memory_order_release);
+}
+
 bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     if ((flags & DXGI_PRESENT_TEST) || stopping || status == 4) return false;
     std::lock_guard lock(render_mutex);
     if (stopping || GetTickCount64() < retry_at) return false;
+    rotation_view_mode.store(sdk::custom_model::read_local_view(bedrock_chat.mouse_client()),
+        std::memory_order_release);
     FlagScope submission(inside_overlay);
     if (window_iconic.load(std::memory_order_acquire)) { suspend_menu(); return false; }
     const bool gone = window_gone.load(std::memory_order_acquire);
@@ -1338,6 +1496,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         client->overlay().set_ime(&ime);
         if (!client->start()) { report(client->last_error(), true); status = 4; return false; }
     }
+    advance_rotation_render(*this);
     ContextScope scope(context);
     if (!attach_window(target)) { status = 4; return false; }
     if (!renderer) {
@@ -1647,6 +1806,106 @@ bool model_actor_is_local(void* actor, void* owner) noexcept {
     return static_cast<Runtime*>(owner)->bedrock_chat.is_local_player(actor);
 }
 
+bool restore_rotation_render_pitch(Runtime& state, void* actor) noexcept {
+    if (reinterpret_cast<std::uintptr_t>(actor) != state.rotation_override_actor.load(std::memory_order_relaxed)) return false;
+    const auto render_component = state.rotation_override_render_component.load(std::memory_order_acquire);
+    const auto rotation_component = state.rotation_override_component.load(std::memory_order_acquire);
+    if (!render_component || !rotation_component || render_component > UINTPTR_MAX - sizeof(float) ||
+        rotation_component > UINTPTR_MAX - sizeof(float)) return false;
+    float view_pitch{};
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(rotation_component),
+            &view_pitch, sizeof(view_pitch), &read) || read != sizeof(view_pitch) || !std::isfinite(view_pitch)) return false;
+    SIZE_T written = 0;
+    return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(render_component),
+        &view_pitch, sizeof(view_pitch), &written) && written == sizeof(view_pitch);
+}
+
+float held_rotation_yaw(Runtime& state, void* actor, float alpha, float native_yaw) noexcept {
+    if (state.stopping.load(std::memory_order_acquire) ||
+        reinterpret_cast<std::uintptr_t>(actor) != state.rotation_override_actor.load(std::memory_order_relaxed))
+        return native_yaw;
+
+    const auto view_mode = state.rotation_view_mode.load(std::memory_order_acquire);
+    if (!sdk::custom_model::third_person(view_mode)) {
+        const bool override_enabled = state.rotation_override_enabled.load(std::memory_order_acquire);
+        const bool restored = restore_rotation_render_pitch(state, actor);
+        const auto now = GetTickCount64();
+        auto last = state.pitch_render_diagnostic_last.load(std::memory_order_relaxed);
+        if (now - last >= 500 && state.pitch_render_diagnostic_last.compare_exchange_strong(
+                last, now, std::memory_order_relaxed)) {
+            char message[160]{};
+            std::snprintf(message, sizeof(message),
+                "Rotations first-person render guard: view=%s yaw=native pitch=%s",
+                sdk::custom_model::view_mode_name(view_mode),
+                restored ? "restored" : (override_enabled ? "restore failed" : "native"));
+            state.report(message, override_enabled && !restored);
+        }
+        return native_yaw;
+    }
+
+    if (!state.rotation_override_enabled.load(std::memory_order_acquire)) {
+        restore_rotation_render_pitch(state, actor);
+        return native_yaw;
+    }
+
+    const auto yaws = state.rotation_override_yaws.load(std::memory_order_acquire);
+    const float previous_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws));
+    const float yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws >> 32));
+    const auto render_component = state.rotation_override_render_component.load(std::memory_order_acquire);
+    const auto pitches = state.rotation_override_pitches.load(std::memory_order_acquire);
+    const float previous_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches));
+    const float pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches >> 32));
+    float render_yaw = sdk::interpolate_yaw(previous_yaw, yaw, alpha);
+    float render_pitch = std::isfinite(alpha)
+        ? previous_pitch + (pitch - previous_pitch) * std::clamp(alpha, 0.0F, 1.0F)
+        : pitch;
+    const bool visual_ready = state.rotation_visual_ready.load(std::memory_order_acquire);
+    if (visual_ready) {
+        const auto visual = state.rotation_visual_angles.load(std::memory_order_acquire);
+        render_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(visual));
+        render_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(visual >> 32));
+    }
+    bool render_write_ok = false;
+    if (std::isfinite(render_pitch)) {
+        // The same render rotation can affect first-person arms, so this
+        // branch is reached only after a validated third-person view check.
+        if (render_component && render_component <= UINTPTR_MAX - sizeof(float)) {
+            SIZE_T written = 0;
+            render_write_ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(render_component),
+                &render_pitch, sizeof(render_pitch), &written) && written == sizeof(render_pitch);
+        }
+        const auto now = GetTickCount64();
+        auto last = state.pitch_render_diagnostic_last.load(std::memory_order_relaxed);
+        if (now - last >= 500 && state.pitch_render_diagnostic_last.compare_exchange_strong(
+                last, now, std::memory_order_relaxed)) {
+            char message[224]{};
+            std::snprintf(message, sizeof(message),
+                "Rotations render: view=%s mode=%s pitch=%.2f->%.2f yaw=%.2f render_write=%s",
+                sdk::custom_model::view_mode_name(view_mode), visual_ready ? "smooth" : "tick-fallback",
+                render_pitch, pitch, render_yaw, render_write_ok ? "ok" : "failed");
+            state.report(message, !render_write_ok);
+        }
+    }
+    return render_yaw;
+}
+
+float hook_body_yaw(void* actor, float alpha) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.body_yaw_interpolator;
+    if (!original) return 0.0F;
+    return held_rotation_yaw(state, actor, alpha, original(actor, alpha));
+}
+
+float hook_head_yaw(void* actor, float alpha) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.head_yaw_interpolator;
+    if (!original) return 0.0F;
+    return held_rotation_yaw(state, actor, alpha, original(actor, alpha));
+}
+
 void hook_model_near_queue(model_native::NearActorQueueCallback* candidate_callback,
                            model_native::PlayerCandidate* actor) {
     CallbackScope callback;
@@ -1694,6 +1953,61 @@ void hook_model_data_render(model_native::DataDrivenRenderer* renderer,
     const bool allow_suppression=!state.model_box.custom_model_mode()||state.model_box.first_person_ready();
     if (state.model_probe.inspect_render(renderer, context, data, model_actor_is_local, &state,allow_suppression)) return;
     return original(renderer, context, data);
+}
+
+void Runtime::connect_rotation() {
+    if (stopping || !gameplay_ready.load(std::memory_order_acquire)) return;
+    std::string view_diagnostic;
+    const bool view_ready = sdk::custom_model::initialize_view_reader(view_diagnostic);
+    report("Rotations view-mode guard: " + view_diagnostic, !view_ready);
+    const auto body_target = gameplay.body_yaw_interpolator_target();
+    const auto head_target = gameplay.head_yaw_interpolator_target();
+    if (!body_target || !head_target) {
+        report("Rotations: verified head/body-yaw interpolation targets are unavailable.", true);
+        return;
+    }
+    std::string error;
+    if (rotation_hooks.size() && rotation_hooks.size() != 2) {
+        if (!rotation_hooks.clear(error)) {
+            report("Rotations hook cleanup failed: " + error, true);
+            return;
+        }
+        body_yaw_interpolator = nullptr;
+        head_yaw_interpolator = nullptr;
+    }
+    if (!rotation_hooks.size()) {
+        if (!rotation_hooks.create("Gameplay body-yaw interpolation", reinterpret_cast<void*>(body_target),
+                reinterpret_cast<void*>(&hook_body_yaw), reinterpret_cast<void**>(&body_yaw_interpolator), error)) {
+            report("Rotations hook unavailable: " + error, true);
+            return;
+        }
+        if (!rotation_hooks.create("Gameplay head-yaw interpolation", reinterpret_cast<void*>(head_target),
+                reinterpret_cast<void*>(&hook_head_yaw), reinterpret_cast<void**>(&head_yaw_interpolator), error)) {
+            report("Rotations hook unavailable: " + error, true);
+            std::string cleanup;
+            if (!rotation_hooks.clear(cleanup)) report("Rotations hook cleanup failed: " + cleanup, true);
+            else {
+                body_yaw_interpolator = nullptr;
+                head_yaw_interpolator = nullptr;
+            }
+            return;
+        }
+    }
+    if (rotation_hooks.size() != 2) {
+        report("Rotations hook unavailable: expected both verified head/body-yaw hooks.", true);
+        return;
+    }
+    if (!rotation_hooks.enable_all(error)) {
+        report("Rotations hook could not be enabled: " + error, true);
+        std::string cleanup;
+        if (!rotation_hooks.clear(cleanup)) report("Rotations hook cleanup failed: " + cleanup, true);
+        else {
+            body_yaw_interpolator = nullptr;
+            head_yaw_interpolator = nullptr;
+        }
+        return;
+    }
+    report("Rotations head/body render interpolation hooks ready (Minecraft 1.26.52.3).");
 }
 
 void Runtime::connect_model_probe() {
@@ -1861,6 +2175,17 @@ void hook_send_packet(void* sender, void* packet) {
             // Commands stay local even if a producer overruns the bounded queue.
             if (state.pending_commands.size() < 64) state.pending_commands.push_back(std::move(input));
         })) return;
+    if (!state.stopping.load(std::memory_order_acquire)) {
+        const auto sprint_result = state.gameplay.rewrite_sprint_input(packet,
+            state.sprint_packet_override_enabled.load(std::memory_order_acquire),
+            state.sprint_packet_requested.load(std::memory_order_acquire));
+        if (sprint_result == sdk::SprintInputRewrite::rewritten &&
+            !state.sprint_packet_route_reported.exchange(true, std::memory_order_acq_rel))
+            state.report("Sprint PlayerAuthInput rewrite active (packet id 144, input flags at +0x98).");
+        else if (sprint_result == sdk::SprintInputRewrite::layout_rejected &&
+            !state.sprint_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
+            state.report("Sprint PlayerAuthInput layout check failed; packet left unchanged.", true);
+    }
     state.send_packet(sender, packet);
 }
 
@@ -1898,14 +2223,20 @@ void hook_base_tick(void* actor) {
     std::unique_lock render(state.render_mutex, std::defer_lock);
     (void)render.try_lock_for(std::chrono::milliseconds(4));
     if (!render.owns_lock() || !state.client || !state.bedrock_chat.is_local_player(actor)) return;
-    bool wanted = false;
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp"}) {
+    const auto* sprint = dynamic_cast<const SprintModule*>(state.client->modules().find(SprintModule::module_id));
+    bool wanted = sprint && sprint->needs_restore();
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "sprint"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
     }
     // A slot Scaffold's Auto Select switched to is put back by a later capture,
     // also after every gameplay module was turned off.
     if (!wanted && !state.gameplay.slot_restore_pending()) {
+        state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        (void)restore_rotation_render_pitch(state, actor);
+        state.rotation_override_render_component.store(0, std::memory_order_release);
+        state.rotation_override_component.store(0, std::memory_order_release);
+        state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.gameplay.clear();
         state.last_game_tick = {};
@@ -1921,6 +2252,11 @@ void hook_base_tick(void* actor) {
         const bool visibility = (aim && aim->enabled() && aim->visible_only.get<bool>()) ||
             (aura && aura->enabled() && aura->visible_only.get<bool>());
         if (!state.gameplay.capture(state.bedrock_chat.mouse_client(), actor, visibility)) {
+            state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+            (void)restore_rotation_render_pitch(state, actor);
+            state.rotation_override_render_component.store(0, std::memory_order_release);
+            state.rotation_override_component.store(0, std::memory_order_release);
+            state.rotation_override_enabled.store(false, std::memory_order_release);
             state.client->clear_gameplay();
             state.last_game_tick = {};
             const auto& diagnostic = state.gameplay.diagnostic();
@@ -1959,10 +2295,108 @@ void hook_base_tick(void* actor) {
         const bool allow_actions = !state.input_open() && grabbed.value_or(false) &&
             state.window_focused_cached.load(std::memory_order_acquire);
         state.client->game_tick(state.gameplay, seconds, allow_actions);
+        const auto* killaura_module = dynamic_cast<const KillauraModule*>(
+            state.client->modules().find(KillauraModule::module_id));
+        std::uintptr_t killaura_target_id = 0;
+        float killaura_target_yaw = 0.0F, killaura_target_pitch = 0.0F;
+        bool killaura_rotation_applied = false;
+        if (allow_actions && killaura_module && killaura_module->enabled() &&
+            killaura_module->rotation_diagnostic(killaura_target_id, killaura_target_yaw,
+                                                  killaura_target_pitch, killaura_rotation_applied)) {
+            const auto now_ms = GetTickCount64();
+            if (state.killaura_rotation_diagnostic_last == 0 ||
+                now_ms - state.killaura_rotation_diagnostic_last >= 500) {
+                char message[224]{};
+                std::snprintf(message, sizeof(message),
+                    "Killaura rotation target: id=0x%llX yaw=%.2f pitch=%.2f view_pitch=%.2f applied=%s",
+                    static_cast<unsigned long long>(killaura_target_id), killaura_target_yaw,
+                    killaura_target_pitch, state.gameplay.frame().pitch,
+                    killaura_rotation_applied ? "yes" : "no");
+                state.report(message);
+                state.killaura_rotation_diagnostic_last = now_ms;
+            }
+        } else {
+            state.killaura_rotation_diagnostic_last = 0;
+        }
+        const auto* sprint_module = dynamic_cast<const SprintModule*>(
+            state.client->modules().find(SprintModule::module_id));
+        state.sprint_packet_requested.store(sprint_module && sprint_module->requested_sprinting(),
+            std::memory_order_release);
+        state.sprint_packet_override_enabled.store(sprint_module && sprint_module->packet_sprint_override(),
+            std::memory_order_release);
+        sdk::RotationDiagnostic pitch{};
+        const bool pitch_diagnostic_ready = state.gameplay.rotation_diagnostic(pitch);
+        float previous_yaw = 0.0F, requested_yaw = 0.0F;
+        const bool rotation_requested = state.gameplay.rotation_override(previous_yaw, requested_yaw);
+        const bool body_getter_matches = rotation_requested &&
+            state.gameplay.validates_body_yaw_interpolator(actor);
+        const bool head_getter_matches = rotation_requested &&
+            state.gameplay.validates_head_yaw_interpolator(actor);
+        if (rotation_requested && body_getter_matches && head_getter_matches) {
+            state.rotation_override_actor.store(reinterpret_cast<std::uintptr_t>(actor), std::memory_order_relaxed);
+            const auto yaws = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(previous_yaw)) |
+                (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(requested_yaw)) << 32);
+            state.rotation_override_yaws.store(yaws, std::memory_order_release);
+            if (pitch_diagnostic_ready && pitch.render_component) {
+                const auto pitches = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(pitch.previous_pitch)) |
+                    (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(pitch.requested_pitch)) << 32);
+                state.rotation_override_pitches.store(pitches, std::memory_order_release);
+                state.rotation_override_render_component.store(pitch.render_component, std::memory_order_release);
+                state.rotation_override_component.store(pitch.rotation_component, std::memory_order_release);
+            } else {
+                state.rotation_override_render_component.store(0, std::memory_order_release);
+                state.rotation_override_component.store(0, std::memory_order_release);
+            }
+            state.rotation_override_enabled.store(true, std::memory_order_release);
+        } else {
+            (void)restore_rotation_render_pitch(state, actor);
+            state.rotation_override_render_component.store(0, std::memory_order_release);
+            state.rotation_override_component.store(0, std::memory_order_release);
+            state.rotation_override_enabled.store(false, std::memory_order_release);
+            if (rotation_requested && !body_getter_matches && !state.rotation_getter_identity_reported) {
+                state.report("Rotations render hold withheld: local actor body-yaw getter did not match its verified profile. " +
+                    state.gameplay.rotation_getter_diagnostic(actor), true);
+                state.rotation_getter_identity_reported = true;
+            } else if (rotation_requested && !head_getter_matches && !state.rotation_getter_identity_reported) {
+                state.report("Rotations render hold withheld: verified head-yaw getter was not found in the local actor vtable. " +
+                    state.gameplay.rotation_getter_diagnostic(actor), true);
+                state.rotation_getter_identity_reported = true;
+            }
+        }
+        if (rotation_requested && state.rotation_override_enabled.load(std::memory_order_acquire)) {
+            const auto now = GetTickCount64();
+            if (state.pitch_diagnostic_count < 12 || now - state.pitch_diagnostic_last >= 500) {
+                if (pitch_diagnostic_ready) {
+                    char message[256]{};
+                    std::snprintf(message, sizeof(message),
+                        "Rotations pitch: requested=%.2f previous=%.2f | RotationComponent current=%.2f previous=%.2f | RenderRotation current=%.2f yaw=%.2f",
+                        pitch.requested_pitch, pitch.previous_pitch, pitch.view_pitch, pitch.view_previous_pitch,
+                        pitch.render_pitch, pitch.render_yaw);
+                    state.report(message);
+                } else {
+                    state.report("Rotations pitch: diagnostic components unavailable.");
+                }
+                state.pitch_diagnostic_last = now;
+                ++state.pitch_diagnostic_count;
+            }
+        } else {
+            state.pitch_diagnostic_last = 0;
+            state.pitch_diagnostic_count = 0;
+        }
     } catch (const std::exception& error) {
+        state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        (void)restore_rotation_render_pitch(state, actor);
+        state.rotation_override_render_component.store(0, std::memory_order_release);
+        state.rotation_override_component.store(0, std::memory_order_release);
+        state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.report(std::string("Gameplay update: ") + error.what(), true);
     } catch (...) {
+        state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        (void)restore_rotation_render_pitch(state, actor);
+        state.rotation_override_render_component.store(0, std::memory_order_release);
+        state.rotation_override_component.store(0, std::memory_order_release);
+        state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
     }
 }
@@ -2372,9 +2806,12 @@ bool Runtime::install(std::string& error) {
 DWORD WINAPI start_worker(void*) {
     auto& state = runtime();
     try {
-        HMODULE pinned{};
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                reinterpret_cast<LPCWSTR>(&start_worker), &pinned)) throw std::runtime_error("Cannot keep overlay callbacks mapped.");
+        if (!auto_unload_enabled.load(std::memory_order_acquire)) {
+            HMODULE pinned{};
+            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                    reinterpret_cast<LPCWSTR>(&start_worker), &pinned))
+                throw std::runtime_error("Cannot keep overlay callbacks mapped.");
+        }
         const auto default_config = Client::default_config_path();
         std::filesystem::create_directories(default_config.parent_path());
         {
@@ -2434,6 +2871,10 @@ DWORD WINAPI start_worker(void*) {
         unsigned starting = 1;
         state.status.compare_exchange_strong(starting, 2);
         state.report("DXGI hooks ready.");
+        try { state.connect_rotation(); }
+        catch (const std::exception& error) {
+            state.report(std::string("Rotations hook unavailable: ") + error.what(), true);
+        }
         // Spec 4.4: after Medicon finished initializing, never from DllMain.
         if (state.social) state.social->start();
         try { state.connect_mouse(); state.connect_chat(); state.connect_chat_feedback(); }
@@ -2461,16 +2902,71 @@ DWORD WINAPI start_worker(void*) {
 } // namespace
 } // namespace medicon::platform
 
+extern "C" int MediconAutoUnloadReady() {
+    auto& state = medicon::platform::runtime();
+    if (!state.eject_requested.load(std::memory_order_acquire) || state.status.load(std::memory_order_acquire) != 0)
+        return 0;
+    HANDLE worker = state.eject_worker.load(std::memory_order_acquire);
+    if (!worker || WaitForSingleObject(worker, 0) != WAIT_OBJECT_0) return 0;
+    worker = state.eject_worker.exchange(nullptr, std::memory_order_acq_rel);
+    if (worker) CloseHandle(worker);
+    if (!state.window_callbacks_restored) {
+        state.eject_requested.store(false, std::memory_order_release);
+        try {
+            state.report("Overlay stopped, but it remains mapped because another window procedure may still call it.", true);
+        } catch (...) {
+            OutputDebugStringA("[Medicon] DLL remains mapped: another window procedure may call it.\n");
+        }
+        return -1;
+    }
+    const std::array<medicon::HookManager*, 9> managers{
+        &state.model_static_hooks, &state.model_box_hooks, &state.model_hooks, &state.navigation_hooks,
+        &state.rotation_hooks, &state.mouse_hooks, &state.tick_hooks, &state.chat_hooks, &state.hooks};
+    try {
+        for (auto* manager : managers) {
+            std::string error;
+            if (!manager->shutdown(error)) {
+                state.eject_requested.store(false, std::memory_order_release);
+                try { state.report("Overlay stopped, but hook cleanup failed; DLL remains mapped: " + error, true); }
+                catch (...) { OutputDebugStringA("[Medicon] Hook cleanup failed; DLL remains mapped.\n"); }
+                return -1;
+            }
+        }
+    } catch (...) {
+        state.eject_requested.store(false, std::memory_order_release);
+        try { state.report("Overlay stopped, but hook cleanup threw; DLL remains mapped.", true); }
+        catch (...) { OutputDebugStringA("[Medicon] Hook cleanup threw; DLL remains mapped.\n"); }
+        return -1;
+    }
+    {
+        std::lock_guard lock(state.log_mutex);
+        state.log.close();
+    }
+    return 1;
+}
+
+extern "C" void MediconEnableAutoUnload() noexcept {
+    medicon::platform::auto_unload_enabled.store(true, std::memory_order_release);
+}
+
 int MediconStartOverlay() {
     using namespace medicon::platform;
     auto& state = runtime();
     std::lock_guard lock(state.lifecycle_mutex);
+    if (auto_unload_enabled.load(std::memory_order_acquire) &&
+            state.eject_requested.load(std::memory_order_acquire)) return 0;
     if (state.status >= 1 && state.status <= 3) return 1;
+    if (HANDLE eject = state.eject_worker.load(std::memory_order_acquire)) {
+        if (WaitForSingleObject(eject, 0) != WAIT_OBJECT_0) return 0;
+        if (state.eject_worker.compare_exchange_strong(eject, nullptr, std::memory_order_acq_rel))
+            CloseHandle(eject);
+    }
     if (state.worker) {
         if (WaitForSingleObject(state.worker, 0) != WAIT_OBJECT_0) return 0;
         CloseHandle(state.worker); state.worker = nullptr;
     }
     state.stopping = false;
+    state.eject_requested = false;
     state.status = 1;
     state.worker = CreateThread(nullptr, 0, start_worker, nullptr, 0, nullptr);
     if (!state.worker) { state.status = 4; state.stopping = true; state.report("Cannot start overlay worker.", true); return 0; }
@@ -2547,6 +3043,7 @@ int MediconStopOverlay() {
     auto& state = runtime();
     std::lock_guard lifecycle(state.lifecycle_mutex);
     state.stopping = true;
+    state.rotation_override_enabled.store(false, std::memory_order_release);
     state.model_probe.set_enabled(false);
     state.model_box.set_options(false,0,1);
     state.navigation_ready.store(false, std::memory_order_release);
@@ -2573,16 +3070,22 @@ int MediconStopOverlay() {
     if (!state.navigation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.mouse_hooks.disable_all(error)) { state.report(error, true); return 0; }
     state.mouse_ready = false;
+    if (!state.rotation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.tick_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.chat_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.hooks.disable_all(error)) { state.report(error, true); return 0; }
     {
         std::lock_guard lock(state.window_mutex);
+        state.window_callbacks_restored = true;
         for (auto& entry : state.windows) {
             // Respect another plugin installed after us: its chain can continue
-            // forwarding through our pinned, stopped procedure safely.
-            if (IsWindow(entry.window) && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(entry.window, GWLP_WNDPROC)) == overlay_window_proc)
-                entry.restored = SetWindowLongPtrW(entry.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(entry.original)) != 0;
+            // forwarding through our stopped procedure, so do not unload in that case.
+            if (!IsWindow(entry.window)) continue;
+            if (reinterpret_cast<WNDPROC>(GetWindowLongPtrW(entry.window, GWLP_WNDPROC)) == overlay_window_proc) {
+                entry.restored = SetWindowLongPtrW(entry.window, GWLP_WNDPROC,
+                    reinterpret_cast<LONG_PTR>(entry.original)) != 0;
+            }
+            if (!entry.restored) state.window_callbacks_restored = false;
         }
     }
     state.mouse_window = nullptr;

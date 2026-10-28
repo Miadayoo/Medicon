@@ -1,8 +1,16 @@
 #include "medicon/modules/BuiltinModules.hpp"
-#include "medicon/modules/ClientModules.hpp"
+#include "medicon/modules/ArrayListModule.hpp"
+#include "medicon/modules/ClickGuiModule.hpp"
+#include "medicon/modules/WatermarkModule.hpp"
 #include "medicon/modules/ExampleModule.hpp"
-#include "medicon/modules/GameplayModules.hpp"
-#include "medicon/modules/VisualModules.hpp"
+#include "medicon/modules/ChinaHatModule.hpp"
+#include "medicon/modules/DerpModule.hpp"
+#include "medicon/modules/AimbotModule.hpp"
+#include "medicon/modules/KillauraModule.hpp"
+#include "medicon/modules/ScaffoldModule.hpp"
+#include "medicon/modules/EspModule.hpp"
+#include "medicon/modules/RotationsModule.hpp"
+#include "medicon/modules/SprintModule.hpp"
 #include "medicon/modules/CustomModelProbeModule.hpp"
 #include "medicon/core/ModuleManager.hpp"
 
@@ -19,6 +27,8 @@ void register_builtin_modules(ModuleManager& modules) {
     modules.add<KillauraModule>();
     modules.add<ScaffoldModule>();
     modules.add<EspModule>();
+    modules.add<RotationsModule>();
+    modules.add<SprintModule>();
     modules.add<CustomModelProbeModule>();
 }
 

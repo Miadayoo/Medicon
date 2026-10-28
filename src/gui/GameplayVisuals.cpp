@@ -2,7 +2,8 @@
 
 #include "medicon/core/ModuleManager.hpp"
 #include "medicon/gui/Draw.hpp"
-#include "medicon/modules/VisualModules.hpp"
+#include "medicon/modules/ChinaHatModule.hpp"
+#include "medicon/modules/EspModule.hpp"
 #include "medicon/sdk/Gameplay.hpp"
 
 #include <imgui.h>
