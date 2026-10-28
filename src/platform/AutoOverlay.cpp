@@ -169,6 +169,10 @@ public:
     // Set by Medicon_Initialize when MediconLoader hosts the Core: the version
     // that was just downloaded, so Social greets with an "updated" notice.
     std::string update_version;
+    // Set by Medicon_Initialize: the newest Core on the update server, as the
+    // loader read it from the signed manifest (else the hosted Core's own
+    // version). Empty without the loader: the Watermark keeps the build's.
+    std::string server_version;
     sdk::MenuScreenState cached_menu_screen_{sdk::MenuScreenState::unknown};
     sdk::MenuSessionIdentity cached_menu_session_{};
     void* cached_menu_client_{};
@@ -1275,6 +1279,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
             client->overlay().social().set_startup_sign_in(true);
             if (!update_version.empty()) client->overlay().social().set_update_notice(update_version);
         }
+        if (!server_version.empty()) client->overlay().set_client_version(server_version);
         client->overlay().set_ime(&ime);
         if (!client->start()) { report(client->last_error(), true); status = 4; return false; }
     }
@@ -2064,11 +2069,41 @@ int MediconStartOverlay() {
 // auto-start (which is suppressed by MEDICON_LOADER); both reuse the same worker.
 extern "C" MEDICON_API uint32_t Medicon_GetAPIVersion(void) { return 1; }
 
+namespace {
+// Version strings are ASCII ("1.0.5"); anything else is dropped.
+std::string ascii(const wchar_t* text) {
+    std::string out;
+    for (const wchar_t* c = text; c && *c; ++c) {
+        if (*c >= 128) return {};
+        out.push_back(static_cast<char>(*c));
+    }
+    return out;
+}
+
+// The latest version the loader found on the update server this launch, or
+// empty when it was offline or the manifest was rejected. No network here:
+// the loader already fetched and verified the manifest before starting us.
+std::string loader_latest_version() {
+    HMODULE loader = GetModuleHandleW(L"MediconLoader.dll");
+    if (!loader) return {};
+    const auto get_status = reinterpret_cast<MediconLoaderGetStatusFn>(
+        reinterpret_cast<void*>(GetProcAddress(loader, "MediconLoaderGetStatus")));
+    if (!get_status) return {};
+    MediconLoaderStatus status{};
+    status.size = sizeof status;
+    if (!get_status(&status)) return {};
+    status.latest_version[std::size(status.latest_version) - 1] = 0;
+    return ascii(status.latest_version);
+}
+} // namespace
+
 extern "C" MEDICON_API int Medicon_Initialize(const MediconHostAPI* host) {
     using namespace medicon::platform;
     auto& state = runtime();
     if (host && host->size >= sizeof(MediconHostAPI) && host->api_version == 1 && host->core_version) {
         std::lock_guard lock(state.lifecycle_mutex);
+        state.server_version = loader_latest_version();
+        if (state.server_version.empty()) state.server_version = ascii(host->core_version);
         // state 1 == MEDICON_UPDATE_UPDATED: a newer Core was downloaded this launch.
         if (host->update_state == 1) {
             const auto* version = host->core_version;

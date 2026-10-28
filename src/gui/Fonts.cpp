@@ -185,6 +185,8 @@ float FontManager::role_size(FontRole role) const {
     case FontRole::Splash: return sizes_.splash;
     case FontRole::MainMenuLogo: return sizes_.main_menu_logo;
     case FontRole::MainMenuButton: return sizes_.main_menu_button;
+    case FontRole::Watermark: return sizes_.watermark;
+    case FontRole::WatermarkSmall: return sizes_.watermark_small;
     }
     return sizes_.module;
 }
@@ -409,7 +411,7 @@ bool FontManager::prepare(ImFontAtlas& atlas, const FontSizes& sizes) {
         if (!cjk_.valid) cjk_ = find_face("meiryo.ttc", "Meiryo UI", "Regular");
     }
 
-    const std::array<std::pair<FontWeight, float>, 10> required{{
+    const std::array<std::pair<FontWeight, float>, 12> required{{
         {role_weight(FontRole::Header), sizes.header},
         {role_weight(FontRole::Module), sizes.module},
         {role_weight(FontRole::KeyHint), sizes.key_hint},
@@ -420,6 +422,8 @@ bool FontManager::prepare(ImFontAtlas& atlas, const FontSizes& sizes) {
         {role_weight(FontRole::Splash), sizes.splash},
         {role_weight(FontRole::MainMenuLogo), sizes.main_menu_logo},
         {role_weight(FontRole::MainMenuButton), sizes.main_menu_button},
+        {role_weight(FontRole::Watermark), sizes.watermark},
+        {role_weight(FontRole::WatermarkSmall), sizes.watermark_small},
     }};
     const bool glyphs_changed = codepoints_.size() != built_codepoints_;
     bool missing = false;

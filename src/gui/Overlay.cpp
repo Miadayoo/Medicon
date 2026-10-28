@@ -115,6 +115,14 @@ FontSizes Overlay::font_sizes(const FrameInfo& frame) const {
     // Edge-lit sizes are physical pixels, independent of ClickGUI/DPI scaling.
     sizes.arraylist = 15.0F * arraylist_scale;
     sizes.arraylist_mode = 12.0F * arraylist_scale;
+    // The Watermark follows the HUD scale (resolution and DPI) and its own Scale.
+    // Kept while it fades out so the text never drops out of the atlas mid-fade.
+    if (const auto* module = dynamic_cast<const WatermarkModule*>(modules_.find(WatermarkModule::module_id));
+        module && (module->enabled() || watermark_.visible())) {
+        const float k = frame.hud_scale * std::clamp(module->scale.get<float>(), 0.75F, 1.5F);
+        sizes.watermark = std::round(theme::watermark::font * k);
+        sizes.watermark_small = std::round(theme::watermark::font_small * k);
+    }
     // Prepare the intro and menu together before the first intro render starts
     // its clock. Otherwise the handoff rebuilds the atlas and waits for the GPU
     // while the last animation frames should be presented.
@@ -140,6 +148,8 @@ void Overlay::collect_text() {
     for (std::size_t i = 0; i < category_count; ++i) fonts_.add_text(category_name(static_cast<Category>(i)));
     fonts_.add_text("Keybind[...]#");
     fonts_.add_text("Medicon Play Settings Quit Social");
+    fonts_.add_text(watermark_.version());
+    fonts_.add_text("0123456789 FPS ms");
     for (const auto& module : modules_.all()) {
         fonts_.add_text(module->name());
         fonts_.add_text(module->suffix());
@@ -202,6 +212,7 @@ void Overlay::render() {
     const PointerInput below = social_.screen_visible() ? PointerInput{} : pointer;
     social_.set_backdrop_time(main_menu_.elapsed());
     const bool covered = social_.screen_opaque();
+    if (main_menu_.active() || covered) watermark_.hide();
     if (main_menu_.active()) {
         main_menu_.set_social(social_.attached(), social_.badge());
         if (!covered) main_menu_.render(ImGui::GetForegroundDrawList(), fonts_, {frame_.client_w, frame_.client_h}, below);
@@ -209,6 +220,7 @@ void Overlay::render() {
     } else if (!covered) {
         GuiContext context{modules_, fonts_, shadows_, frame_, below, ImGui::GetBackgroundDrawList()};
         hud_.render(context);
+        watermark_.render(context, clock_.elapsed());
         gui_.render(context);
         if (gui_.consume_save_request() && save_) save_();
     }

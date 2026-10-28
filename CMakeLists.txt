@@ -165,9 +165,12 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/SocialUi.cpp
         src/gui/SocialWidgets.cpp
         src/gui/Textures.cpp
-        src/gui/Toasts.cpp)
+        src/gui/Toasts.cpp
+        src/gui/Watermark.cpp)
     medicon_target(medicon_gui)
     target_include_directories(medicon_gui PRIVATE "${MEDICON_EMBEDDED_FONTS_DIR}")
+    # The Watermark shows it; the DLL and the Preview define the same value.
+    target_compile_definitions(medicon_gui PRIVATE MEDICON_VERSION="${PROJECT_VERSION}")
     target_link_libraries(medicon_gui PUBLIC medicon_core medicon_social_core medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32)
 
     # Social networking (spec 4.2): WinHTTP REST/WebSocket, DPAPI license, notification sound.

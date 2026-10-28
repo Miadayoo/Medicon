@@ -1245,6 +1245,12 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_toasts_steady", social_toasts_steady},
         {"toasts_click", toasts_click},
         {"toasts_morph", toasts_morph},
+        {"watermark", [](ScenarioHost& h, bool c) {
+            // The in-game Watermark, entrance included (capture after 250 ms).
+            h.overlay().gui().set_open(false);
+            h.overlay().set_main_menu_active(false);
+            capture_at(h, c, "t", {0, 60, 120, 250});
+        }},
         {"main_menu_social", [](ScenarioHost& h, bool c) { main_menu_social(h, c, false); }},
         {"main_menu_social_badge", [](ScenarioHost& h, bool c) { main_menu_social(h, c, true); }},
         {"main_menu_social_click", main_menu_social_click},

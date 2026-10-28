@@ -2,6 +2,7 @@
 #include "medicon/core/EventBus.hpp"
 #include "medicon/core/ModuleManager.hpp"
 #include "medicon/modules/BuiltinModules.hpp"
+#include "medicon/modules/ClientModules.hpp"
 #include "medicon/modules/ExampleModule.hpp"
 
 #include <nlohmann/json.hpp>
@@ -288,9 +289,24 @@ void test_events() {
 
 } // namespace
 
+void test_watermark_defaults() {
+    ModuleManager modules;
+    register_builtin_modules(modules);
+    auto* watermark = dynamic_cast<WatermarkModule*>(modules.find(WatermarkModule::module_id));
+    check(watermark && watermark->enabled() && !watermark->show_in_arraylist() &&
+              watermark->category() == Category::Client, "Watermark is a hidden Client module, on by default");
+    check(watermark->show_version.get<bool>() && !watermark->show_fps.get<bool>() && !watermark->show_ping.get<bool>() &&
+              watermark->shadow.get<bool>() && watermark->glow.get<bool>(),
+          "Watermark shows Medicon and the version only by default");
+    check(watermark->scale.minimum == 0.75F && watermark->scale.maximum == 1.5F && watermark->opacity.minimum == 0.5F &&
+              watermark->opacity.maximum == 1.0F && watermark->opacity.get<float>() == 1.0F,
+          "Watermark scale and opacity ranges");
+}
+
 int main() {
     try {
         test_modules();
+        test_watermark_defaults();
         test_config_round_trip();
         test_config_validation();
         test_events();
