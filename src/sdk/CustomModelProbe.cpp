@@ -49,10 +49,12 @@ bool supported_file(std::string& diagnostic) {
 
 ProbeTargets resolve_probe_targets(std::uint32_t timestamp, std::uint32_t image_size,
     std::span<const memory::MemoryRegion> regions, memory::AddressRange image, std::string& diagnostic) {
-    // PE identity from the original executable recorded in custom_model_ida_report.md.
+    // PE identity from the original executable recorded in custom_model_ida_report.md,
+    // or the official packaging of the same link (native::known_pe_identity).
     // This is a version/profile gate, not a claim that a loaded image was SHA-256 verified.
-    if (timestamp != 0x6AB54E37 || image_size != 0x12C02000) {
-        diagnostic = "P0 probe withheld: PE identity differs from the IDA evidence.";
+    if (!native::known_pe_identity(timestamp, image_size)) {
+        diagnostic = "P0 probe withheld: PE identity differs from the IDA evidence (" +
+            native::pe_identity_text(timestamp, image_size) + ").";
         return {};
     }
     constexpr std::array definitions{

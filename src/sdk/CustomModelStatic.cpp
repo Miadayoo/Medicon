@@ -24,9 +24,12 @@ StaticTargets locate_static_targets(std::string& diagnostic) {
     if (!ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(module->image.address),&dos,sizeof dos,&count)||
         dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||!module->image.contains(module->image.address+dos.e_lfanew,sizeof nt)||
         !ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(module->image.address+dos.e_lfanew),&nt,sizeof nt,&count)||
-        nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
-        nt.FileHeader.TimeDateStamp!=0x6AB54E37||nt.OptionalHeader.SizeOfImage!=0x12C02000) {
+        nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64) {
         diagnostic="P2 executable profile differs from IDA evidence.";return {};
+    }
+    if (!bedrock_1_26_52_3::known_pe_identity(nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage)) {
+        diagnostic="P2 executable profile differs from IDA evidence ("+
+            bedrock_1_26_52_3::pe_identity_text(nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage)+").";return {};
     }
     using D=memory::SignatureDefinition;using R=memory::SignatureResolution;
     constexpr auto version=bedrock_1_26_52_3::file_version;

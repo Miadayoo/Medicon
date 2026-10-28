@@ -124,7 +124,7 @@ sigの一致とDataDrivenRendererとしての識別根拠は維持するが、P0
 v2/DataDrivenRendererRuntimeの3参照まで限定追跡したが、代替入口/ABIはまだ未確定。
 
 `src/sdk/CustomModelProbe.cpp`から既存SignatureRegistryを呼び、DataDrivenRenderer入口の1本だけを解決する。
-元PEのFileVersion、timestamp `0x6AB54E37`、SizeOfImage `0x12C02000`も確認する。
+元PEのFileVersion、timestamp `0x6AB54E37`、SizeOfImage `0x12C02000`（公式版は`0x12C01000`）も確認する。
 `src/platform/AutoOverlay.cpp`で既存HookManagerのcreate/enable_allを使用し、既存native初期化の後に追加した。
 停止時は同じ管理機構でdisableし、既存callback drainを待つ。
 ローカル判定は既存BedrockChat::is_local_player。OFF/不正読取/非対象は同じ3引数でorigへ通す。

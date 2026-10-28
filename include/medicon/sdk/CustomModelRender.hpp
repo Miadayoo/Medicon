@@ -1,6 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <string>
 #include <string_view>
 
 namespace medicon::sdk::custom_model::bedrock_1_26_52_3 {
@@ -12,6 +16,31 @@ namespace medicon::sdk::custom_model::bedrock_1_26_52_3 {
 inline constexpr std::string_view file_version = "1.26.52.3";
 inline constexpr std::string_view investigated_sha256 =
     "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942";
+
+// Two packagings of the same 1.26.52.3 link (identical TimeDateStamp), as
+// accepted by VanillaNavigation. The IDA-inspected LeviLauncher copy carries a
+// launcher-added .levildr section; the official install is one page smaller
+// (observed in a user's inject.log). Every P0/P1/P2 target is still a unique
+// signature match in the loaded executable regions, so a shifted layout fails
+// closed. See docs/main-menu-native-navigation.md.
+inline constexpr std::uint32_t pe_timestamp = 0x6AB54E37;
+inline constexpr std::array<std::uint32_t, 2> pe_image_sizes{
+    0x12C02000, // LeviLauncher versions/1.26.52.03, IDA-inspected
+    0x12C01000  // official Minecraft install
+};
+[[nodiscard]] constexpr bool known_pe_identity(std::uint32_t timestamp, std::uint32_t image_size) noexcept {
+    if (timestamp != pe_timestamp) return false;
+    for (const auto size : pe_image_sizes) if (size == image_size) return true;
+    return false;
+}
+// Observed values for a rejection diagnostic, so a report from another PC
+// names the differing field.
+[[nodiscard]] inline std::string pe_identity_text(std::uint32_t timestamp, std::uint32_t image_size) {
+    char text[64]{};
+    std::snprintf(text, sizeof text, "TimeDateStamp=0x%08X SizeOfImage=0x%X",
+                  static_cast<unsigned>(timestamp), static_cast<unsigned>(image_size));
+    return text;
+}
 
 // 2026-10-28 runtime report: suppressing this entry hides first-person hands,
 // while the third-person player remains visible. Unique signature/valid ABI

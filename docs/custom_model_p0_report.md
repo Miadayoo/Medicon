@@ -106,7 +106,8 @@ local-player bridgeがreadyになっていなければHookを有効化しない�
 
 ## 判定・診断値の意味
 
-- FileVersion `1.26.52.3`、PE timestamp `0x6AB54E37`、SizeOfImage `0x12C02000`と実行領域内の一意sigを確認する。実行中イメージ全体のSHA-256一致を主張するものではない。
+- FileVersion `1.26.52.3`、PE timestamp `0x6AB54E37`、SizeOfImage `0x12C02000`（LeviLauncher版）または`0x12C01000`（公式版）と実行領域内の一意sigを確認する。実行中イメージ全体のSHA-256一致を主張するものではない。
+  P0/P1/P2共通の判定は`bedrock_1_26_52_3::known_pe_identity`。不一致時はログに実際の値（`TimeDateStamp=... SizeOfImage=...`）を出す。
 - 有効時のみActorRenderData `+0x00`をReadProcessMemoryでコピーし、既存BedrockChat bridgeがその場で引き直したlocal playerと比較する。別actor、読取失敗、OFF、停止中はorigへ通す。
 - actor/contextは数値の表示IDだけをatomicに記録し、Presentごとに消費する。後のフレームの判定やdereferenceには使わない。
 - Calls / Presentは前回の診断消費以降の候補呼出数。local/skipped/invalidも表示する。OFFではlocal取得を行わず、local数/actorは0になる。
@@ -114,6 +115,18 @@ local-player bridgeがreadyになっていなければHookを有効化しない�
 - カウンタはallocationなしのatomic。複数描画スレッドとPresentが重なる場合、値ごとのフレーム境界は近似になる。
 - ON/OFF FPSはワールドsnapshotがあるフレームの件数÷経過秒。切替をまたぐ区間と1秒以上の中断を除外する。同じ視点・条件で比較する必要がある。
 - Hook内にファイルI/O、FBXパース、DLL側の動的メモリ確保、UIロック、ゲーム状態の書き換えはない。OFF時も呼出数とQPC集計は続く。
+
+### 別PCでCustomModelが描画されない報告（2026-10-28）
+
+別PCのinject.logに `CustomModel: P0 probe withheld: PE identity differs from the IDA evidence.` が出て、モデルが描画されなかった。
+同じログでは純正メニュー遷移（`VanillaNavigation`）が成功しており、そちらはtimestamp `0x6AB54E37` と既知の2パッケージだけを受理する。
+したがってこのPCのexeは同じリンクの公式版（SizeOfImage `0x12C01000`、[メニュー側の記録](main-menu-native-navigation.md)）と判断した。
+P0/P1/P2は解析したLeviLauncher版のSizeOfImage `0x12C02000` だけを受理していたため、最初のP0で止まっていた。
+他機能はFileVersionとsig照合だけなので、同じPCでも動いていた。
+
+修正後はP0/P1/P2とも、同じtimestampで2つのSizeOfImageのどちらかを受理する。
+全Hook先は従来通り実行領域内の一意sig一致を必須とするため、公式版でコードがずれていれば無効のままになる。
+公式版での実ゲームの描画確認はまだ無い。
 
 ## 現時点のP0結果
 

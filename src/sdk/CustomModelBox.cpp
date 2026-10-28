@@ -142,8 +142,9 @@ BoxTargets::operator bool() const noexcept {
 
 BoxTargets resolve_box_targets(std::uint32_t timestamp, std::uint32_t image_size,
     std::span<const memory::MemoryRegion> regions, memory::AddressRange image, std::string& diagnostic) {
-    if (timestamp != 0x6AB54E37 || image_size != 0x12C02000) {
-        diagnostic = "P1 withheld: executable profile differs from bounded IDA evidence."; return {};
+    if (!bedrock_1_26_52_3::known_pe_identity(timestamp, image_size)) {
+        diagnostic = "P1 withheld: executable profile differs from bounded IDA evidence (" +
+            bedrock_1_26_52_3::pe_identity_text(timestamp, image_size) + ")."; return {};
     }
     using D = memory::SignatureDefinition;
     using R = memory::SignatureResolution;

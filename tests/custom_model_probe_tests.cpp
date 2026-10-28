@@ -32,8 +32,15 @@ void resolution_test() {
     const auto targets = resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, code.size()}, error);
     require(targets && targets.near_actor == 0x1000 + near_offset && targets.ecs_actor == 0x1000 + ecs &&
             targets.data_driven == 0x1000 + render_offset, "All three combined entries resolve through the registry");
+    require(resolve_probe_targets(0x6AB54E37, 0x12C01000, regions, {0x1000, code.size()}, error),
+            "Accept the official packaging of the same link");
     require(!resolve_probe_targets(0, 0x12C02000, regions, {0x1000, code.size()}, error), "Reject different timestamp");
+    require(!resolve_probe_targets(0, 0x12C01000, regions, {0x1000, code.size()}, error),
+            "Reject the official size with a different timestamp");
     require(!resolve_probe_targets(0x6AB54E37, 1, regions, {0x1000, code.size()}, error), "Reject different PE size");
+    require(!resolve_probe_targets(0x6AB54E37, 0x12C03000, regions, {0x1000, code.size()}, error) &&
+            error.find("TimeDateStamp=0x6AB54E37 SizeOfImage=0x12C03000") != std::string::npos,
+            "Rejection names the observed PE identity");
     require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, ecs}, error), "No partial target set");
     for (const auto offset : {near_offset, ecs, render_offset}) {
         const auto saved = code[offset];
