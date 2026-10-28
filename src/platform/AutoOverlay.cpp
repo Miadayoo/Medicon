@@ -1904,7 +1904,9 @@ void hook_base_tick(void* actor) {
         if (module && module->enabled()) { wanted = true; break; }
     }
     // A slot Scaffold's Auto Select switched to is put back by a later capture,
-    // also after every gameplay module was turned off.
+    // also after every gameplay module was turned off; at once when Scaffold is off.
+    const auto* scaffold = state.client->modules().find(ScaffoldModule::module_id);
+    state.gameplay.set_auto_select_active(scaffold && scaffold->enabled());
     if (!wanted && !state.gameplay.slot_restore_pending()) {
         state.client->clear_gameplay();
         state.gameplay.clear();
