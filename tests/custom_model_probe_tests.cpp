@@ -33,7 +33,7 @@ void resolution_test() {
     require(targets && targets.near_actor == 0x1000 + near_offset && targets.ecs_actor == 0x1000 + ecs &&
             targets.data_driven == 0x1000 + render_offset, "All three combined entries resolve through the registry");
     // The official install of the same link is one page smaller than the LeviLauncher copy.
-    require(resolve_probe_targets(0x6AB54E37, 0x12C01000, regions, {0x1000, code.size()}, error),
+    require(static_cast<bool>(resolve_probe_targets(0x6AB54E37, 0x12C01000, regions, {0x1000, code.size()}, error)),
             "The official install's packaging resolves the same entries");
     require(!resolve_probe_targets(0, 0x12C02000, regions, {0x1000, code.size()}, error), "Reject different timestamp");
     require(!resolve_probe_targets(0, 0x12C01000, regions, {0x1000, code.size()}, error),
