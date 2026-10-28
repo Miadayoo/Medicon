@@ -142,9 +142,8 @@ BoxTargets::operator bool() const noexcept {
 
 BoxTargets resolve_box_targets(std::uint32_t timestamp, std::uint32_t image_size,
     std::span<const memory::MemoryRegion> regions, memory::AddressRange image, std::string& diagnostic) {
-    if (!bedrock_1_26_52_3::known_pe_identity(timestamp, image_size)) {
-        diagnostic = "P1 withheld: executable profile differs from bounded IDA evidence (" +
-            bedrock_1_26_52_3::pe_identity_text(timestamp, image_size) + ")."; return {};
+    if (!bedrock_1_26_52_3::known_image(timestamp, image_size)) {
+        diagnostic = bedrock_1_26_52_3::image_mismatch("P1", timestamp, image_size); return {};
     }
     using D = memory::SignatureDefinition;
     using R = memory::SignatureResolution;
@@ -217,6 +216,7 @@ struct BoxRenderer::StaticState {
     std::atomic_bool configured{};
     StaticTargets native;
     medicon::custom_model::ModelRegistry* registry{};
+    std::atomic<const medicon::custom_model::ModelAsset*> generation{};
     // TessEnd output is 632 bytes in the bounded native caller/output stores.
     // Overprovisioned opaque, aligned storage; never copied or interpreted as
     // a DLL class. Only the native destructor releases the constructed object.
@@ -247,11 +247,15 @@ void BoxRenderer::set_static_mode(bool value,bool visible) noexcept {
 }
 StaticProgress BoxRenderer::static_progress() const noexcept {
     if (!static_) return {};
+    const auto model=static_->registry?static_->registry->snapshot():nullptr;
+    if (!model||static_->generation.load(std::memory_order_acquire)!=model.get()) return {};
     return {static_->uploaded.load(std::memory_order_acquire),static_->loaded.load(std::memory_order_acquire),
         static_->ready.load(std::memory_order_acquire),static_->requests.load(std::memory_order_relaxed),static_->ticks.load(std::memory_order_relaxed)};
 }
 bool BoxRenderer::first_person_ready() const noexcept {
-    return static_->first_person_ready.load(std::memory_order_acquire);
+    const auto model=static_->registry?static_->registry->snapshot():nullptr;
+    return model&&static_->generation.load(std::memory_order_acquire)==model.get()&&
+        static_->first_person_ready.load(std::memory_order_acquire);
 }
 BoxRenderer::AnimationFrame BoxRenderer::take_animation_frame() noexcept {
     auto& s=*static_;return {s.animation_frames.exchange(0),s.animation_ticks.exchange(0),s.animation_draw_ticks.exchange(0),s.animation_read_failures.exchange(0),
@@ -260,10 +264,15 @@ BoxRenderer::AnimationFrame BoxRenderer::take_animation_frame() noexcept {
 void BoxRenderer::observe_texture_group(void* group,TextureGetFn original) noexcept {
     auto* state=static_.get();
     if (!enabled()||!static_mode_.load(std::memory_order_acquire)||!state||!state->configured.load(std::memory_order_acquire)||!state->registry||!group||!original) return;
-    const auto model=state->registry->snapshot();
-    if (!model||state->loaded.load(std::memory_order_acquire)>=model->textures.size()) return;
     if (state->request_lock.test_and_set(std::memory_order_acquire)) return;
     struct Unlock { std::atomic_flag& flag;~Unlock(){flag.clear(std::memory_order_release);} } unlock{state->request_lock};
+    const auto model=state->registry->snapshot();
+    if (!model||state->loaded.load(std::memory_order_acquire)>=model->textures.size()) return;
+    // Initial textures can warm up before the first world draw. Later model
+    // changes are committed by finish_static while holding both resource locks.
+    const auto* empty=static_cast<const medicon::custom_model::ModelAsset*>(nullptr);
+    state->generation.compare_exchange_strong(empty,model.get(),std::memory_order_acq_rel);
+    if (state->generation.load(std::memory_order_acquire)!=model.get()) return;
     const auto now=GetTickCount64();if (now<state->next_request) return;state->next_request=now+100;
     const auto index=state->request_index++%static_cast<unsigned>(model->textures.size());
     auto& texture=state->textures[index];if (texture.owned) return;
@@ -332,8 +341,9 @@ bool BoxRenderer::prepare(WorldScope& scope, void* context, void* actor) noexcep
     scope.distance_squared_=position.x*position.x+position.y*position.y+position.z*position.z;
     scope.world_ = box_world_matrix(base,position,body_yaw);
     if (static_mode_.load(std::memory_order_acquire)&&static_&&static_->configured.load(std::memory_order_acquire)&&static_->registry) {
-        if (const auto model=static_->registry->snapshot())
-            scope.world_=model_world_matrix(base,position,body_yaw,model->yaw_offset);
+        scope.model_=static_->registry->snapshot();
+        if (scope.model_)
+            scope.world_=model_world_matrix(base,position,body_yaw,scope.model_->yaw_offset);
         if(animation_enabled_.load(std::memory_order_acquire)||scope.view_==ViewMode::first_person){
             scope.animation_input_=read_animation_input(actor,alpha,body_yaw);
             scope.animation_input_.world_position={position.x+origin.x,position.y+origin.y,position.z+origin.z};
@@ -478,9 +488,21 @@ void BoxRenderer::finish_world(MeshImmediateFn original) noexcept {
 
 void BoxRenderer::finish_static(WorldScope& scope,MeshImmediateFn original) noexcept {
     auto* state=static_.get();if (!state||!state->configured.load(std::memory_order_acquire)||!state->native||!state->registry) return;
-    const auto model=state->registry->snapshot();if (!model||model->parts.empty()||model->parts.size()>state->meshes.size()) return;
+    const auto& model=scope.model_;if (!model||model!=state->registry->snapshot()||model->parts.empty()||model->parts.size()>state->meshes.size()) return;
     if (state->upload_lock.test_and_set(std::memory_order_acquire)) return;
     struct Unlock { std::atomic_flag& flag;~Unlock(){flag.clear(std::memory_order_release);} } unlock{state->upload_lock};
+    if (state->generation.load(std::memory_order_acquire)!=model.get()) {
+        if (state->request_lock.test_and_set(std::memory_order_acquire)) return;
+        struct RequestUnlock { std::atomic_flag& flag;~RequestUnlock(){flag.clear(std::memory_order_release);} } request_unlock{state->request_lock};
+        state->ready.store(false,std::memory_order_release);state->first_person_ready.store(false,std::memory_order_release);
+        // No custom mesh draw or texture request can borrow these handles while
+        // both locks are held. Native submissions retain their own references.
+        for(auto& mesh:state->meshes)if(mesh.constructed){state->native.destroy(mesh.bytes.data());mesh.constructed=false;}
+        for(auto& texture:state->textures)if(texture.owned){native_.release_binding(texture.bytes.data());texture.owned=false;}
+        state->uploaded.store(0);state->loaded.store(0);state->requests.store(0);state->ticks.store(0);
+        state->next_request=0;state->request_index=0;state->animation_last={};
+        state->generation.store(model.get(),std::memory_order_release);
+    }
     void* tess{};const auto screen=reinterpret_cast<std::uintptr_t>(scope.screen_);
     if (!read(screen+0xB8,tess)||!tess) { fail(BoxFailure::tessellator);return; }
     const auto t=reinterpret_cast<std::uintptr_t>(tess);
@@ -586,6 +608,7 @@ void BoxRenderer::release_resources() noexcept {
         for (auto& texture:static_->textures) if (texture.owned) { native_.release_binding(texture.bytes.data());texture.owned=false; }
         static_->uploaded.store(0);static_->loaded.store(0);static_->requests.store(0);static_->ticks.store(0);
         static_->next_request=0;static_->request_index=0;static_->upload_lock.clear();static_->request_lock.clear();
+        static_->generation.store(nullptr,std::memory_order_release);
         static_->animation_last={};(void)take_animation_frame();
     }
     if (texture_ready_.exchange(false,std::memory_order_acq_rel) && native_.release_binding)

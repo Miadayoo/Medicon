@@ -113,6 +113,7 @@ public:
         void* screen_{};
         std::uintptr_t matrices_{};
         BoxMatrix world_{};
+        std::shared_ptr<const medicon::custom_model::ModelAsset> model_;
         medicon::custom_model::AnimationInput animation_input_{};
         float distance_squared_{};
         ViewMode view_{ViewMode::unknown};

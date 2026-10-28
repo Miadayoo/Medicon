@@ -149,6 +149,7 @@ UpdateOutcome run_update(Fetcher& fetcher, Verifier& verifier, FileStore& store,
         std::string error;
         const auto result = launcher.launch(version, store.core_path(version), intended, persisted.last_run, error);
         if (result == LaunchResult::Started) {
+            store.log("started Core " + version);
             mark_good(persisted, version);
             persisted.last_run = version;
             store.save_state(persisted);

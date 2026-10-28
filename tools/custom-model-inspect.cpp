@@ -15,6 +15,9 @@ int main(int argc,char**argv) {
     for (const auto& t:asset->textures) j["textures"].push_back({{"path",t.path.string()},{"sha256",t.sha256},{"width",t.width},{"height",t.height}});
     for (const auto& p:asset->parts) j["parts"].push_back({{"name",p.name},{"texture",p.texture},{"vertices",p.vertices.size()}});
     if(asset->rig){const auto& r=*asset->rig;j["rig"]={{"bones",r.bones.size()},{"bindings",r.bindings.size()},{"vertices",r.vertices.size()},{"cache",r.from_cache},{"clips",nlohmann::json::array()}};
+        j["rig"]["first_person_vertices"]=r.first_person.vertices.size();
+        j["rig"]["first_person_triangles"]=0;
+        for(const auto& batch:r.first_person.batches)j["rig"]["first_person_triangles"]=j["rig"]["first_person_triangles"].get<std::size_t>()+batch.vertices.size()/3;
         for(const auto& c:r.clips)j["rig"]["clips"].push_back({{"name",c.name},{"frames",c.frames},{"procedural",c.procedural}});
         std::vector<medicon::custom_model::Affine> world(r.bones.size());std::vector<medicon::custom_model::SkinMatrix> palette(r.bindings.size());std::vector<medicon::custom_model::SkinOutput> output(r.vertices.size());
         for(std::size_t b=0;b<r.bones.size();++b){const auto local=medicon::custom_model::matrix(r.bones[b].rest);world[b]=r.bones[b].parent<0?local:medicon::custom_model::multiply(world[r.bones[b].parent],local);}

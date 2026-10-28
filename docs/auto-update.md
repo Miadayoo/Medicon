@@ -142,10 +142,10 @@ void     Medicon_Shutdown(void);
 - ユーザーへ：**MediconLoader.dll** のみ。
 - サーバーへ：ビルドした **Medicon.dll**（アップロード時に MediconCore.dll として保存される）。
 
-CustomModelの既定Neonモデル（FBX・設定・diffuse PNG 3枚）はCore DLLのresourceへ同梱する。
+CustomModelのNeon（PNG 3枚）とChocolat v1.02（PNG 5枚）は、各FBX・設定とともにCore DLLのresourceへ同梱する。
 Loaderによる別のモデルダウンロードやDLL隣への手動コピーは不要。
-Coreのworkerが`%LOCALAPPDATA%/Medicon/cache/models/neon-<pack SHA-256>/`へ検証・展開して読み込む。
-有効な外部`models/neon-t-pose`がある場合はそちらを優先する。
+Coreのworkerが`%LOCALAPPDATA%/Medicon/cache/models/<モデル名>-<pack SHA-256>/`へ検証・展開して読み込む。
+CustomModelのModel項目でNeon／Chocolatを選べる。有効な外部`models/neon-t-pose`または`models/chocolat-v1.02`がある場合はそちらを優先する。
 同梱対応前の配信済みDLLは変わらないため、この修正を含むCoreを新しいバージョンで公開する必要がある。
 
 ```powershell

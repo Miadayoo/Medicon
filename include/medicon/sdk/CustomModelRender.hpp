@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -17,29 +16,25 @@ inline constexpr std::string_view file_version = "1.26.52.3";
 inline constexpr std::string_view investigated_sha256 =
     "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942";
 
-// Two packagings of the same 1.26.52.3 link (identical TimeDateStamp), as
-// accepted by VanillaNavigation. The IDA-inspected LeviLauncher copy carries a
-// launcher-added .levildr section; the official install is one page smaller
-// (observed in a user's inject.log). Every P0/P1/P2 target is still a unique
-// signature match in the loaded executable regions, so a shifted layout fails
-// closed. See docs/main-menu-native-navigation.md.
-inline constexpr std::uint32_t pe_timestamp = 0x6AB54E37;
-inline constexpr std::array<std::uint32_t, 2> pe_image_sizes{
-    0x12C02000, // LeviLauncher versions/1.26.52.03, IDA-inspected
-    0x12C01000  // official Minecraft install
-};
-[[nodiscard]] constexpr bool known_pe_identity(std::uint32_t timestamp, std::uint32_t image_size) noexcept {
-    if (timestamp != pe_timestamp) return false;
-    for (const auto size : pe_image_sizes) if (size == image_size) return true;
-    return false;
+// The inspected link (one TimeDateStamp) ships in two packagings: the
+// LeviLauncher copy IDA saw, with an extra .levildr page, and the official
+// install, one page smaller. Same code at the same RVAs
+// (docs/main-menu-native-navigation.md). Every target still needs its unique
+// signature, so any other build fails closed.
+inline constexpr std::uint32_t time_date_stamp = 0x6AB54E37;
+inline constexpr std::uint32_t launcher_image_size = 0x12C02000;
+inline constexpr std::uint32_t official_image_size = 0x12C01000;
+[[nodiscard]] constexpr bool known_image(std::uint32_t timestamp, std::uint32_t image_size) noexcept {
+    return timestamp == time_date_stamp && (image_size == launcher_image_size || image_size == official_image_size);
 }
-// Observed values for a rejection diagnostic, so a report from another PC
-// names the differing field.
-[[nodiscard]] inline std::string pe_identity_text(std::uint32_t timestamp, std::uint32_t image_size) {
-    char text[64]{};
-    std::snprintf(text, sizeof text, "TimeDateStamp=0x%08X SizeOfImage=0x%X",
-                  static_cast<unsigned>(timestamp), static_cast<unsigned>(image_size));
-    return text;
+// Names the observed header, so a log from another PC shows what differs.
+[[nodiscard]] inline std::string image_mismatch(std::string_view stage, std::uint32_t timestamp, std::uint32_t image_size) {
+    char text[192]{};
+    std::snprintf(text, sizeof text, " withheld: PE TimeDateStamp 0x%08X / SizeOfImage 0x%X is not the inspected "
+        "1.26.52.3 build (0x%08X with 0x%X or 0x%X).", static_cast<unsigned>(timestamp), static_cast<unsigned>(image_size),
+        static_cast<unsigned>(time_date_stamp), static_cast<unsigned>(launcher_image_size),
+        static_cast<unsigned>(official_image_size));
+    return std::string(stage) + text;
 }
 
 // 2026-10-28 runtime report: suppressing this entry hides first-person hands,
