@@ -182,7 +182,7 @@ inline constexpr float toast_padding_left = 18.0F;   // from the card edge, past
 inline constexpr float toast_padding_right = 16.0F;
 inline constexpr float toast_line_gap = 1.0F;       // between the title and body lines
 inline constexpr float toast_count_gap = 8.0F;      // between the title and "+N件"
-inline constexpr float toast_slide = 20.0F;
+inline constexpr float toast_dot = 12.0F;          // kind colour shown while the toast is a circle
 // Social screen. Smaller and denser than spec 4.6's 70 % x 75 % panel: a fixed
 // reference size (scaled like everything else), at most 92 % of the window.
 inline constexpr float panel_width = 1000.0F;
@@ -242,8 +242,20 @@ inline constexpr float badge_height = 16.0F;
 } // namespace metrics
 
 namespace timing {
-inline constexpr float toast_fade_in = 0.200F;
-inline constexpr float toast_fade_out = 0.200F;
+// Toast morph timeline (spec toast-anim 2): circle pop, stretch to the card,
+// then the content. Leaving plays the same timeline backwards, 1.2x faster.
+inline constexpr float toast_enter = 0.560F;
+inline constexpr float toast_exit_speed = 1.2F;
+inline constexpr float toast_pop = 0.200F;          // scale 0 -> 1, ease-out back
+inline constexpr float toast_pop_back = 1.7F;
+inline constexpr float toast_fade = 0.120F;         // opacity 0 -> 1, linear
+inline constexpr float toast_stretch_start = 0.160F;
+inline constexpr float toast_stretch = 0.320F;      // width H -> W (back), radius H/2 -> R (cubic)
+inline constexpr float toast_stretch_back = 1.0F;
+inline constexpr float toast_content_start = 0.360F;
+inline constexpr float toast_content = 0.200F;      // band, title and body fade in
+inline constexpr float toast_resize = 0.200F;       // W change of a shown toast
+inline constexpr float toast_debug_speed = 0.25F;   // social.json "debugToastSlowMotion"
 inline constexpr float toast_hold_menu = 4.0F;
 inline constexpr float toast_hold_game = 3.0F;
 inline constexpr float toast_reflow_tau = 0.060F;   // stacked toasts sliding up

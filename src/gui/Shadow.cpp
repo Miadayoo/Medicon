@@ -318,7 +318,46 @@ void MeshShadowRenderer::draw(ImDrawList* list, ImVec2 min, ImVec2 max, const Co
 
     const Geometry* mesh = geometry(shape(w, h, radii, params));
     if (!mesh) return;
-    const Geometry& g = *mesh;
+    const float dx = w - mesh->width, dy = h - mesh->height;
+    emit(list, *mesh, params, strength, [&](const Vertex& vertex) {
+        const float x = vertex.x + (vertex.x > mesh->width * 0.5F ? dx : 0.0F);
+        const float y = vertex.y + (vertex.y > mesh->height * 0.5F ? dy : 0.0F);
+        return ImVec2(min.x + x, min.y + y);
+    });
+}
+
+void MeshShadowRenderer::draw_stretched(ImDrawList* list, ImVec2 min, ImVec2 max, ImVec2 source,
+                                        const CornerRadii& radii, const ShadowParams& params, float alpha) {
+    const float w = max.x - min.x;
+    const float h = max.y - min.y;
+    const float strength = std::clamp(params.opacity * alpha, 0.0F, 1.0F);
+    if (!list || w <= 0.0F || h <= 0.0F || !(source.x > 0.0F) || !(source.y > 0.0F) || strength <= 0.0F) return;
+    const float k = h / source.y;
+    const float ext = extent_sigmas * std::max(params.sigma, min_sigma) * k;
+    const ImVec2 clip_min = list->GetClipRectMin(), clip_max = list->GetClipRectMax();
+    if (max.x + params.offset_x * k + ext <= clip_min.x || min.x + params.offset_x * k - ext >= clip_max.x ||
+        max.y + params.offset_y * k + ext <= clip_min.y || min.y + params.offset_y * k - ext >= clip_max.y) return;
+
+    const Shape s = shape(source.x, source.y, radii, params);
+    if (!building_.empty()) collect();
+    const auto found = cache_.find(s.key);
+    if (found == cache_.end()) return;
+    lru_.splice(lru_.begin(), lru_, found->second.second);
+    const Geometry& g = found->second.first;
+    // Source px: the mesh's straight middle widened back to `source`. Then
+    // scale to the target height and widen the middle again to the target width.
+    const float source_dx = source.x - g.width, source_dy = source.y - g.height;
+    const float stretch = std::max(0.0F, w - source.x * k);
+    emit(list, g, params, strength, [&](const Vertex& vertex) {
+        const bool right = vertex.x > g.width * 0.5F;
+        const float x = (vertex.x + (right ? source_dx : 0.0F)) * k + (right ? stretch : 0.0F);
+        const float y = (vertex.y + (vertex.y > g.height * 0.5F ? source_dy : 0.0F)) * k;
+        return ImVec2(min.x + x, min.y + y);
+    });
+}
+
+template <class Place>
+void MeshShadowRenderer::emit(ImDrawList* list, const Geometry& g, const ShadowParams& params, float strength, Place place) {
     const std::size_t vertices = g.vertices.size();
     const std::size_t indices = g.indices.size();
     if (indices == 0 || vertices >= 65536) return;
@@ -334,12 +373,7 @@ void MeshShadowRenderer::draw(ImDrawList* list, ImVec2 min, ImVec2 max, const Co
     };
     list->PrimReserve(static_cast<int>(indices), static_cast<int>(vertices));
     const auto base = static_cast<ImDrawIdx>(list->_VtxCurrentIdx);
-    const float dx = w - g.width, dy = h - g.height;
-    for (const auto& vertex : g.vertices) {
-        const float x = vertex.x + (vertex.x > g.width * 0.5F ? dx : 0.0F);
-        const float y = vertex.y + (vertex.y > g.height * 0.5F ? dy : 0.0F);
-        list->PrimWriteVtx(ImVec2(min.x + x, min.y + y), uv, color(vertex.value));
-    }
+    for (const auto& vertex : g.vertices) list->PrimWriteVtx(place(vertex), uv, color(vertex.value));
     for (const std::uint32_t index : g.indices) list->PrimWriteIdx(static_cast<ImDrawIdx>(base + index));
     if (profiler_) profiler_->end(list);
     ++stats_.draws;

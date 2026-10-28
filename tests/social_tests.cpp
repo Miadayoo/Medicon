@@ -172,18 +172,20 @@ void test_rest_bodies() {
 void test_config() {
     auto load = parse_config(default_config_text());
     check(load.parsed && load.warnings.empty(), "the default document parses cleanly");
-    check(load.config.notify == NotifySettings{} && !load.config.debug_timing, "settings defaults");
+    check(load.config.notify == NotifySettings{} && !load.config.debug_timing && !load.config.debug_toast_slow_motion,
+          "settings defaults");
     check(default_config_text().find("debugLicenseKey") == std::string::npos, "the default file holds no key");
     check(default_config_text().find("serverUrl") == std::string::npos, "the connection destination is not saved to settings");
 
     load = parse_config(R"({"serverUrl":"http://127.0.0.1:8787","notify":{"dm":false,"inGame":false,"inGameOffsetY":40},
-                           "debugLicenseKey":"MDC-1","debugTiming":true,"unknown":1})");
+                           "debugLicenseKey":"MDC-1","debugTiming":true,"debugToastSlowMotion":true,"unknown":1})");
     const auto& notify = load.config.notify;
     check(load.parsed && load.warnings.size() == 1 && load.warnings[0].find("MDC-1") == std::string::npos,
           "legacy key is ignored and its value is never reported");
     check(!notify.dm && !notify.in_game && notify.in_game_offset_y == 40.0F && notify.news && notify.friend_requests &&
           notify.sound, "notify fields");
     check(load.config.debug_timing, "debug timing is configurable");
+    check(load.config.debug_toast_slow_motion, "notification slow motion is configurable");
     const std::string old = R"({"serverUrl":"https://example.com","debugLicenseKey":"secret","other":42})";
     const auto cleaned = without_legacy_settings(old);
     check(cleaned && cleaned->find("secret") == std::string::npos && cleaned->find("debugLicenseKey") == std::string::npos &&

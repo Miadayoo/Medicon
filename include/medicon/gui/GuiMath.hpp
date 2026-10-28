@@ -42,6 +42,13 @@ inline float ease_out_cubic(float t) {
     return 1.0F - inverse * inverse * inverse;
 }
 
+// Overshoots by about 10 % at c1 = 1.7 and 4 % at c1 = 1.0, then settles at 1.
+// Not clamped: x in [0, 1].
+inline float ease_out_back(float x, float c1) {
+    const float u = x - 1.0F;
+    return 1.0F + (c1 + 1.0F) * u * u * u + c1 * u * u;
+}
+
 inline float clamp_dt(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0.0) return 0.0F;
     return static_cast<float>(std::min(seconds, static_cast<double>(theme::timing::max_dt)));

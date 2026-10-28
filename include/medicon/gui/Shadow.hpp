@@ -57,6 +57,15 @@ public:
     virtual void prepare(ImVec2 size, const CornerRadii& radii, const ShadowParams& params) {
         (void)size, (void)radii, (void)params;
     }
+    // Nine-slice: the shadow of a `source` sized shape, scaled by the height
+    // ratio and stretched horizontally across its middle to fill [min,max].
+    // For shapes that animate: one cached mesh serves every frame. Prepare
+    // `source` first; the radii of [min,max] itself are not followed.
+    virtual void draw_stretched(ImDrawList* list, ImVec2 min, ImVec2 max, ImVec2 source, const CornerRadii& radii,
+                                const ShadowParams& params, float alpha) {
+        (void)source;
+        draw(list, min, max, radii, params, alpha);
+    }
     void set_profiler(ShadowProfiler* profiler) { profiler_ = profiler; }
 
 protected:
@@ -82,6 +91,9 @@ public:
     // Builds the mesh on a worker thread. Until it lands, draw() skips that
     // shadow rather than build the same mesh again on the render thread.
     void prepare(ImVec2 size, const CornerRadii& radii, const ShadowParams& params) override;
+    // Never builds on the render thread: skipped until prepare()'s mesh lands.
+    void draw_stretched(ImDrawList* list, ImVec2 min, ImVec2 max, ImVec2 source, const CornerRadii& radii,
+                        const ShadowParams& params, float alpha) override;
 
     struct Stats {
         std::size_t geometry_builds = 0; // CPU mesh evaluations (cache misses)
@@ -121,6 +133,9 @@ private:
     void insert(const Key& key, Geometry geometry);
     void collect();
     static Geometry build(float w, float h, const CornerRadii& radii, const ShadowParams& params);
+    // Writes `g` with each mesh vertex moved by place(vertex) (px from the list origin).
+    template <class Place>
+    void emit(ImDrawList* list, const Geometry& g, const ShadowParams& params, float strength, Place place);
 
     std::list<Key> lru_;
     std::unordered_map<Key, std::pair<Geometry, std::list<Key>::iterator>, KeyHash> cache_;

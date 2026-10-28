@@ -44,6 +44,7 @@ struct NewsPage {
 struct SettingsLoaded {
     NotifySettings notify;
     bool debug_timing = false;
+    bool debug_toast_slow_motion = false;
 };
 // The answer to a Login command.
 struct LoginFinished {
