@@ -175,6 +175,22 @@ bool gameplay_contains(std::uintptr_t storage, std::uint32_t entity) noexcept {
     return component_index(storage, entity).has_value();
 }
 
+SlotRestore restore_gameplay_slot(std::uintptr_t player, std::uintptr_t expected_supplies,
+                                 int original_slot, int switched_slot, bool auto_select_active,
+                                 std::uint64_t idle_ms) noexcept {
+    std::uintptr_t supplies = 0;
+    int selected = -1;
+    // An unavailable inventory is not evidence that the user selected another
+    // slot. Keep the original selection until we can read and restore it.
+    if (!read_at(player, 0x5B8, supplies) || !supplies ||
+        !read_at(supplies, 0x10, selected)) return SlotRestore::wait;
+    if (supplies != expected_supplies) return SlotRestore::forget;
+    if (selected < 0 || selected > 8) return SlotRestore::wait;
+    const auto action = slot_restore(selected == switched_slot, auto_select_active, idle_ms);
+    if (action == SlotRestore::restore && !write_at(supplies, 0x10, original_slot)) return SlotRestore::wait;
+    return action;
+}
+
 } // namespace detail
 
 struct BedrockGameplay::Impl {
@@ -298,14 +314,9 @@ struct BedrockGameplay::Impl {
     // Capture only, after the player was validated.
     void restore_switched_slot() noexcept {
         if (switch_from < 0) return;
-        std::uintptr_t supplies = 0;
-        int selected = -1;
-        // Another player or world, or a slot the user picked: nothing to undo.
-        const bool held = read_at(player, 0x5B8, supplies) && supplies == switch_supplies &&
-            read_at(supplies, 0x10, selected) && selected == switch_to;
-        const auto action = slot_restore(held, switch_active, GetTickCount64() - switch_used);
+        const auto action = detail::restore_gameplay_slot(player, switch_supplies, switch_from,
+            switch_to, switch_active, GetTickCount64() - switch_used);
         if (action == SlotRestore::wait) return;
-        if (action == SlotRestore::restore) write_at(supplies, 0x10, switch_from);
         forget_switch();
     }
 
@@ -480,6 +491,9 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         clear();
         return false;
     }
+    // Slot cleanup needs only the current client/player and inventory. Do it
+    // before ECS, rotation or camera reads can withhold the world snapshot.
+    state.restore_switched_slot();
     if (!detail::read_gameplay_pools(state.registry, state.pools)) {
         state.diagnostic = "Gameplay SDK: unsupported EnTT registry layout or required component hashes missing.";
         clear();
@@ -534,7 +548,6 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         }
     }
     state.frame.local.visible = true;
-    state.restore_switched_slot();
     state.active = true;
     state.diagnostic = state.frame.projection_ready ? "Gameplay SDK: world snapshot and camera ready." :
         "Gameplay SDK: world snapshot ready; camera profile failed validation, visual projection withheld.";

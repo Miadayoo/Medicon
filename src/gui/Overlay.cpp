@@ -1,4 +1,5 @@
 #include <medicon/gui/Overlay.hpp>
+#include <medicon/platform/OverlayInput.hpp>
 
 #include <medicon/core/ModuleManager.hpp>
 #include <medicon/gui/GuiMath.hpp>
@@ -67,8 +68,13 @@ void Overlay::set_main_menu_active(bool active) noexcept {
     main_menu_.set_active(active);
 }
 
+bool Overlay::allows_game_movement() const noexcept {
+    return gui_.open() && !main_menu_.active() && !social_.screen_visible() && !social_.screen_open() &&
+        !gui_.capturing_keybind() && (!ImGui::GetCurrentContext() || !ImGui::GetIO().WantTextInput);
+}
+
 bool Overlay::key_event(int virtual_key, bool down, bool repeat) {
-    if (social_.screen_open()) {
+    if (social_.screen_open() || social_.screen_visible()) {
         social_.key_event(virtual_key, down);
         if (!down) modules_.key_event(virtual_key, false, repeat);
         return true;
@@ -87,12 +93,17 @@ bool Overlay::key_event(int virtual_key, bool down, bool repeat) {
         return true;
     }
     const bool was_open = gui_.open();
+    const bool capturing_bind = gui_.capturing_keybind();
     const bool owned = gui_.key_event(virtual_key, down, repeat);
     const bool toggled = was_open != gui_.open();
     if (toggled) modules_.reset_keys();
     // Releases always reach the hotkey state so held keys never stick. The
     // open/close key itself never toggles a module.
     if (!down || (!owned && !toggled && !gui_.open())) modules_.key_event(virtual_key, down, repeat);
+    const auto* clickgui = modules_.find(ClickGuiModule::module_id);
+    const int open_key = clickgui && clickgui->keybind() ? clickgui->keybind() : VK_INSERT;
+    if (!toggled && !capturing_bind && virtual_key != open_key && allows_game_movement() &&
+        platform::clickgui_movement_key(virtual_key)) return false;
     return owned;
 }
 

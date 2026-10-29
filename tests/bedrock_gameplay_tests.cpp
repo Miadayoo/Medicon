@@ -1,6 +1,8 @@
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
 
+#include <Windows.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -115,10 +117,65 @@ void slot_restore_rules() {
     require(slot_restore(false, true, 0) == SlotRestore::forget && slot_restore(false, false, 5000) == SlotRestore::forget,
             "A slot the user picked meanwhile is never overwritten");
 }
+
+void slot_restore_inventory() {
+    using medicon::sdk::SlotRestore;
+    using medicon::sdk::detail::restore_gameplay_slot;
+    std::array<std::byte, 0x5C0> player{};
+    std::array<std::byte, 0x18> supplies{}, other_supplies{};
+    const auto actor = reinterpret_cast<std::uintptr_t>(player.data());
+    const auto inventory = reinterpret_cast<std::uintptr_t>(supplies.data());
+    const auto selected = [&] {
+        int slot = -1;
+        std::memcpy(&slot, supplies.data() + 0x10, sizeof(slot));
+        return slot;
+    };
+    store(player, 0x5B8, inventory);
+    // UI slots 3 -> 1 -> OFF -> 3 (the SDK uses zero-based indices).
+    store(supplies, 0x10, 0);
+    require(restore_gameplay_slot(actor, inventory, 2, 0, true, 999) == SlotRestore::wait && selected() == 0,
+            "active Scaffold did not keep its block slot");
+    require(restore_gameplay_slot(actor, inventory, 2, 0, false, 0) == SlotRestore::restore && selected() == 2,
+            "disabling Scaffold did not restore slot 3 from slot 1");
+
+    store(supplies, 0x10, 0);
+    store(player, 0x5B8, std::uintptr_t{1});
+    require(restore_gameplay_slot(actor, inventory, 2, 0, false, 0) == SlotRestore::wait,
+            "unreadable inventory discarded Scaffold's original slot");
+    store(player, 0x5B8, std::uintptr_t{0});
+    require(restore_gameplay_slot(actor, inventory, 2, 0, false, 0) == SlotRestore::wait,
+            "temporarily absent inventory discarded Scaffold's original slot");
+    store(player, 0x5B8, inventory);
+    require(restore_gameplay_slot(actor, inventory, 2, 0, false, 0) == SlotRestore::restore && selected() == 2,
+            "Scaffold did not restore the original slot after inventory recovery");
+
+    store(supplies, 0x10, 4);
+    require(restore_gameplay_slot(actor, inventory, 2, 0, false, 0) == SlotRestore::forget && selected() == 4,
+            "slot restoration overwrote a manual selection");
+    store(player, 0x5B8, reinterpret_cast<std::uintptr_t>(other_supplies.data()));
+    require(restore_gameplay_slot(actor, inventory, 2, 0, false, 0) == SlotRestore::forget,
+            "slot restoration followed an inventory into another world/player");
+
+    struct Page {
+        void* address = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        ~Page() { if (address) VirtualFree(address, 0, MEM_RELEASE); }
+    } page;
+    require(page.address != nullptr, "slot fixture allocation failed");
+    const auto read_only_inventory = reinterpret_cast<std::uintptr_t>(page.address);
+    store(player, 0x5B8, read_only_inventory);
+    DWORD previous = 0;
+    require(VirtualProtect(page.address, 4096, PAGE_READONLY, &previous), "slot fixture protection failed");
+    require(restore_gameplay_slot(actor, read_only_inventory, 2, 0, false, 0) == SlotRestore::wait,
+            "failed slot write discarded Scaffold's original slot");
+    require(VirtualProtect(page.address, 4096, PAGE_READWRITE, &previous), "slot fixture unprotect failed");
+    require(restore_gameplay_slot(actor, read_only_inventory, 2, 0, false, 0) == SlotRestore::restore &&
+            *reinterpret_cast<int*>(static_cast<std::byte*>(page.address) + 0x10) == 2,
+            "Scaffold did not retry a failed slot write");
+}
 } // namespace
 
 int main() {
-    try { components(); pools(); native_boundary(); slot_restore_rules(); }
+    try { components(); pools(); native_boundary(); slot_restore_rules(); slot_restore_inventory(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Bedrock gameplay ABI tests passed\n";
 }

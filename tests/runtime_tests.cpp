@@ -418,6 +418,28 @@ void main_menu_input_test(const std::filesystem::path& path) {
     client.key_event(VK_INSERT, true);
     client.key_event(VK_INSERT, false);
     require(client.gui().open(), "ClickGUI hotkey works again after the menu releases input");
+    require(client.execute_command(".bind example w").success, "Bind movement key to check GUI hotkey isolation");
+    example->set_enabled(false);
+    for (const int key : std::array<int, 7>{'W', 'A', 'S', 'D', VK_SPACE, VK_LSHIFT, VK_LCONTROL}) {
+        require(!client.key_event(key, true) && !client.key_event(key, false),
+                "ClickGUI must allow default game movement press/release");
+        require(!example->enabled(), "ClickGUI movement toggled a module hotkey");
+    }
+    require(client.key_event('T', true) && client.key_event('T', false), "ClickGUI still blocks game chat keys");
+    {
+        ImGui::CreateContext();
+        struct Context { ~Context() { ImGui::DestroyContext(); } } context;
+        ImGui::GetIO().WantTextInput = true;
+        require(client.key_event('W', true) && client.key_event('W', false),
+                "ClickGUI text editing leaked movement to the game");
+    }
+    client.overlay().social().open_screen();
+    require(client.capturing_input() && client.key_event('W', true) && client.key_event('W', false) &&
+            client.key_event(VK_LBUTTON, true) && client.key_event(VK_LBUTTON, false),
+            "Social must consume movement and attack input even over ClickGUI");
+    client.overlay().social().close_screen();
+    require(!client.key_event('W', true) && !client.key_event('W', false),
+            "ClickGUI movement did not return after Social closed");
 
     client.overlay().set_main_menu_active(true);
     require(client.overlay().main_menu().active() && client.capturing_input() && !client.gui().open(),

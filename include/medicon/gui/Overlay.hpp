@@ -41,6 +41,7 @@ public:
     // Routes a Win32 virtual-key event: GUI first (open key, Esc, keybind capture),
     // then module hotkeys. Returns true when the key must not reach the game.
     bool key_event(int virtual_key, bool down, bool repeat);
+    [[nodiscard]] bool allows_game_movement() const noexcept;
     // WM_CHAR for Social text inputs, delivered in order with key_event.
     void char_event(wchar_t character) { social_.char_event(character); }
 

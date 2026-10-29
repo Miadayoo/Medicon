@@ -95,7 +95,7 @@ int MediconKeyEvent(int key, int pressed, int repeat) {
             return 0;
         }
         const bool owned = client->key_event(key, pressed != 0, repeat != 0);
-        return owned || client->capturing_input() ? 1 : 0;
+        return owned ? 1 : 0;
     });
 }
 
