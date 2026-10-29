@@ -68,6 +68,12 @@ Setting::Value read_value(const Setting& setting, const Json& value, const std::
         } else if constexpr (std::is_same_v<T, Choice>) {
             if (current.options.empty()) invalid(location, "choice has no options");
             Choice choice = current;
+            // Killaura's former boolean Rotate setting maps false -> None and
+            // true -> Simple when upgrading an existing configuration.
+            if (setting.id == "rotate" && value.is_boolean()) {
+                choice.index = value.get<bool>() ? 1 : 0;
+                return choice;
+            }
             choice.index = read_integer(value, location, 0, static_cast<int>(choice.options.size() - 1));
             return choice;
         } else if constexpr (std::is_same_v<T, Color>) {

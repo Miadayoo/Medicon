@@ -1,4 +1,5 @@
 #include "medicon/modules/GameplayModules.hpp"
+#include "medicon/modules/RotationsModule.hpp"
 #include "medicon/sdk/Gameplay.hpp"
 
 #include <cmath>
@@ -41,10 +42,12 @@ public:
 
     GameplayFrame state;
     std::vector<std::pair<float, float>> rotations;
+    std::vector<float> head_body_rotations;
     std::vector<std::uintptr_t> attacks;
     std::vector<std::pair<BlockPos, bool>> placements;
     std::set<Cell> solid;
     bool rotate_result = true;
+    bool rotate_head_and_body_result = true;
     bool attack_result = true;
     bool place_result = true;
     std::set<Cell> refuse; // cells place_block fails for (no support face)
@@ -58,6 +61,15 @@ public:
         if (throw_rotation) throw std::runtime_error("rotate");
         rotations.emplace_back(yaw, pitch);
         return rotate_result;
+    }
+    bool rotate_head_and_body(float yaw) override {
+        if (throw_rotation) throw std::runtime_error("head and body rotate");
+        head_body_rotations.push_back(yaw);
+        if (rotate_head_and_body_result) {
+            state.head_yaw = yaw;
+            state.head_yaw_ready = true;
+        }
+        return rotate_head_and_body_result;
     }
     bool attack(std::uintptr_t actor_id) override {
         if (throw_attack) throw std::runtime_error("attack");
@@ -93,6 +105,7 @@ public:
 void test_disabled_and_unavailable() {
     MockGame game;
     game.state.actors.push_back(game.target(2, 0.0F, 2.0F));
+    RotationsModule rotations;
     DerpModule derp;
     AimbotModule aimbot;
     KillauraModule aura;
@@ -101,12 +114,16 @@ void test_disabled_and_unavailable() {
     check(derp.category() == Category::Player && aimbot.category() == Category::Player &&
           aura.category() == Category::Player && scaffold.category() == Category::Movement,
           "Gameplay module categories changed");
+    check(rotations.category() == Category::Misc && !rotations.enabled() &&
+          rotations.settings().size() == 1 && !rotations.always.get<bool>(),
+          "Rotations must start disabled with Always off");
     for (auto* module : modules) {
         check(!module->enabled(), "Gameplay modules must be disabled by default");
         module->game_tick(game, 0.05F);
         module->set_enabled(true);
     }
-    check(game.rotations.empty() && game.attacks.empty() && game.placements.empty(), "Disabled modules touched the game");
+    check(game.rotations.empty() && game.head_body_rotations.empty() && game.attacks.empty() && game.placements.empty(),
+          "Disabled modules touched the game");
 
     game.state.ready = false;
     for (auto* module : modules) module->game_tick(game, 0.05F);
@@ -119,7 +136,8 @@ void test_disabled_and_unavailable() {
         module->game_tick(game, -1.0F);
         module->game_tick(game, 0.0F);
     }
-    check(game.rotations.empty() && game.attacks.empty() && game.placements.empty(), "Invalid frames or deltas caused an action");
+    check(game.rotations.empty() && game.head_body_rotations.empty() && game.attacks.empty() && game.placements.empty(),
+          "Invalid frames or deltas caused an action");
 }
 
 void test_derp_spin_and_reset() {
@@ -128,39 +146,43 @@ void test_derp_spin_and_reset() {
     DerpModule derp;
     derp.set_enabled(true);
     derp.game_tick(game, 0.05F);
-    check(game.rotations.size() == 1 && near(game.rotations.back().first, -172.0F) &&
-          near(game.rotations.back().second, 89.0F), "Derp did not wrap the yaw or use its pitch");
+    check(game.head_body_rotations.size() == 1 && near(game.head_body_rotations.back(), -172.0F) &&
+          game.rotations.empty(), "Derp changed view rotation instead of head/body yaw");
     derp.game_tick(game, 0.05F);
-    check(near(game.rotations.back().first, -154.0F), "Derp did not accumulate its spin");
+    check(near(game.head_body_rotations.back(), -154.0F), "Derp did not accumulate head/body spin");
 
     derp.set_enabled(false);
     game.state.yaw = 20.0F;
+    game.state.head_yaw_ready = false;
     derp.set_enabled(true);
-    derp.pitch.get<float>() = -30.0F;
     derp.game_tick(game, 0.05F);
-    check(near(game.rotations.back().first, 38.0F) && near(game.rotations.back().second, -30.0F), "Derp retained state after disabling");
+    check(near(game.head_body_rotations.back(), 38.0F) && game.rotations.empty(),
+          "Derp retained state or changed view rotation after disabling");
     game.state.local.id = 7;
     game.state.yaw = 100.0F;
+    game.state.head_yaw = 100.0F;
+    game.state.head_yaw_ready = true;
     derp.game_tick(game, 0.05F);
-    check(near(game.rotations.back().first, 118.0F), "Derp retained another player's yaw");
+    check(near(game.head_body_rotations.back(), 118.0F), "Derp retained another player's yaw");
     game.state.ready = false;
     derp.game_tick(game, 0.05F);
     game.state.ready = true;
     game.state.yaw = 0.0F;
+    game.state.head_yaw_ready = false;
     derp.game_tick(game, 0.05F);
-    check(near(game.rotations.back().first, 18.0F), "Derp retained state across an unavailable world");
+    check(near(game.head_body_rotations.back(), 18.0F), "Derp retained state across an unavailable world");
 
-    game.rotate_result = false;
+    game.rotate_head_and_body_result = false;
     derp.game_tick(game, 0.05F);
-    game.rotate_result = true;
+    game.rotate_head_and_body_result = true;
     derp.game_tick(game, 0.05F);
-    check(near(game.rotations.back().first, 36.0F), "Derp advanced its spin after a rejected rotation");
+    check(near(game.head_body_rotations.back(), 36.0F), "Derp advanced after a rejected head/body rotation");
     game.throw_rotation = true;
     derp.game_tick(game, 0.05F);
     game.throw_rotation = false;
     game.state.yaw = 30.0F;
     derp.game_tick(game, 0.05F);
-    check(near(game.rotations.back().first, 48.0F), "Derp did not recover after a bridge exception");
+    check(near(game.head_body_rotations.back(), 48.0F), "Derp did not recover after a bridge exception");
 }
 
 void test_aimbot_selection_and_cone() {
@@ -184,26 +206,26 @@ void test_aimbot_selection_and_cone() {
     game.state.actors.push_back(actor);
     game.state.actors.push_back(game.target(5, 0.0F, 20.0F)); // out of range
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.empty(), "Aimbot ignored Require Click");
+    check(game.head_body_rotations.empty(), "Aimbot ignored Require Click");
     game.state.attack_down = true;
     aimbot.game_tick(game, 0.05F);
     const float expected = 20.0F * (1.0F - std::exp(-8.0F * 0.05F));
-    check(game.rotations.size() == 1 && near(game.rotations.back().first, expected),
-          "Aimbot did not choose the closest angular eligible target or apply smoothing");
+    check(game.head_body_rotations.size() == 1 && near(game.head_body_rotations.back(), expected) &&
+          game.rotations.empty(), "Aimbot did not smoothly aim with head/body yaw only");
 
     game.state.actors = {game.target(6, 60.0F, 3.0F)};
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 1, "Aimbot selected a target outside its cone");
+    check(game.head_body_rotations.size() == 1, "Aimbot selected a target outside its cone");
     aimbot.require_click.get<bool>() = false;
     game.state.attack_down = false;
     game.state.actors = {game.target(7, 10.0F, 2.0F, false)};
     game.state.actors.front().visible = false;
     aimbot.players_only.get<bool>() = false;
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 1, "Aimbot ignored visibility filtering");
+    check(game.head_body_rotations.size() == 1, "Aimbot ignored visibility filtering");
     aimbot.visible_only.get<bool>() = false;
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 2 && game.rotations.back().first > 0.0F,
+    check(game.head_body_rotations.size() == 2 && game.head_body_rotations.back() > 0.0F,
           "Aimbot target or input filter settings do not work");
     check(game.attacks.empty(), "Aimbot attacked a target");
 }
@@ -216,7 +238,8 @@ void test_aimbot_yaw_wrap_and_bounds_range() {
     game.state.yaw = 179.0F;
     game.state.actors = {game.target(2, -179.0F, 3.0F)};
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 1 && game.rotations.back().first > 179.0F && game.rotations.back().first < 180.0F,
+    check(game.head_body_rotations.size() == 1 && game.head_body_rotations.back() > 179.0F &&
+          game.head_body_rotations.back() < 180.0F,
           "Aimbot took the long path at the yaw wrap");
 
     game.state.yaw = 0.0F;
@@ -225,7 +248,7 @@ void test_aimbot_yaw_wrap_and_bounds_range() {
     game.state.actors = {target};
     aimbot.range.get<float>() = 3.0F;
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 2 && game.rotations.back().second > 0.0F,
+    check(game.head_body_rotations.size() == 2,
           "Aimbot did not use target bounds for range and vertical aim");
 
     // A 90-degree yaw difference is still inside a 40-degree spatial cone
@@ -237,12 +260,12 @@ void test_aimbot_yaw_wrap_and_bounds_range() {
     overhead.position.y += std::sin(80.0F * 0.017453292519943295F) * 5.0F;
     game.state.actors = {overhead};
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 3 && game.rotations.back().first > 0.0F &&
-          near(game.rotations.back().second, -80.0F), "Aimbot FOV used yaw/pitch distance instead of a spatial cone");
+    check(game.head_body_rotations.size() == 3 && game.head_body_rotations.back() > 0.0F,
+          "Aimbot FOV used yaw/pitch distance instead of a spatial cone");
 
     game.state.actors.front().position.x = std::numeric_limits<float>::quiet_NaN();
     aimbot.game_tick(game, 0.05F);
-    check(game.rotations.size() == 3, "Aimbot selected non-finite target data");
+    check(game.head_body_rotations.size() == 3, "Aimbot selected non-finite target data");
     game.state.pitch = 0.0F;
     game.throw_rotation = true;
     game.state.actors = {game.target(4, 0.0F, 2.0F)};
@@ -259,8 +282,8 @@ void test_killaura_cadence_and_filters() {
     hidden.visible = false;
     game.state.actors.push_back(hidden);
     aura.game_tick(game, 0.05F);
-    check(game.attacks == std::vector<std::uintptr_t>{2} && near(game.rotations.back().first, 35.0F),
-          "Killaura selected an invalid target or failed to rotate");
+    check(game.attacks == std::vector<std::uintptr_t>{2} && near(game.head_body_rotations.back(), 35.0F) &&
+          game.rotations.empty(), "Killaura changed view rotation or failed to turn head/body");
     aura.game_tick(game, 0.05F);
     check(game.attacks.size() == 1, "Killaura exceeded its CPS limit");
     aura.game_tick(game, 0.05F);
@@ -271,11 +294,12 @@ void test_killaura_cadence_and_filters() {
     check(game.attacks.size() == 3, "Killaura carried missed attacks into the next tick");
 
     aura.set_enabled(false);
-    aura.rotate.get<bool>() = false;
+    aura.rotate.get<Choice>().index = 0;
     aura.set_enabled(true);
-    const auto rotation_count = game.rotations.size();
+    const auto head_body_rotation_count = game.head_body_rotations.size();
     aura.game_tick(game, 0.01F);
-    check(game.attacks.size() == 4 && game.rotations.size() == rotation_count, "Killaura failed to reset or ignored Rotate");
+    check(game.attacks.size() == 4 && game.head_body_rotations.size() == head_body_rotation_count,
+          "Killaura failed to reset or ignored Rotate");
     game.state.local.id = 9;
     aura.game_tick(game, 0.01F);
     check(game.attacks.size() == 5, "Killaura cooldown survived a local player change");
@@ -299,7 +323,7 @@ void test_killaura_failures_are_throttled() {
     MockGame game;
     KillauraModule aura;
     aura.set_enabled(true);
-    aura.rotate.get<bool>() = false;
+    aura.rotate.get<Choice>().index = 0;
     game.state.actors = {game.target(2, 0.0F, 2.0F)};
     game.attack_result = false;
     aura.game_tick(game, 0.05F);

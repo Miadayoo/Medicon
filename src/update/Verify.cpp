@@ -4,7 +4,9 @@
 #include <Windows.h>
 #include <bcrypt.h>
 
+#include <algorithm>
 #include <array>
+#include <memory>
 #include <vector>
 
 #ifdef _MSC_VER

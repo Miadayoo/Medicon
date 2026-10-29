@@ -33,6 +33,8 @@
 
 使用する hash は古い `Components/ComponentHashes.hpp` の一覧ではなく、現在の `EnttHashs.hpp` の override と実ファイルで一致する値。StateVector `1B5D5238`、AABBShape `BAC1B3CF`、Rotation `75DF36B7`、ActorType `4F6BA419`、ActorOwner `85B93800`。
 
+head/body componentはbaseTickで更新し、描画時に呼ばれるMobBodyRotation補間getter（RVA `0x20874B0`）とActorHeadRotation補間getter（RVA `0x2087610`）をフックする。最後のYawと現在のYawをgetterのrender alphaで最短角度補間して返し、20 Hzのtick更新間も描画を滑らかにする。これは三人称表示にのみ適用し、一人称ではnative yawを返す。縦向きはRotationComponentだけではモデル表示に反映されないため、同版で確認したRenderRotationComponent（hash `D15944E2`）のpitchを三人称描画時だけ更新する。一人称ではRenderRotationComponentを実際の視点pitchに戻し、RotationComponentは書き換えない。視点モードが判定できない場合も描画yaw/pitch overrideを適用しない。両yaw getterはMinecraft 1.26.52.3の実行ファイルでcomponent hashと補間処理を確認し、先頭バイトとlocal actorのvtable内にある関数ポインターが一致した場合だけoverrideを有効にする。vtable slotは派生Actorで異なる可能性があるため固定しない。SprintはActorDataFlagComponent（hash `C67426F3`）のsprinting bit（bit 3）を更新し、PlayerAuthInputPacket（ID 144）のInputDataにSprinting／StartSprinting／StopSprintingを反映する。Strikeは水平速度、Legitは視点前方への水平速度を条件にする。パケットのIDとInputData上位bitを検証し、未対応レイアウトは変更せず送る。
+
 コピーした sparse slot を packed ID と完全一致で照合するため、entity の version が変わった古いハンドルは使わない。Actor を列挙するためにゲームの `std::vector` を構築・解放せず、ActorOwner の既存 storage だけを読む。
 
 ## 攻撃・設置
@@ -49,7 +51,7 @@
 
 GameMode は実行中にも vtable identity、player owner、実行可能領域、slot の関数 RVA と先頭 16 bytes を照合する。RVA は vtable から読んだ関数の識別だけに使い、固定アドレスへ直接 call しない。
 
-Scaffold は空気/液体の target と、空気・液体以外の支持 neighbor（Solstice の `getBlockPlaceFace` と同じ。ガラス・ハーフブロック・階段も含む）を確認し、その neighbor の face center を HitResult に設定してから buildBlock を呼ぶ。HitResult の **scalar prefix 0x38 bytes** を保存・復元し、後続の WeakEntityRef には触れない。Auto Select の slot は呼び出し内で戻さず、選択したまま次の試行で設置し、Scaffold 実行中は使わなくなって1秒後、Scaffold を OFF にしたら次の game tick で元へ戻す（Solstice の既定 `Full` と同じ考え方）。サーバーによる設置・攻撃の受理はゲーム実行時の確認が必要。
+Scaffold は空気/液体の target と、空気・液体以外の支持 neighbor（Solstice の `getBlockPlaceFace` と同じ。ガラス・ハーフブロック・階段も含む）を確認し、その neighbor の face center を HitResult に設定してから buildBlock を呼ぶ。HitResult の **scalar prefix 0x38 bytes** を保存・復元し、後続の WeakEntityRef には触れない。Auto Select の slot は呼び出し内で戻さず、選択したまま次の試行で設置し、使わなくなって1秒後に元へ戻す（Solstice の既定 `Full` と同じ考え方）。サーバーによる設置・攻撃の受理はゲーム実行時の確認が必要。
 
 ## 描画と残る制約
 

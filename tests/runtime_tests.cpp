@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <imgui.h>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -170,11 +171,23 @@ void hooks_test() {
 }
 
 void gameplay_dispatch_test(const std::filesystem::path& path) {
+    require(std::abs(medicon::sdk::interpolate_yaw(10.0F, 50.0F, 0.5F) - 30.0F) < 0.001F,
+            "Render yaw interpolation uses the frame alpha");
+    require(std::abs(std::abs(medicon::sdk::interpolate_yaw(179.0F, -179.0F, 0.5F)) - 180.0F) < 0.001F,
+            "Render yaw interpolation follows the shortest path across wraparound");
     struct Game final : medicon::sdk::GameplayAccess {
         medicon::sdk::GameplayFrame current;
         int rotations = 0;
+        int head_body_rotations = 0;
+        bool rotation_control = false;
         const medicon::sdk::GameplayFrame& frame() const noexcept override { return current; }
+        void begin_rotation_control(bool enabled) noexcept override { rotation_control = enabled; }
         bool rotate(float, float) override { ++rotations; return true; }
+        bool rotate_head_and_body(float) override {
+            if (!rotation_control) return false;
+            ++head_body_rotations;
+            return true;
+        }
         bool attack(std::uintptr_t) override { throw std::runtime_error("Unexpected attack"); }
         bool place_block(medicon::sdk::BlockPos, bool) override { throw std::runtime_error("Unexpected placement"); }
         bool replaceable(medicon::sdk::BlockPos) const override { return false; }
@@ -185,28 +198,33 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     game.current.local.local = true;
     medicon::Client client(path);
     require(client.start(), "Gameplay client starts");
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "custommodel"})
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "custommodel"})
         require(client.modules().find(id) && !client.modules().find(id)->enabled(), "Gameplay module registered disabled");
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0, "Disabled gameplay modules do not act");
+    require(game.rotations == 0 && game.head_body_rotations == 0, "Disabled gameplay modules do not act");
+    client.modules().find("rotations")->set_enabled(true);
+    client.game_tick(game, 0.05F);
+    require(game.rotations == 0 && game.head_body_rotations == 0 && !game.rotation_control,
+            "Rotations module alone does not change head/body yaw");
     client.modules().find("derp")->set_enabled(true);
     client.tick(0.05F);
-    require(game.rotations == 0, "Present tick never mutates the game");
+    require(game.rotations == 0 && game.head_body_rotations == 0, "Present tick never mutates the game");
     client.game_tick(game, 0.05F);
-    require(game.rotations == 1, "Native game tick dispatches Derp");
-    client.game_tick(game, 0.05F, false);
-    require(game.rotations == 1, "Unfocused or inventory input suppresses actions");
+    require(game.rotations == 0 && game.head_body_rotations == 1 && game.rotation_control,
+            "Native game tick dispatches head/body Derp through Rotations");
     client.gui().set_open(true);
     client.game_tick(game, 0.05F);
-    require(game.rotations == 1, "ClickGUI suppresses gameplay actions");
+    require(game.rotations == 0 && game.head_body_rotations == 1, "ClickGUI suppresses gameplay actions");
+    client.modules().find("rotations")->set_enabled(false);
+    client.modules().find("derp")->set_enabled(false);
     client.gui().set_open(false);
     game.current.ready = false;
     client.game_tick(game, 0.05F);
-    require(game.rotations == 1, "Missing world suppresses gameplay actions");
+    require(game.rotations == 0 && game.head_body_rotations == 1, "Missing world suppresses gameplay actions");
     require(client.stop(), "Gameplay client stops");
     game.current.ready = true;
     client.game_tick(game, 0.05F);
-    require(game.rotations == 1, "Stopped client cannot mutate the game");
+    require(game.rotations == 0 && game.head_body_rotations == 1, "Stopped client cannot mutate the game");
 }
 
 void client_test(const std::filesystem::path& path) {
@@ -478,4 +496,3 @@ int main() {
         return 1;
     }
 }
-

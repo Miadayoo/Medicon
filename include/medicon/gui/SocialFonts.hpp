@@ -87,11 +87,15 @@ public:
 private:
     struct Face;
     struct Build;
+    struct BuildDeleter {
+        void operator()(Build* build) const noexcept;
+    };
+    using BuildPtr = std::unique_ptr<Build, BuildDeleter>;
     using Sizes = std::array<float, social_text_count>;
     using Glyphs = std::array<std::set<char32_t>, social_text_count>;
 
     static std::shared_ptr<const Face> load_face();
-    static std::unique_ptr<Build> build(std::shared_ptr<const Face> face, Sizes sizes, Glyphs glyphs);
+    static BuildPtr build(std::shared_ptr<const Face> face, Sizes sizes, Glyphs glyphs);
     ImFont* font(SocialText role) const noexcept;
     float scale(SocialText role) const noexcept;
     void upload(TextureHost* host);
@@ -102,9 +106,9 @@ private:
     Glyphs requested_;
     bool dirty_ = false;
     Sizes sizes_{};
-    std::future<std::unique_ptr<Build>> building_;
-    std::unique_ptr<Build> current_;  // drawn from once uploaded
-    std::unique_ptr<Build> pending_;  // built, waiting for a texture host
+    std::future<BuildPtr> building_;
+    BuildPtr current_;  // drawn from once uploaded
+    BuildPtr pending_;  // built, waiting for a texture host
     ImTextureID texture_ = 0;
     TextureHost* host_ = nullptr;
     std::uint32_t revision_ = 0;

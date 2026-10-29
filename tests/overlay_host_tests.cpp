@@ -570,6 +570,11 @@ void model_probe_key(HWND window) {
             "Post P0 key up");
 }
 
+void end_key(HWND window) {
+    const LPARAM key = 1 | (static_cast<LPARAM>(0x4F) << 16) | (static_cast<LPARAM>(1) << 24);
+    require(PostMessageW(window, WM_KEYDOWN, VK_END, key) != 0, "Post End key down");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -771,17 +776,22 @@ int main(int argc, char** argv) {
         frames(*host);
         require(overlay_pixels(host->read_last_presented()) > 3000,
                 "The bound Insert key did not open ClickGUI after the restart intro");
-        require(stop() == 1, "Synchronous stop after restart");
-        require(status() == 0, "Overlay status was not stopped after second stop");
+        end_key(window->get());
+        deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        while (status() != 0 && std::chrono::steady_clock::now() < deadline) {
+            frames(*host, 1);
+            pump_messages();
+        }
+        require(status() == 0, "End did not safely stop the overlay");
         frames(*host, 4);
-        require(overlay_pixels(host->read_last_presented()) == 0, "Overlay pixels remained after second stop");
+        require(overlay_pixels(host->read_last_presented()) == 0, "Overlay pixels remained after End eject");
 
         require(FreeLibrary(module) != 0, "FreeLibrary after overlay stop");
         module = nullptr;
         stop = nullptr;
         status = nullptr;
         last_error = nullptr;
-        // A pinned module may remain mapped, but its hooks must be inactive.
+        // Explicit API hosts retain the pinned module, but its hooks must be inactive.
         frames(*host, 4);
         require(overlay_pixels(host->read_last_presented()) == 0, "Rendering did not remain clean after FreeLibrary");
         host.reset();
@@ -792,7 +802,7 @@ int main(int argc, char** argv) {
                   << (threaded_input ? " separate UI thread" : " shared UI thread")
                   << " automatic overlay host passed: "
                   << visible << " GUI pixels, " << closed << " with GUI closed, " << resized
-                  << " after resize; clean stop, restart and unload.\n";
+                  << " after resize; clean stop, restart and End eject.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << (d3d12 ? "D3D12" : "D3D11") << " overlay host: " << error.what();

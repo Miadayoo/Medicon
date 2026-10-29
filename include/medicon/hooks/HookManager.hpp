@@ -18,6 +18,7 @@ public:
     bool enable_all(std::string& error);
     bool disable_all(std::string& error);
     bool clear(std::string& error);
+    bool shutdown(std::string& error);
     [[nodiscard]] std::size_t size() const noexcept { return hooks_.size(); }
 private:
     struct Hook { std::string name; void* target; bool enabled{}; };
@@ -27,4 +28,3 @@ private:
 };
 
 } // namespace medicon
-

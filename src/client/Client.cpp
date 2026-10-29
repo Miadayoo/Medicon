@@ -1,7 +1,12 @@
 #include <medicon/client/Client.hpp>
 #include <medicon/modules/BuiltinModules.hpp>
-#include <medicon/modules/GameplayModules.hpp>
+#include <medicon/modules/GameplayModule.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
+#include <medicon/modules/RotationsModule.hpp>
+#include <medicon/modules/DerpModule.hpp>
+#include <medicon/modules/AimbotModule.hpp>
+#include <medicon/modules/KillauraModule.hpp>
+#include <medicon/modules/SprintModule.hpp>
 #include <medicon/gui/GameplayVisuals.hpp>
 #include <medicon/memory/module_view.hpp>
 #include <Windows.h>
@@ -12,6 +17,70 @@
 #include <utility>
 
 namespace medicon {
+
+namespace {
+
+class RotationVariableRoute final : public sdk::GameplayAccess {
+public:
+    RotationVariableRoute(sdk::GameplayAccess& game, RotationsModule& rotations) noexcept
+        : game_(game), rotations_(rotations) {
+        const auto& frame = game_.frame();
+        rotations_.set_server_rotation(frame.yaw, frame.pitch);
+    }
+
+    const sdk::GameplayFrame& frame() const noexcept override { return game_.frame(); }
+    void begin_rotation_control(bool enabled) noexcept override { game_.begin_rotation_control(enabled); }
+    void finish_rotation_control() noexcept override { game_.finish_rotation_control(); }
+
+    bool rotate(float yaw, float pitch) override {
+        rotations_.set_server_rotation(yaw, pitch);
+        const bool applied = game_.rotate(server_yaw(), server_pitch());
+        rotation_requested_ = rotation_requested_ || applied;
+        return applied;
+    }
+
+    bool rotate_head_and_body(float yaw) override {
+        const float pitch = rotations_.server_rotation_valid.load(std::memory_order_acquire)
+            ? server_pitch() : frame().pitch;
+        rotations_.set_server_rotation(yaw, pitch);
+        const bool applied = game_.rotate_head_and_body(server_yaw(), server_pitch());
+        rotation_requested_ = rotation_requested_ || applied;
+        return applied;
+    }
+
+    bool rotate_head_and_body(float yaw, float pitch) override {
+        rotations_.set_server_rotation(yaw, pitch);
+        const bool applied = game_.rotate_head_and_body(server_yaw(), server_pitch());
+        rotation_requested_ = rotation_requested_ || applied;
+        return applied;
+    }
+
+    [[nodiscard]] bool has_rotation_request() const noexcept { return rotation_requested_; }
+
+    bool restore_view() {
+        const auto& current = frame();
+        rotations_.set_server_rotation(current.yaw, current.pitch);
+        return game_.rotate_head_and_body(server_yaw(), server_pitch());
+    }
+
+    bool attack(std::uintptr_t actor_id) override { return game_.attack(actor_id); }
+    bool set_sprinting(bool sprinting) override { return game_.set_sprinting(sprinting); }
+    bool swing() override { return game_.swing(); }
+    bool place_block(sdk::BlockPos position, bool auto_select) override {
+        return game_.place_block(position, auto_select);
+    }
+    bool replaceable(sdk::BlockPos position) const override { return game_.replaceable(position); }
+
+private:
+    float server_yaw() const noexcept { return rotations_.server_yaw.load(std::memory_order_relaxed); }
+    float server_pitch() const noexcept { return rotations_.server_pitch.load(std::memory_order_relaxed); }
+
+    sdk::GameplayAccess& game_;
+    RotationsModule& rotations_;
+    bool rotation_requested_{};
+};
+
+} // namespace
 
 Client::Client(std::filesystem::path path)
     : config_(std::move(path)), commands_(modules_), overlay_(modules_) {
@@ -73,13 +142,34 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     if (!std::isfinite(seconds) || seconds <= 0.0F) seconds = 0.05F;
     // The host serializes this game-thread entry point with UI settings edits.
     // No game-owned pointers are used by tick() or render().
-    if (allow_actions && !capturing_input()) {
+    auto* rotations = dynamic_cast<RotationsModule*>(modules_.find(RotationsModule::module_id));
+    const auto* derp = dynamic_cast<DerpModule*>(modules_.find(DerpModule::module_id));
+    const auto* aimbot = dynamic_cast<AimbotModule*>(modules_.find(AimbotModule::module_id));
+    const auto* killaura = dynamic_cast<KillauraModule*>(modules_.find(KillauraModule::module_id));
+    auto* sprint = dynamic_cast<SprintModule*>(modules_.find(SprintModule::module_id));
+    const auto* killaura_rotate = killaura ? std::get_if<Choice>(&killaura->rotate.value) : nullptr;
+    const bool has_rotation_requester = (derp && derp->enabled()) || (aimbot && aimbot->enabled()) ||
+        (killaura && killaura->enabled() && killaura_rotate && killaura_rotate->index == 1);
+    // Feature rotation modes (for example Killaura's Simple) own their angle
+    // requests independently. Third-person interpolation remains an explicit
+    // Rotations-module feature.
+    const bool rotation_render_enabled = rotations && rotations->enabled() &&
+        (has_rotation_requester || rotations->always.get<bool>());
+    const bool rotation_control_enabled = has_rotation_requester || rotation_render_enabled;
+    game.begin_rotation_control(rotation_control_enabled, rotation_render_enabled);
+    RotationVariableRoute rotation_route(game, *rotations);
+    const bool gameplay_actions_allowed = allow_actions && !capturing_input();
+    if (sprint) sprint->update(rotation_route, gameplay_actions_allowed);
+    if (gameplay_actions_allowed) {
         for (const auto& module : modules_.all()) {
             if (!module->enabled()) continue;
-            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()))
-                gameplay->game_tick(game, seconds);
+            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()); gameplay && gameplay != sprint)
+                gameplay->game_tick(rotation_route, seconds);
         }
     }
+    if (rotation_control_enabled && !rotation_route.has_rotation_request())
+        (void)rotation_route.restore_view();
+    game.finish_rotation_control();
     gameplay_frame_ = game.frame();
     gameplay_age_ = 0.0F;
 }

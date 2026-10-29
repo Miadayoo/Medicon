@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <climits>
 #include <cstring>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <span>
@@ -25,10 +27,22 @@ namespace {
 // SDK/EnttHashs.hpp, OffsetProvider.hpp, Actor/EntityId.hpp,
 // include/entt/entity/{registry,sparse_set,storage}.hpp.
 constexpr std::uint32_t state_hash = 0x1B5D5238, bounds_hash = 0xBAC1B3CF;
-constexpr std::uint32_t rotation_hash = 0x75DF36B7, type_hash = 0x4F6BA419;
+constexpr std::uint32_t rotation_hash = 0x75DF36B7, render_rotation_hash = 0xD15944E2;
+constexpr std::uint32_t actor_data_flag_hash = 0xC67426F3;
+constexpr std::uint32_t type_hash = 0x4F6BA419;
 constexpr std::uint32_t owner_hash = 0x85B93800, dead_hash = 0x710A62C4;
 constexpr std::uint32_t head_hash = 0xBABE7211, body_hash = 0xD7F64BBA;
 constexpr std::uint32_t render_position_hash = 0xE53C7221;
+// PlayerAuthInputPacket/InputData values in the 1.26.50 protocol profile.
+// https://mojang.github.io/bedrock-protocol-docs/1.26.50/types/player-auth-input-data/
+constexpr int player_auth_input_packet_id = 144;
+// In this x64 packet layout, mInputData follows the Packet base and the
+// rotation/position/movement fields. Its reserved upper 62 bits are checked
+// before changing any bit, so an unknown layout is passed through unchanged.
+constexpr std::size_t player_auth_input_flags_offset = 0x98;
+constexpr std::uint32_t sprinting_input_bit = 20;
+constexpr std::uint32_t start_sprinting_input_bit = 25;
+constexpr std::uint32_t stop_sprinting_input_bit = 26;
 constexpr std::uint32_t entity_mask = 0x3FFFF;
 constexpr std::size_t maximum_entities = 65536;
 
@@ -147,12 +161,13 @@ bool read_gameplay_pools(std::uintptr_t registry, std::vector<GameplayPool>& out
             if (entry.hash == rotation_hash) required |= 4;
             if (entry.hash == type_hash) required |= 8;
             if (entry.hash == owner_hash) required |= 16;
+            if (entry.hash == render_rotation_hash) required |= 32;
             output.push_back(entry);
         }
         std::ranges::sort(output, {}, &GameplayPool::hash);
         for (std::size_t i = 1; i < output.size(); ++i)
             if (output[i - 1].hash == output[i].hash) { output.clear(); return false; }
-        if (required != 31) { output.clear(); return false; }
+        if (required != 63) { output.clear(); return false; }
         return true;
     } catch (...) { output.clear(); return false; }
 }
@@ -203,17 +218,33 @@ struct BedrockGameplay::Impl {
     // The local player's RenderPositionComponent, which the game moves every
     // frame to where it draws the model. Resolved again by every capture.
     std::uintptr_t render_position = 0;
+    std::atomic_bool sprint_packet_override{};
+    std::atomic_bool sprint_packet_restore_state{};
+    std::atomic_bool sprint_packet_last_state{};
     // Auto Select keeps the block slot selected while placing (like Solstice's
     // default Full switch) so the game reports it to the server on its own
     // tick before a placement uses it. The original slot comes back once
-    // nothing has placed from the switched slot for a second, or on the first
-    // capture after Scaffold was turned off. Survives clear().
+    // nothing has placed from the switched slot for a second. Survives clear().
     std::uintptr_t switch_supplies = 0;
     int switch_from = -1, switch_to = -1;
     ULONGLONG switch_used = 0;
-    bool switch_active = true;
     bool switched_this_tick = false;
     std::uint32_t local_entity = 0;
+    std::uint64_t capture_serial = 0, head_body_rotation_serial = 0;
+    std::uintptr_t head_body_rotation_player = 0, head_body_rotation_registry = 0;
+    std::uint32_t head_body_rotation_entity = 0;
+    float last_head_yaw = 0, last_body_yaw = 0;
+    bool head_body_rotation_valid = false;
+    bool rotation_control_enabled = false;
+    bool rotation_render_enabled = false;
+    bool rotation_yaw_valid = false;
+    bool rotation_override_active = false;
+    float rotation_yaw = 0, rotation_previous_yaw = 0, rotation_pitch = 0, rotation_previous_pitch = 0;
+    std::uint64_t rotation_pitch_serial = 0;
+    std::uintptr_t rotation_player = 0, rotation_registry = 0;
+    std::uint32_t rotation_entity = 0;
+    std::uintptr_t body_yaw_interpolator = 0, head_yaw_interpolator = 0;
+    std::uintptr_t local_swing_method = 0;
     memory::AddressRange image;
     std::vector<memory::AddressRange> executable_regions;
     std::vector<detail::GameplayPool> pools;
@@ -232,11 +263,27 @@ struct BedrockGameplay::Impl {
         return target;
     }
 
+    bool has_method(std::uintptr_t object, std::uintptr_t expected) const noexcept {
+        constexpr std::size_t maximum_methods = 32;
+        std::uintptr_t table = 0;
+        if (!expected || !object || object % 8 || !read_at(object, 0, table) ||
+            !image.contains(table, maximum_methods * sizeof(std::uintptr_t))) return false;
+        std::array<std::uintptr_t, maximum_methods> methods{};
+        return copy_bytes(table, methods.data(), sizeof(methods)) &&
+            std::ranges::find(methods, expected) != methods.end();
+    }
+
+    template<std::size_t Size>
     bool native_identity(std::uintptr_t target, std::size_t rva,
-                         const std::array<unsigned char, 16>& expected) const noexcept {
-        std::array<unsigned char, 16> actual{};
+                         const std::array<unsigned char, Size>& expected) const noexcept {
+        std::array<unsigned char, Size> actual{};
         return rva <= UINTPTR_MAX - image.address && target == image.address + rva &&
                executable(target) && copy_bytes(target, actual.data(), actual.size()) && actual == expected;
+    }
+
+    bool native_identity(std::uintptr_t target, std::size_t rva,
+                         const std::array<unsigned char, 16>& expected) const noexcept {
+        return native_identity<16>(target, rva, expected);
     }
 
     std::uintptr_t storage(std::uint32_t hash) const noexcept {
@@ -314,6 +361,13 @@ struct BedrockGameplay::Impl {
     // Capture only, after the player was validated.
     void restore_switched_slot() noexcept {
         if (switch_from < 0) return;
+        std::uintptr_t supplies = 0;
+        int selected = -1;
+        // Another player or world, or a slot the user picked: nothing to undo.
+        if (!read_at(player, 0x5B8, supplies) || supplies != switch_supplies ||
+            !read_at(supplies, 0x10, selected) || selected != switch_to) { forget_switch(); return; }
+        if (GetTickCount64() - switch_used < 1000) return;
+        write_at(supplies, 0x10, switch_from);
         const auto action = detail::restore_gameplay_slot(player, switch_supplies, switch_from,
             switch_to, switch_active, GetTickCount64() - switch_used);
         if (action == SlotRestore::wait) return;
@@ -454,13 +508,18 @@ void BedrockGameplay::clear() noexcept {
     impl_->render_position = 0;
     impl_->local_entity = 0;
     impl_->pools.clear();
+    impl_->rotation_control_enabled = false;
+    impl_->rotation_render_enabled = false;
+    impl_->rotation_yaw_valid = false;
+    impl_->rotation_override_active = false;
+    impl_->rotation_player = impl_->rotation_registry = 0;
+    impl_->rotation_entity = 0;
+    impl_->head_body_rotation_valid = false;
 }
 
 void BedrockGameplay::end_tick() noexcept { impl_->active = false; }
 
 bool BedrockGameplay::slot_restore_pending() const noexcept { return impl_->switch_from >= 0; }
-
-void BedrockGameplay::set_auto_select_active(bool active) noexcept { impl_->switch_active = active; }
 
 bool BedrockGameplay::refresh_view(GameplayFrame& frame) const noexcept {
     const auto& state = *impl_;
@@ -477,9 +536,182 @@ bool BedrockGameplay::refresh_view(GameplayFrame& frame) const noexcept {
 }
 const GameplayFrame& BedrockGameplay::frame() const noexcept { return impl_->frame; }
 
-bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibility) {
-    clear();
+void BedrockGameplay::begin_rotation_control(bool enabled) noexcept {
+    begin_rotation_control(enabled, enabled);
+}
+
+void BedrockGameplay::begin_rotation_control(bool enabled, bool render_enabled) noexcept {
     auto& state = *impl_;
+    // Restore the current camera yaw before dropping an active head/body
+    // override (for example when Killaura or Rotations is turned off).
+    if (!enabled && state.rotation_control_enabled && state.rotation_override_active &&
+        state.rotation_yaw_valid && state.rotation_player == state.player &&
+        state.rotation_registry == state.registry && state.rotation_entity == state.local_entity &&
+        state.frame.ready && std::isfinite(state.frame.yaw)) {
+        (void)rotate_head_and_body(state.frame.yaw, state.frame.pitch);
+    }
+    state.rotation_control_enabled = enabled;
+    state.rotation_render_enabled = enabled && render_enabled;
+    if (!enabled) {
+        state.rotation_yaw_valid = false;
+        state.rotation_override_active = false;
+        state.rotation_yaw = state.rotation_previous_yaw = state.rotation_pitch = state.rotation_previous_pitch = 0;
+        state.rotation_pitch_serial = 0;
+        return;
+    }
+
+    const bool same_player = state.rotation_yaw_valid &&
+        state.rotation_player == state.player && state.rotation_registry == state.registry &&
+        state.rotation_entity == state.local_entity;
+    if (!state.on_tick()) return;
+    if (same_player) {
+        state.frame.head_yaw = state.rotation_yaw;
+        state.frame.head_yaw_ready = true;
+        return;
+    }
+
+    state.rotation_override_active = false;
+    std::array<float, 2> current_head{};
+    const auto head = state.component(state.local_entity, head_hash, sizeof(current_head));
+    if (!read_at(head, 0, current_head) ||
+        !std::ranges::all_of(current_head, [](float value) {
+            return std::isfinite(value) && std::abs(value) <= 360000;
+        })) {
+        state.rotation_yaw_valid = false;
+        return;
+    }
+    state.rotation_yaw = std::remainder(current_head[0], 360.0F);
+    state.rotation_previous_yaw = state.rotation_yaw;
+    state.frame.head_yaw = state.rotation_yaw;
+    state.frame.head_yaw_ready = true;
+    state.rotation_player = state.player;
+    state.rotation_registry = state.registry;
+    state.rotation_entity = state.local_entity;
+    state.rotation_yaw_valid = true;
+    // A newly enabled rotation controller must start pitch interpolation at
+    // the captured view angle, not the zeroed state left by the previous off
+    // transition. The first aim update will then move smoothly from here.
+    state.rotation_pitch = std::clamp(state.frame.pitch, -90.0F, 90.0F);
+    state.rotation_previous_pitch = state.rotation_pitch;
+    state.rotation_pitch_serial = 0;
+}
+
+void BedrockGameplay::finish_rotation_control() noexcept {
+    auto& state = *impl_;
+    if (!state.rotation_control_enabled || !state.rotation_yaw_valid || !state.rotation_override_active ||
+        state.rotation_player != state.player || state.rotation_registry != state.registry ||
+        state.rotation_entity != state.local_entity || !state.on_tick()) return;
+    (void)rotate_head_and_body(state.rotation_yaw, state.rotation_pitch);
+}
+
+std::uintptr_t BedrockGameplay::body_yaw_interpolator_target() const noexcept {
+    constexpr std::uintptr_t body_yaw_interpolator_rva = 0x20874B0;
+    constexpr std::array<unsigned char, 32> body_yaw_prefix{
+        0x48,0x83,0xEC,0x58,0x44,0x0F,0x29,0x44,0x24,0x40,0x0F,0x29,0x7C,0x24,0x30,0x0F,
+        0x29,0x74,0x24,0x20,0x0F,0x28,0xF1,0x48,0x8B,0x51,0x10,0x8B,0x41,0x18,0x48,0x8B
+    };
+    auto& state = *impl_;
+    if (!state.supported || body_yaw_interpolator_rva > UINTPTR_MAX - state.image.address)
+        return 0;
+    if (state.body_yaw_interpolator) return state.body_yaw_interpolator;
+    const auto target = state.image.address + body_yaw_interpolator_rva;
+    if (!state.native_identity(target, body_yaw_interpolator_rva, body_yaw_prefix)) return 0;
+    state.body_yaw_interpolator = target;
+    return target;
+}
+
+std::uintptr_t BedrockGameplay::head_yaw_interpolator_target() const noexcept {
+    constexpr std::uintptr_t head_yaw_interpolator_rva = 0x2087610;
+    constexpr std::array<unsigned char, 61> head_yaw_prefix{
+        0x48,0x83,0xEC,0x68,0x44,0x0F,0x29,0x4C,0x24,0x50,0x44,0x0F,0x29,0x44,0x24,0x40,
+        0x0F,0x29,0x7C,0x24,0x30,0x0F,0x29,0x74,0x24,0x20,0x0F,0x28,0xF1,0x48,0x8B,0x51,
+        0x10,0x8B,0x41,0x18,0x48,0x8B,0x4A,0x48,0x4C,0x8B,0x42,0x50,0x49,0x29,0xC8,0x49,
+        0xC1,0xE8,0x03,0x41,0xFF,0xC8,0x41,0x81,0xE0,0x11,0x72,0xBE,0xBA
+    };
+    auto& state = *impl_;
+    if (!state.supported || head_yaw_interpolator_rva > UINTPTR_MAX - state.image.address)
+        return 0;
+    if (state.head_yaw_interpolator) return state.head_yaw_interpolator;
+    const auto target = state.image.address + head_yaw_interpolator_rva;
+    if (!state.native_identity(target, head_yaw_interpolator_rva, head_yaw_prefix)) return 0;
+    state.head_yaw_interpolator = target;
+    return target;
+}
+
+bool BedrockGameplay::validates_body_yaw_interpolator(void* actor) const noexcept {
+    if (!actor) return false;
+    const auto target = body_yaw_interpolator_target();
+    return target && impl_->has_method(reinterpret_cast<std::uintptr_t>(actor), target);
+}
+
+bool BedrockGameplay::validates_head_yaw_interpolator(void* actor) const noexcept {
+    if (!actor) return false;
+    const auto target = head_yaw_interpolator_target();
+    return target && impl_->has_method(reinterpret_cast<std::uintptr_t>(actor), target);
+}
+
+std::string BedrockGameplay::rotation_getter_diagnostic(void* actor) const {
+    constexpr std::size_t method_count = 32;
+    std::uintptr_t table = 0;
+    std::array<std::uintptr_t, method_count> methods{};
+    const auto actor_address = reinterpret_cast<std::uintptr_t>(actor);
+    if (!actor || actor_address % 8 || !read_at(actor_address, 0, table) ||
+        !impl_->image.contains(table, sizeof(methods)) || !copy_bytes(table, methods.data(), sizeof(methods)))
+        return "Rotation vtable diagnostic unavailable.";
+
+    const auto find_index = [&](std::uintptr_t target) {
+        const auto found = std::ranges::find(methods, target);
+        return found == methods.end() ? -1 : static_cast<int>(found - methods.begin());
+    };
+    const auto body_index = find_index(body_yaw_interpolator_target());
+    const auto head_index = find_index(head_yaw_interpolator_target());
+    char text[256]{};
+    std::snprintf(text, sizeof(text),
+        "Rotation vtable: table=0x%llX slot13=0x%llX body_index=%d slot14=0x%llX head_index=%d",
+        static_cast<unsigned long long>(table),
+        static_cast<unsigned long long>(methods[13]), body_index,
+        static_cast<unsigned long long>(methods[14]), head_index);
+    return text;
+}
+
+bool BedrockGameplay::rotation_override(float& previous_yaw, float& yaw) const noexcept {
+    const auto& state = *impl_;
+    if (!state.rotation_control_enabled || !state.rotation_render_enabled || !state.rotation_override_active ||
+        !state.rotation_yaw_valid || !std::isfinite(state.rotation_yaw) ||
+        !std::isfinite(state.rotation_previous_yaw))
+        return false;
+    previous_yaw = state.rotation_previous_yaw;
+    yaw = state.rotation_yaw;
+    return true;
+}
+
+bool BedrockGameplay::rotation_diagnostic(RotationDiagnostic& diagnostic) const noexcept {
+    const auto& state = *impl_;
+    if (!state.rotation_render_enabled || !state.rotation_yaw_valid || !state.rotation_override_active ||
+        state.rotation_player != state.player || state.rotation_registry != state.registry ||
+        state.rotation_entity != state.local_entity) return false;
+    const auto rotation = state.component(state.local_entity, rotation_hash, 16);
+    const auto render_rotation = state.component(state.local_entity, render_rotation_hash, 8);
+    std::array<float, 4> view{};
+    std::array<float, 2> render{};
+    if (!read_at(rotation, 0, view) || !read_at(render_rotation, 0, render)) return false;
+    diagnostic = {state.rotation_pitch, state.rotation_previous_pitch, view[0], view[2], render[0], render[1],
+        render_rotation, rotation};
+    return std::ranges::all_of(std::array<float, 6>{diagnostic.requested_pitch, diagnostic.previous_pitch,
+        diagnostic.view_pitch, diagnostic.view_previous_pitch, diagnostic.render_pitch, diagnostic.render_yaw},
+        [](float value) { return std::isfinite(value); });
+}
+
+bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibility) {
+    auto& state = *impl_;
+    state.active = false;
+    state.switched_this_tick = false;
+    state.frame = {};
+    state.client = state.player = state.registry = state.block_source = state.view_player = 0;
+    state.render_position = 0;
+    state.local_entity = 0;
+    state.pools.clear();
+    if (++state.capture_serial == 0) ++state.capture_serial;
     if (!state.supported || !client || !local_actor) return false;
     state.thread = GetCurrentThreadId();
     state.client = reinterpret_cast<std::uintptr_t>(client);
@@ -504,6 +736,11 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         clear();
         return false;
     }
+    if (state.head_body_rotation_valid &&
+        (state.head_body_rotation_player != state.player ||
+         state.head_body_rotation_registry != state.registry ||
+         state.head_body_rotation_entity != state.local_entity))
+        state.head_body_rotation_valid = false;
     // Verified on 1.26.52.3: 12-byte elements (lea [i+i*2], shl 2 at 0x28A56C3).
     state.render_position = state.component(state.local_entity, render_position_hash, sizeof(Vec3));
     state.read_render_position(state.frame.local);
@@ -517,9 +754,31 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
     }
     state.frame.ready = true;
     state.frame.eye = state.frame.local.position;
+    const auto& local_bounds = state.frame.local.bounds;
+    const float local_height = local_bounds.max.y - local_bounds.min.y;
+    if (std::isfinite(local_height) && local_height > 0.01F) {
+        // StateVectorComponent.position is the actor's feet origin. Aim angles
+        // and visibility rays need the player's eye origin; using the feet
+        // makes Killaura pitch point well above the target at close range.
+        state.frame.eye.y = local_bounds.min.y + std::min(1.62F, local_height * 0.9F);
+    }
     state.frame.camera = state.frame.eye;
     state.frame.yaw = rotation.yaw;
     state.frame.pitch = rotation.pitch;
+    std::uint64_t actor_flags{};
+    const auto actor_data_flags = state.component(state.local_entity, actor_data_flag_hash, sizeof(actor_flags));
+    if (read_at(actor_data_flags, 0, actor_flags))
+        state.frame.sprinting = (actor_flags & (std::uint64_t{1} << 3)) != 0;
+    std::array<float, 2> head_rotation{};
+    const auto head = state.component(state.local_entity, head_hash, sizeof(head_rotation));
+    if (read_at(head, 0, head_rotation) && std::isfinite(head_rotation[0]) &&
+        std::abs(head_rotation[0]) <= 360000) {
+        state.frame.head_yaw = std::remainder(head_rotation[0], 360.0F);
+        state.frame.head_yaw_ready = true;
+    } else {
+        state.frame.head_yaw = state.frame.yaw;
+        state.frame.head_yaw_ready = false;
+    }
     state.frame.attack_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     const auto get_source = state.method(state.client, 30);
     if (get_source) state.block_source = reinterpret_cast<std::uintptr_t(__fastcall*)(void*)>(get_source)(client);
@@ -555,20 +814,85 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
 }
 
 bool BedrockGameplay::rotate(float yaw, float pitch) {
+    if (!std::isfinite(pitch)) return false;
+    return rotate_head_and_body(yaw, pitch);
+}
+
+bool BedrockGameplay::rotate_head_and_body(float yaw) {
+    return rotate_head_and_body(yaw, impl_->frame.pitch);
+}
+
+bool BedrockGameplay::rotate_head_and_body(float yaw, float pitch) {
     auto& state = *impl_;
-    if (!state.on_tick() || !std::isfinite(yaw) || !std::isfinite(pitch)) return false;
+    if (!state.rotation_control_enabled || !state.on_tick() || !std::isfinite(yaw) || !std::isfinite(pitch)) return false;
     yaw = std::remainder(yaw, 360.0F);
     pitch = std::clamp(pitch, -90.0F, 90.0F);
     const auto rotation = state.component(state.local_entity, rotation_hash, 16);
-    const std::array<float, 4> values{pitch, yaw, pitch, yaw};
-    if (!write_at(rotation, 0, values)) return false;
-    if (const auto head = state.component(state.local_entity, head_hash, 8))
-        write_at(head, 0, std::array<float, 2>{yaw, yaw});
-    if (const auto body = state.component(state.local_entity, body_hash, 8))
-        write_at(body, 0, std::array<float, 2>{yaw, yaw});
-    state.frame.yaw = yaw;
-    state.frame.pitch = pitch;
-    return true;
+    std::array<float, 4> old_rotation{};
+    if (!rotation || !read_at(rotation, 0, old_rotation) ||
+        !std::ranges::all_of(old_rotation, [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; }))
+        return false;
+    const auto render_rotation = state.component(state.local_entity, render_rotation_hash, 8);
+    std::array<float, 2> old_render_rotation{};
+    if (!render_rotation || !read_at(render_rotation, 0, old_render_rotation) ||
+        !std::ranges::all_of(old_render_rotation, [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; }))
+        return false;
+    const auto head = state.component(state.local_entity, head_hash, 8);
+    const auto body = state.component(state.local_entity, body_hash, 8);
+    if (!head || !body) return false;
+    std::array<float, 2> old_head{}, old_body{};
+    if (!read_at(head, 0, old_head) || !read_at(body, 0, old_body)) return false;
+    if (!std::ranges::all_of(old_head, [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; }) ||
+        !std::ranges::all_of(old_body, [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; }))
+        return false;
+    const bool consecutive = state.head_body_rotation_valid &&
+        state.head_body_rotation_player == state.player &&
+        state.head_body_rotation_registry == state.registry &&
+        state.head_body_rotation_entity == state.local_entity &&
+        state.capture_serial != 0 && state.head_body_rotation_serial == state.capture_serial - 1;
+    // The native tick may restore these components from view rotation; keep our
+    // own last rendered angles as the interpolation origin while active.
+    const float previous_head = consecutive ? state.last_head_yaw : old_head[0];
+    const float previous_body = consecutive ? state.last_body_yaw : old_body[0];
+    const std::array<float, 2> updated_head{yaw, previous_head};
+    const std::array<float, 2> updated_body{yaw, previous_body};
+    if (!write_at(head, 0, updated_head)) return false;
+    const bool same_rotation_actor = state.rotation_yaw_valid &&
+        state.rotation_player == state.player && state.rotation_registry == state.registry &&
+        state.rotation_entity == state.local_entity;
+    const float previous_pitch = same_rotation_actor
+        ? (state.rotation_pitch_serial == state.capture_serial ? state.rotation_previous_pitch : state.rotation_pitch)
+        : old_rotation[0];
+    // Reset the model pitch to the actual camera angle on the game tick. The
+    // render callback applies the requested pitch only in third person; this
+    // keeps first-person hands and the camera on the user's real view angle.
+    const std::array<float, 2> updated_render_rotation{old_rotation[0], old_render_rotation[1]};
+    if (write_at(body, 0, updated_body) && write_at(render_rotation, 0, updated_render_rotation)) {
+        state.head_body_rotation_player = state.player;
+        state.head_body_rotation_registry = state.registry;
+        state.head_body_rotation_entity = state.local_entity;
+        state.last_head_yaw = yaw;
+        state.last_body_yaw = yaw;
+        state.head_body_rotation_serial = state.capture_serial;
+        state.head_body_rotation_valid = true;
+        state.rotation_previous_yaw = std::remainder(previous_head, 360.0F);
+        state.rotation_yaw = yaw;
+        state.rotation_previous_pitch = previous_pitch;
+        state.rotation_pitch = pitch;
+        state.rotation_pitch_serial = state.capture_serial;
+        state.rotation_player = state.player;
+        state.rotation_registry = state.registry;
+        state.rotation_entity = state.local_entity;
+        state.rotation_yaw_valid = true;
+        state.rotation_override_active = true;
+        state.frame.head_yaw = yaw;
+        state.frame.head_yaw_ready = true;
+        return true;
+    }
+    (void)write_at(head, 0, old_head);
+    (void)write_at(body, 0, old_body);
+    (void)write_at(render_rotation, 0, old_render_rotation);
+    return false;
 }
 
 bool BedrockGameplay::attack(std::uintptr_t actor_id) {
@@ -589,6 +913,107 @@ bool BedrockGameplay::attack(std::uintptr_t actor_id) {
     using Attack = bool(__fastcall*)(void*, void*, const Vec3*);
     return reinterpret_cast<Attack>(function)(reinterpret_cast<void*>(mode),
         reinterpret_cast<void*>(actor_id), &position);
+}
+
+bool BedrockGameplay::set_sprinting(bool sprinting) {
+    auto& state = *impl_;
+    if (!state.on_tick()) return false;
+    const auto actor_data_flags = state.component(state.local_entity, actor_data_flag_hash, sizeof(std::uint64_t));
+    std::uint64_t flags{};
+    if (!read_at(actor_data_flags, 0, flags)) return false;
+    constexpr std::uint64_t sprinting_flag = std::uint64_t{1} << 3;
+    flags = sprinting ? (flags | sprinting_flag) : (flags & ~sprinting_flag);
+    if (!write_at(actor_data_flags, 0, flags)) return false;
+    state.frame.sprinting = sprinting;
+    return true;
+}
+
+SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
+    void* packet, bool override_enabled, bool sprinting) noexcept {
+    auto& state = *impl_;
+    if (!state.supported || !packet) return SprintInputRewrite::ignored;
+    const bool was_overriding = state.sprint_packet_override.load(std::memory_order_acquire);
+    if (!override_enabled && !was_overriding) return SprintInputRewrite::ignored;
+    const auto packet_address = reinterpret_cast<std::uintptr_t>(packet);
+    const auto get_id = state.method(packet_address, 1);
+    if (!get_id) return SprintInputRewrite::ignored;
+    using GetId = int(__fastcall*)(void*);
+    if (reinterpret_cast<GetId>(get_id)(packet) != player_auth_input_packet_id)
+        return SprintInputRewrite::ignored;
+
+    std::array<std::uint64_t, 2> input_flags{};
+    if (!read_at(packet_address, player_auth_input_flags_offset, input_flags) ||
+        // This profile has 66 input bits. Bits 66..127 must stay clear; that
+        // rejects unrelated packets and unknown layouts before any write.
+        (input_flags[1] & ~std::uint64_t{0x3}) != 0)
+        return SprintInputRewrite::layout_rejected;
+
+    const auto bit = [](std::uint32_t index) { return std::uint64_t{1} << index; };
+    const bool packet_was_sprinting = (input_flags[0] & bit(sprinting_input_bit)) != 0;
+    const bool previous = was_overriding
+        ? state.sprint_packet_last_state.load(std::memory_order_acquire)
+        : packet_was_sprinting;
+    const bool desired = override_enabled
+        ? sprinting
+        : state.sprint_packet_restore_state.load(std::memory_order_acquire);
+
+    if (!was_overriding && override_enabled)
+        state.sprint_packet_restore_state.store(packet_was_sprinting, std::memory_order_release);
+    if (desired) input_flags[0] |= bit(sprinting_input_bit);
+    else input_flags[0] &= ~bit(sprinting_input_bit);
+    if (override_enabled || was_overriding) {
+        input_flags[0] &= ~(bit(start_sprinting_input_bit) | bit(stop_sprinting_input_bit));
+        if (previous != desired)
+            input_flags[0] |= bit(desired ? start_sprinting_input_bit : stop_sprinting_input_bit);
+    }
+    if (!write_at(packet_address, player_auth_input_flags_offset, input_flags))
+        return SprintInputRewrite::layout_rejected;
+
+    state.sprint_packet_last_state.store(desired, std::memory_order_release);
+    state.sprint_packet_override.store(override_enabled, std::memory_order_release);
+    return SprintInputRewrite::rewritten;
+}
+
+bool BedrockGameplay::swing() {
+    constexpr std::uintptr_t local_swing_rva = 0x2080660;
+    // Actor::swing(source, hand) is vtable slot 109 in the validated 1.26.52.3
+    // actor layout. LocalPlayer overrides it to carry the swing source through
+    // the normal gameplay/network path while updating the local arm animation.
+    constexpr std::size_t local_player_swing_slot = 109;
+    constexpr std::uint8_t attack_swing_source = 4;
+    constexpr std::uint8_t main_hand = 0;
+    constexpr std::array<unsigned char, 24> local_swing_prefix{
+        0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x89,0xCE,0x80,0xB9,0x34,0x04,0x00,0x00,0x01,
+        0x75,0x28,0x8B,0xBE,0x10,0x04,0x00,0x00
+    };
+    auto& state = *impl_;
+    if (!state.on_tick() || !state.player) return false;
+
+    // The interpolation methods at slots 13/14 are checked against exact
+    // executable identities first, so an unexpected player vtable cannot
+    // turn the swing call into an arbitrary native call.
+    const auto body_yaw = body_yaw_interpolator_target();
+    const auto head_yaw = head_yaw_interpolator_target();
+    if (body_yaw && head_yaw && state.has_method(state.player, body_yaw) &&
+        state.has_method(state.player, head_yaw)) {
+        if (const auto method = state.method(state.player, local_player_swing_slot)) {
+            using PlayerSwing = bool(__fastcall*)(void*, std::uint8_t, std::uint8_t);
+            return reinterpret_cast<PlayerSwing>(method)(reinterpret_cast<void*>(state.player),
+                attack_swing_source, main_hand);
+        }
+    }
+
+    // Preserve local-only animation as a safe fallback if the LocalPlayer
+    // virtual entry is unavailable for this executable profile.
+    if (local_swing_rva > UINTPTR_MAX - state.image.address) return false;
+    const auto target = state.image.address + local_swing_rva;
+    if (state.local_swing_method && state.local_swing_method != target) state.local_swing_method = 0;
+    if (!state.local_swing_method) {
+        if (!state.native_identity(target, local_swing_rva, local_swing_prefix)) return false;
+        state.local_swing_method = target;
+    }
+    using Swing = bool(__fastcall*)(void*);
+    return reinterpret_cast<Swing>(state.local_swing_method)(reinterpret_cast<void*>(state.player));
 }
 
 bool BedrockGameplay::replaceable(BlockPos position) const {
