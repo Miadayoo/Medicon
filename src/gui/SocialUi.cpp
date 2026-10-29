@@ -117,6 +117,7 @@ void SocialUi::set_texture_host(TextureHost* host) noexcept {
     // CPU-side cached images so the new renderer can upload them again.
     background_.forget_texture();
     screen_fonts_.forget_texture();
+    music_.set_texture_host(host);
     texture_host_ = host;
 }
 
@@ -133,10 +134,12 @@ void SocialUi::pump(FontManager& fonts, bool in_menu) {
 
 void SocialUi::render(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo& frame, const PointerInput& pointer,
                       bool in_menu, bool prefetch) {
+    music_.update(screen_fonts_);
     const bool timed = store_.debug_timing();
     const auto start = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     prefetch = prefetch && channel_ && !screen_.visible();
-    if (screen_.visible() || !toasts_.empty() || prefetch) draw(list, shadows, frame, pointer, in_menu, prefetch);
+    if (screen_.visible() || !toasts_.empty() || music_.visible() || prefetch)
+        draw(list, shadows, frame, pointer, in_menu, prefetch);
     if (!timed) return;
     add_time(start);
     ++timing_.frames;
@@ -162,22 +165,25 @@ void SocialUi::draw(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo&
         sync_ime();
         // A notification drawn over the panel takes the pointer from what lies under it.
         PointerInput screen_pointer = pointer;
-        if (toast_pointer.valid && toasts_.covers(toast_pointer.position)) screen_pointer = PointerInput{};
+        if (toast_pointer.valid && (toasts_.covers(toast_pointer.position) || music_.captures_pointer(toast_pointer)))
+            screen_pointer = PointerInput{};
         SocialScreen::Context context{list, screen_fonts_, background_, shadows, store_, channel_, frame, screen_pointer,
                                       backdrop_time_};
         screen_.render(context);
     }
     // Toasts wait (timers included) until their face is in the atlas.
+    ToastFrame toast_frame;
+    toast_frame.display = size;
+    toast_frame.dt = frame.dt;
+    toast_frame.in_menu = in_menu;
+    toast_frame.offset_y = store_.notify().in_game_offset_y;
+    toast_frame.pointer = toast_pointer;
+    toast_frame.music_companion = music_.visible();
     if (!toasts_.empty() && screen_fonts_.ready()) {
-        ToastFrame toast_frame;
-        toast_frame.display = size;
-        toast_frame.dt = frame.dt;
-        toast_frame.in_menu = in_menu;
-        toast_frame.offset_y = store_.notify().in_game_offset_y;
-        toast_frame.pointer = toast_pointer;
         toasts_.render(list, screen_fonts_, shadows, toast_frame);
         if (const auto clicked = toasts_.consume_click()) open_from_toast(*clicked);
     }
+    music_.render(list, screen_fonts_, shadows, toasts_, toast_frame);
 }
 
 void SocialUi::update_sign_in_gate() {

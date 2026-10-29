@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <compare>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,7 +19,10 @@ inline constexpr std::string_view core_file_name = "MediconCore.dll";
 
 struct Version {
     int major = 0, minor = 0, patch = 0;
-    auto operator<=>(const Version&) const = default;
+    // The final component is a sequence of nested revision digits:
+    // 1.0.2 < 1.0.25 < 1.0.28 < 1.0.3. Major/minor remain numeric.
+    std::strong_ordering operator<=>(const Version& other) const noexcept;
+    bool operator==(const Version&) const = default;
 };
 // "x.y.z", each part 0..9999 without leading zeros. Anything else, including
 // "..", separators and spaces, is refused, because a version names a directory.

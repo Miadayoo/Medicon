@@ -1019,6 +1019,218 @@ void toasts_morph(ScenarioHost& host, bool capture) {
     capture_at(host, capture, "out", {0, 80, 170, 270, 340, 400, 450});
 }
 
+void music_widget(ScenarioHost& host, bool capture) {
+    host.overlay().gui().set_open(false);
+    auto& social = host.overlay().social();
+    auto& widget = social.music();
+    const auto run_music = [&](float seconds) {
+        for (int i = 0; i < static_cast<int>(std::ceil(seconds / host.dt())); ++i) host.frame();
+    };
+    const auto click_music = [&] {
+        const auto p = widget.pose();
+        social_click(host, p.x + p.width * 0.5F, p.y + p.height * 0.5F);
+    };
+    const auto finish_music = [&] { run_music(0.5F); };
+    auto media = std::make_shared<music::MusicSnapshot>();
+    media->available = media->playing = true;
+    media->title = "夜明けのメロディ — Midnight City Lights";
+    media->artist = "Medicon Audio / Preview";
+    media->source_app = "Medicon.Preview.Fixture";
+    auto art = std::make_shared<music::AlbumArt>();
+    art->width = art->height = 128;
+    art->rgba.resize(128 * 128 * 4);
+    for (int y = 0; y < 128; ++y) for (int x = 0; x < 128; ++x) {
+        const auto i = static_cast<std::size_t>(y * 128 + x) * 4;
+        const bool marker = (x-88)*(x-88)+(y-34)*(y-34) < 12*12;
+        art->rgba[i] = static_cast<std::uint8_t>(marker ? 250 : (x < 64 ? 235 : 45));
+        art->rgba[i+1] = static_cast<std::uint8_t>(marker ? 250 : (y < 64 ? 80 : 200));
+        art->rgba[i+2] = static_cast<std::uint8_t>(marker ? 250 : (x+y > 128 ? 235 : 95));
+        art->rgba[i+3] = 255;
+    }
+    media->art = art;
+    music::AudioSpectrum spectrum;
+    std::array<float, 2048> pcm{};
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        const float t = static_cast<float>(i) / 48000;
+        pcm[i] = 0.2F * std::sin(6.2831853F*110*t) + 0.07F * std::sin(6.2831853F*1300*t) +
+                 0.03F * std::sin(6.2831853F*7000*t);
+    }
+    spectrum.push(pcm); // Test signal goes through the production FFT, no random bars.
+    widget.set_preview(media, spectrum.levels());
+    wait_for(host, std::chrono::seconds(10), "music font", [&] {
+        return social.screen_text_ready(gui::SocialText::Title, media->title) &&
+               social.screen_text_ready(gui::SocialText::Small, media->artist);
+    });
+    if (widget.appearance().scale != 0 || widget.appearance().content != 0)
+        throw std::runtime_error("music entry did not start at the notification's invisible point");
+    capture_at(host, capture, "enter", {0, 60, 120, 200, 280, 360, 440, 560});
+    for (int i = 0; i < 35; ++i) host.frame();
+    if (capture) host.capture("expanded");
+    if (widget.state() != gui::MusicWidgetState::Expanded) throw std::runtime_error("music did not expand");
+    run_music(2);
+    if (widget.compact_preferred()) throw std::runtime_error("music auto-collapsed before four seconds");
+    if (capture) host.capture("auto_before4");
+    run_music(2.1F);
+    if (!widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("music did not auto-collapse after four seconds");
+    if (capture) host.capture("auto_compact");
+    const float rotation_before = widget.art_rotation();
+    run_music(2);
+    const float rotation_delta = std::fmod(widget.art_rotation() - rotation_before + 6.2831853F, 6.2831853F);
+    if (rotation_delta < 0.29F || rotation_delta > 0.34F)
+        throw std::runtime_error("album art does not rotate slowly at one turn per forty seconds");
+    if (capture) host.capture("auto_rotated");
+    auto auto_paused = std::make_shared<music::MusicSnapshot>(*media);
+    auto_paused->playing = false;
+    widget.set_preview(auto_paused);
+    host.frame();
+    if (widget.available() || !widget.visible() || widget.appearance().content <= 0 || widget.appearance().content >= 1)
+        throw std::runtime_error("pause did not start the notification's reverse content/morph timeline");
+    capture_at(host, capture, "auto_exit", {0, 80, 170, 270, 340, 400, 450, 500});
+    if (widget.visible() || widget.state() != gui::MusicWidgetState::Hidden)
+        throw std::runtime_error("automatic music exit did not finish");
+    if (capture) host.capture("auto_paused");
+    widget.set_preview(media, spectrum.levels());
+    host.frame();
+    if (widget.state() != gui::MusicWidgetState::Expanded)
+        throw std::runtime_error("resume did not restart the automatic expanded display");
+    run_music(4.5F);
+    if (widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("resumed automatic display did not collapse");
+    host.overlay().gui().set_open(true);
+    host.frame();
+    click_music(); // Pin Expanded by clicking the automatically collapsed disk.
+    run_music(5);
+    if (widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Expanded)
+        throw std::runtime_error("manual expanded display was overridden by the four-second timer");
+    host.overlay().gui().set_open(false);
+    host.frame();
+    social.toasts().push({gui::ToastKind::News, gui::ToastTarget::Home, "Medicon", "Now playing", 0});
+    capture_at(host, capture, "collapse", {60, 170, 350, 650});
+    if (widget.state() != gui::MusicWidgetState::Compact) throw std::runtime_error("music did not collapse");
+    const auto anchor = social.toasts().music_anchor();
+    const auto pose = widget.pose();
+    if (!anchor || pose.x + pose.width > anchor->x + 0.5F || std::abs(pose.y+pose.height/2-anchor->y) > 0.5F)
+        throw std::runtime_error("music companion does not follow toast bounds");
+    for (int i = 0; i < 4; ++i)
+        social.toasts().push({gui::ToastKind::News, gui::ToastTarget::Home, "Medicon", "Now playing", 0});
+    for (int i = 0; i < 45; ++i) host.frame();
+    if (widget.state() != gui::MusicWidgetState::Compact) throw std::runtime_error("burst expanded music");
+    if (capture) host.capture("stack");
+    host.recreate_graphics();
+    wait_for(host, std::chrono::seconds(10), "music restored fonts", [&] { return social.screen_fonts_ready(); });
+    host.frame();
+    if (capture) host.capture("device_recreated");
+    // Let the real toast timers drain all queued cards, keeping Compact until
+    // the final card leaves. Then capture the inverse morph on the same object.
+    int safety = static_cast<int>(20 / host.dt());
+    while (!social.toasts().empty() && --safety > 0) host.frame();
+    if (safety <= 0) throw std::runtime_error("toast queue did not drain");
+    capture_at(host, capture, "restore", {60, 170, 350, 500});
+    if (widget.state() != gui::MusicWidgetState::Expanded) throw std::runtime_error("music did not restore");
+    // Real Win32 mouse messages exercise hit testing, release cancellation and
+    // input routing over the existing ClickGUI, not a programmatic mode setter.
+    host.overlay().gui().set_open(true);
+    host.frame();
+    click_music();
+    finish_music();
+    if (!widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("music click did not select compact mode");
+    if (capture) host.capture("manual_compact");
+    auto p = widget.pose();
+    const LPARAM center_point = MAKELPARAM(static_cast<WORD>(std::lround(p.x+p.width*0.5F)),
+                                           static_cast<WORD>(std::lround(p.y+p.height*0.5F)));
+    const LPARAM outside = MAKELPARAM(1, static_cast<WORD>(std::lround(host.height()-1)));
+    host.send(WM_MOUSEMOVE, 0, center_point); host.frame();
+    host.send(WM_LBUTTONDOWN, MK_LBUTTON, center_point); host.frame();
+    gui::PointerInput dragged;
+    dragged.valid = true;
+    dragged.position = {1,host.height()-1};
+    if (!widget.captures_pointer(dragged)) throw std::runtime_error("music press leaked while dragging outside");
+    host.send(WM_MOUSEMOVE, MK_LBUTTON, outside); host.frame();
+    host.send(WM_LBUTTONUP, 0, outside); host.frame();
+    if (!widget.compact_preferred()) throw std::runtime_error("release outside toggled music");
+    host.send(WM_LBUTTONDOWN, MK_LBUTTON, outside); host.frame();
+    host.send(WM_MOUSEMOVE, MK_LBUTTON, center_point); host.frame();
+    host.send(WM_LBUTTONUP, 0, center_point); host.frame();
+    if (!widget.compact_preferred()) throw std::runtime_error("press outside toggled music");
+    gui::PointerInput corner;
+    corner.valid = true;
+    corner.position = {p.x+0.5F,p.y+0.5F};
+    if (widget.captures_pointer(corner)) throw std::runtime_error("circle corner incorrectly captures input");
+    click_music();
+    if (widget.compact_preferred()) throw std::runtime_error("second click did not request expansion");
+    click_music(); // Reverse the in-flight expansion from its currently drawn bounds.
+    finish_music();
+    if (!widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("rapid click reversal failed");
+    social.toasts().push({gui::ToastKind::News, gui::ToastTarget::Home, "Medicon", "Now playing", 0});
+    finish_music();
+    click_music();
+    if (!widget.compact_preferred()) throw std::runtime_error("notification overrode the saved compact preference");
+    safety = static_cast<int>(10 / host.dt());
+    while (!social.toasts().empty() && --safety > 0) host.frame();
+    finish_music();
+    if (safety <= 0 || widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("notification exit lost manual compact mode");
+    click_music();
+    finish_music();
+    if (widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Expanded)
+        throw std::runtime_error("compact click did not restore expanded mode");
+    if (capture) host.capture("manual_expanded");
+    host.overlay().gui().set_open(false);
+    host.frame();
+    // Without a visible cursor, game clicks must not toggle the overlay.
+    click_music();
+    if (widget.compact_preferred()) throw std::runtime_error("game click toggled music without a cursor");
+    auto paused = std::make_shared<music::MusicSnapshot>(*media);
+    paused->playing = false;
+    paused->title = "Paused — 一時停止";
+    widget.set_preview(paused, spectrum.levels());
+    host.frame();
+    capture_at(host, capture, "expanded_exit", {0, 80, 170, 270, 340, 400, 450, 500});
+    for (int i = 0; i < static_cast<int>(2/host.dt()); ++i) host.frame();
+    if (widget.available() || widget.state() != gui::MusicWidgetState::Hidden)
+        throw std::runtime_error("pause did not hide manually expanded music");
+    if (capture) host.capture("paused");
+    widget.set_preview(media, spectrum.levels());
+    host.frame();
+    run_music(5);
+    if (widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Expanded)
+        throw std::runtime_error("manual expanded choice did not survive pause/resume");
+    host.overlay().gui().set_open(true);
+    host.frame();
+    click_music();
+    finish_music();
+    widget.set_preview(paused);
+    host.frame();
+    const auto stopping_pose = widget.pose();
+    const float content_before = widget.appearance().content;
+    run_music(0.06F);
+    const float partially_hidden = widget.appearance().content;
+    if (!widget.visible() || partially_hidden <= 0 || partially_hidden >= content_before)
+        throw std::runtime_error("compact music did not reverse the notification content phase");
+    if (widget.pose().width != stopping_pose.width || widget.pose().x != stopping_pose.x)
+        throw std::runtime_error("exit changed the compact shape or position");
+    if (capture) host.capture("interrupted_exit");
+    widget.set_preview(media, spectrum.levels());
+    host.frame();
+    if (!widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("manual compact choice did not survive pause/resume");
+    if (widget.appearance().content < partially_hidden || widget.appearance().content >= 1)
+        throw std::runtime_error("resume snapped instead of reversing the same notification timeline");
+    capture_at(host, capture, "resume", {0, 60, 120, 200, 280, 360, 440, 560});
+    host.overlay().gui().set_open(false);
+    widget.set_preview(std::make_shared<music::MusicSnapshot>());
+    host.frame();
+    if (!widget.visible() || widget.opacity() <= 0) throw std::runtime_error("session removal discarded the exit frame");
+    capture_at(host, capture, "session_exit", {0, 80, 170, 270, 340, 400, 450, 500});
+    if (widget.visible() || widget.state() != gui::MusicWidgetState::Hidden)
+        throw std::runtime_error("music exit did not finish after session removal");
+    if (capture) host.capture("hidden");
+    host.log("music: shared notification pop/stretch/content/reverse timeline/interrupted resume/automatic four-second collapse/rotating album art/manual size pinning/notifications/click/pause/end passed");
+}
+
 // The typing animation on the license key field, on a clock that follows the
 // Preview's fixed frame time: one character, then 15 characters a second.
 double preview_clock = 1000.0;
@@ -1245,6 +1457,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"social_toasts_steady", social_toasts_steady},
         {"toasts_click", toasts_click},
         {"toasts_morph", toasts_morph},
+        {"music", music_widget},
         {"watermark", [](ScenarioHost& h, bool c) {
             // The in-game Watermark, entrance included (capture after 250 ms).
             h.overlay().gui().set_open(false);

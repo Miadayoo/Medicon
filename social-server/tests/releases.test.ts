@@ -96,10 +96,35 @@ function beforeBody(url: string, headers: Record<string, string>): Promise<{ sta
 }
 
 describe('Core releases', () => {
-  it('compares versions numerically', () => {
-    expect(compareVersions('1.0.10', '1.0.9')).toBe(1)
+  it('orders nested revisions within a release before the next release', () => {
+    const revisions = ['1.0.1', '1.0.10', '1.0.2', '1.0.20', '1.0.25', '1.0.27', '1.0.28', '1.0.29', '1.0.3', '1.0.9']
+    for (let i = 0; i < revisions.length; i++) {
+      for (let j = 0; j < revisions.length; j++) {
+        expect(compareVersions(revisions[i]!, revisions[j]!)).toBe(i === j ? 0 : i < j ? -1 : 1)
+      }
+    }
     expect(compareVersions('1.2.0', '1.10.0')).toBe(-1)
+    expect(compareVersions('1.0.9999', '1.1.0')).toBe(-1)
+    expect(compareVersions('9.9.9', '10.0.0')).toBe(-1)
     expect(compareVersions('2.0.0', '2.0.0')).toBe(0)
+  })
+
+  it('publishes 1.0.3 after the revisions inside 1.0.2 and rejects older nested revisions', async () => {
+    const { server: s, store } = await start()
+    const token = await owner(s)
+    const revisions = ['1.0.2', '1.0.25', '1.0.26', '1.0.27', '1.0.28', '1.0.3']
+    for (const version of revisions) {
+      expect((await upload(s, token, release(version))).status).toBe(200)
+      expect(store.latestVersion()).toBe(version)
+    }
+    expect((await upload(s, token, release('1.0.29'))).body).toEqual({ error: 'version_conflict' })
+    expect((await upload(s, token, release('1.0.3'))).body).toEqual({ error: 'version_conflict' })
+    const manifest = await bytes(`${s.baseUrl}/medicon/manifest.json`)
+    expect(JSON.parse(manifest.data.toString('utf8')).version).toBe('1.0.3')
+    const news = await http(`${s.baseUrl}/news?kind=changelog`, { headers: { Authorization: `Bearer ${token}` } })
+    expect(news.body.items.map((item: { version: string }) => item.version)).toEqual([...revisions].reverse())
+    const reopened = new ReleaseStore(store.options)
+    expect(reopened.latestVersion()).toBe('1.0.3')
   })
 
   it('is disabled without a signing key', async () => {

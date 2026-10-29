@@ -72,6 +72,9 @@ target_link_libraries(medicon_loader_core PUBLIC medicon_update)
 add_library(medicon_mouse_capture STATIC src/platform/MouseCaptureController.cpp)
 medicon_target(medicon_mouse_capture)
 
+add_library(medicon_music_core STATIC src/music/AudioSpectrum.cpp)
+medicon_target(medicon_music_core)
+
 # Social protocol, settings and render-thread state: no WinHTTP, no ImGui.
 add_library(medicon_social_core STATIC
     src/social/Config.cpp
@@ -141,6 +144,18 @@ if(MEDICON_BUILD_WINDOWS)
     medicon_target(MediconModelInspect)
     target_link_libraries(MediconModelInspect PRIVATE medicon_model_asset)
     include(cmake/EmbedFonts.cmake)
+    include(cmake/CppWinRT.cmake)
+    add_library(medicon_music STATIC
+        src/music/AlbumArtProvider.cpp
+        src/music/AudioVisualizer.cpp
+        src/music/MusicSessionManager.cpp)
+    medicon_target(medicon_music)
+    target_include_directories(medicon_music SYSTEM PRIVATE "${MEDICON_CPPWINRT_INCLUDE_DIR}")
+    target_link_libraries(medicon_music PUBLIC medicon_music_core windowsapp ole32 uuid)
+    if(MINGW)
+        # Microsoft's C++/WinRT projection uses __declspec and MS extensions.
+        target_compile_options(medicon_music PRIVATE -fms-extensions)
+    endif()
     if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(FATAL_ERROR "Medicon DLL and Preview require Windows x64.")
     endif()
@@ -178,6 +193,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/KeyNames.cpp
         src/gui/Log.cpp
         src/gui/MainMenu.cpp
+        src/gui/MusicWidget.cpp
         src/gui/NativeFileDialog.cpp
         src/gui/Overlay.cpp
         src/gui/Shadow.cpp
@@ -194,7 +210,7 @@ if(MEDICON_BUILD_WINDOWS)
     target_include_directories(medicon_gui PRIVATE "${MEDICON_EMBEDDED_FONTS_DIR}")
     # The Watermark shows it; the DLL and the Preview define the same value.
     target_compile_definitions(medicon_gui PRIVATE MEDICON_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(medicon_gui PUBLIC medicon_core medicon_social_core medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32)
+    target_link_libraries(medicon_gui PUBLIC medicon_core medicon_social_core medicon_music medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32)
 
     # Social networking (spec 4.2): WinHTTP REST/WebSocket, DPAPI license, notification sound.
     add_library(medicon_social_net STATIC
@@ -346,6 +362,21 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_social_ui_tests)
         target_link_libraries(medicon_social_ui_tests PRIVATE medicon_gui medicon_social_net)
         add_test(NAME social_ui COMMAND medicon_social_ui_tests)
+        add_executable(medicon_music_tests tests/music_tests.cpp)
+        medicon_target(medicon_music_tests)
+        target_link_libraries(medicon_music_tests PRIVATE medicon_gui)
+        add_test(NAME music COMMAND medicon_music_tests)
+        add_executable(medicon_music_native_tests tests/music_native_tests.cpp)
+        medicon_target(medicon_music_native_tests)
+        target_include_directories(medicon_music_native_tests SYSTEM PRIVATE "${MEDICON_CPPWINRT_INCLUDE_DIR}")
+        target_link_libraries(medicon_music_native_tests PRIVATE medicon_music)
+        if(MINGW)
+            target_compile_options(medicon_music_native_tests PRIVATE -fms-extensions)
+        endif()
+        add_test(NAME music_native_art COMMAND medicon_music_native_tests)
+        add_test(NAME preview_music COMMAND MediconPreview --scenario music --size 1920x1080 --fixed-dt 0.016666667)
+        add_test(NAME preview_music_small COMMAND MediconPreview --scenario music --size 640x480 --dpi 144 --fixed-dt 0.016666667)
+        set_tests_properties(preview_music preview_music_small PROPERTIES TIMEOUT 30)
         add_test(NAME preview_toasts COMMAND MediconPreview --scenario toasts --size 1920x1080 --fixed-dt 0.016666667)
         set_tests_properties(preview_toasts PROPERTIES TIMEOUT 30)
         add_test(NAME preview_social_home COMMAND MediconPreview --scenario social_home --size 1280x720 --fixed-dt 0.016666667)

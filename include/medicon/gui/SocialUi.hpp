@@ -2,6 +2,7 @@
 
 #include "medicon/gui/GuiContext.hpp"
 #include "medicon/gui/Ime.hpp"
+#include "medicon/gui/MusicWidget.hpp"
 #include "medicon/gui/SocialBackground.hpp"
 #include "medicon/gui/SocialFonts.hpp"
 #include "medicon/gui/SocialScreen.hpp"
@@ -77,6 +78,7 @@ public:
     SocialScreen& screen() noexcept { return screen_; }
     void preview_badge(bool shown) noexcept { badge_preview_ = shown; }
     ToastManager& toasts() noexcept { return toasts_; }
+    MusicWidget& music() noexcept { return music_; }
 
     // social.json "debugTiming": microseconds spent in pump() + render() per frame.
     struct Timing {
@@ -101,6 +103,7 @@ private:
     std::function<void()> play_sound_;
     social::SocialStore store_;
     ToastManager toasts_;
+    MusicWidget music_;
     SocialScreen screen_;
     SocialBackground background_;
     SocialFonts screen_fonts_;

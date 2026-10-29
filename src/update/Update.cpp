@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 
 namespace medicon::update {
@@ -32,6 +33,18 @@ std::vector<std::string> versions_in(const nlohmann::json& root, const char* key
 bool newer(const std::string& a, const std::string& b) { return *parse_version(a) > *parse_version(b); }
 
 } // namespace
+
+std::strong_ordering Version::operator<=>(const Version& other) const noexcept {
+    if (const auto order = major <=> other.major; order != 0) return order;
+    if (const auto order = minor <=> other.minor; order != 0) return order;
+    // Canonical decimal digits preserve the nested revision hierarchy. Do not
+    // compare the final component as one integer (28 is revision 8 inside 2).
+    std::array<char, 12> left{}, right{};
+    const auto left_end = std::to_chars(left.data(), left.data() + left.size(), patch).ptr;
+    const auto right_end = std::to_chars(right.data(), right.data() + right.size(), other.patch).ptr;
+    return std::string_view(left.data(), left_end - left.data()).compare(
+        std::string_view(right.data(), right_end - right.data())) <=> 0;
+}
 
 std::optional<Version> parse_version(std::string_view text) noexcept {
     Version version;

@@ -218,7 +218,8 @@ void Overlay::render() {
         social_.set_input_animation(settings->input_animation.get<bool>());
     // Nothing under the Social screen takes the pointer while it is up, and a
     // fully open screen covers everything, so the rest is not drawn at all.
-    const PointerInput below = social_.screen_visible() ? PointerInput{} : pointer;
+    const bool music_pointer = in_menu() && social_.music().captures_pointer(pointer);
+    const PointerInput below = social_.screen_visible() || music_pointer ? PointerInput{} : pointer;
     social_.set_backdrop_time(main_menu_.elapsed());
     const bool covered = social_.screen_opaque();
     if (main_menu_.active() || covered) watermark_.hide();
