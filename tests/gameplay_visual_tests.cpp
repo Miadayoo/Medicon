@@ -92,6 +92,26 @@ bool covers(const Geometry& geometry, ImVec2 point) {
     return false;
 }
 
+float opacity_at(const Geometry& geometry, ImVec2 point) {
+    float opacity = 0.0F;
+    for (std::size_t index = 0; index + 2 < geometry.indices.size(); index += 3) {
+        const auto& a = geometry.vertices[geometry.indices[index]];
+        const auto& b = geometry.vertices[geometry.indices[index + 1]];
+        const auto& c = geometry.vertices[geometry.indices[index + 2]];
+        const float area = cross(a.pos, b.pos, c.pos);
+        if (std::abs(area) < 0.00001F) continue;
+        const float wa = cross(b.pos, c.pos, point) / area;
+        const float wb = cross(c.pos, a.pos, point) / area;
+        const float wc = 1.0F - wa - wb;
+        if (wa < 0 || wb < 0 || wc < 0) continue;
+        const auto alpha = [](const ImDrawVert& vertex) {
+            return static_cast<float>((vertex.col >> IM_COL32_A_SHIFT) & 0xffU) / 255.0F;
+        };
+        opacity = std::max(opacity, wa * alpha(a) + wb * alpha(b) + wc * alpha(c));
+    }
+    return opacity;
+}
+
 void test_esp_glow() {
     ImGuiScope imgui;
     ModuleManager modules;
@@ -115,6 +135,25 @@ void test_esp_glow() {
         const auto alpha = (vertex.col >> IM_COL32_A_SHIFT) & 0xffU;
         return alpha > 0 && alpha < 200;
     }), "halo has translucent fading colors");
+    sdk::Vec2 corner;
+    check(sdk::world_to_screen(frame, {-0.3F, 1.8F, -5.7F}, {1280, 720}, corner), "near box corner projects");
+    const auto halo_opacity = [&](float distance) {
+        return opacity_at(glow, ImVec2(corner.x - esp.line_width.get<float>() * 0.5F - distance, 401.37F));
+    };
+    const float core = halo_opacity(1.0F), shoulder = halo_opacity(7.0F), tail = halo_opacity(20.0F);
+    check(core > shoulder && shoulder > tail && tail > 0.0F, "bloom fades smoothly from the core into a broad visible tail");
+    check(tail > 0.03F && halo_opacity(28.0F) > 0.015F,
+          "exponential glow loses its luminous tail too quickly away from the core");
+    float previous = core;
+    for (float distance = 1.25F; distance <= 44.0F; distance += 0.25F) {
+        const float current = halo_opacity(distance);
+        check(current <= previous + 0.0001F && previous - current < 0.06F,
+              "glow has no separate stroke bands or sudden opacity steps");
+        previous = current;
+    }
+    check(previous < 0.001F, "outer glow fades completely to transparent");
+    check(!covers(glow, ImVec2(corner.x - 36.0F, corner.y - 36.0F)), "light spreads radially at corners instead of forming square halos");
+    check(glow.vertices.size() < 1600, "glow mesh remains bounded per actor");
     sdk::Vec2 center;
     check(sdk::world_to_screen(frame, {0.0F, 0.9F, -6.0F}, {1280.0F, 720.0F}, center), "box center projects");
     check(!covers(glow, ImVec2(center.x, center.y)), "outline and halo leave the box center clear");
@@ -163,6 +202,70 @@ void test_filters_and_projection() {
     check(render(modules, frame).vertices.empty(), "near-plane crossing cannot produce an inverted box");
     frame.actors[0].bounds.min.x = std::numeric_limits<float>::quiet_NaN();
     check(render(modules, frame).vertices.empty(), "invalid bounds cannot reach ImGui");
+}
+
+void test_close_esp_glow_spread() {
+    ImGuiScope imgui;
+    ModuleManager modules;
+    auto& esp = modules.add<EspModule>();
+    esp.set_enabled(true);
+    const auto min_x = [](const Geometry& geometry) {
+        float value = std::numeric_limits<float>::max();
+        for (const auto& vertex : geometry.vertices) value = std::min(value, vertex.pos.x);
+        return value;
+    };
+    const auto spread = [&](float distance) {
+        auto frame = sample_frame();
+        auto& actor = frame.actors.front();
+        actor.position.z = -distance;
+        actor.bounds.min.z = -distance - 0.3F;
+        actor.bounds.max.z = -distance + 0.3F;
+        esp.glow.get<bool>() = false;
+        const auto outline = render(modules, frame);
+        esp.glow.get<bool>() = true;
+        const auto glow = render(modules, frame);
+        check(!glow.vertices.empty(), "nearby ESP keeps its glow");
+        return min_x(outline) - min_x(glow);
+    };
+    const float distant = spread(12), normal = spread(6), approaching = spread(3), near = spread(2);
+    check(std::abs(distant - normal) < 0.01F, "distant and normal-size ESP retain the original glow spread");
+    check(approaching > normal && near > approaching && near > normal * 1.2F,
+          "glow does not gradually widen as the actor fills the screen");
+    const float close = spread(1), closest = spread(0.5F);
+    check(close > near && close < normal * 1.5F && std::abs(close - closest) < 0.01F,
+          "close-range glow must stay capped instead of growing without limit");
+}
+
+void test_many_glowing_entities() {
+    ImGuiScope imgui;
+    // Both native D3D backends support VtxOffset; bloom must keep working when
+    // a crowd takes the draw list past the 16-bit index boundary.
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+    ModuleManager modules;
+    auto& esp = modules.add<EspModule>();
+    esp.set_enabled(true);
+    auto frame = sample_frame();
+    const auto actor = frame.actors.front();
+    for (int i = 1; i < 80; ++i) {
+        auto copy = actor;
+        copy.id = static_cast<std::uintptr_t>(i + 2);
+        frame.actors.push_back(copy);
+    }
+    const auto geometry = render(modules, frame);
+    check(geometry.vertices.size() > 65536, "crowd fixture crosses the 16-bit vertex boundary");
+    bool used_offset = false;
+    const auto* data = ImGui::GetDrawData();
+    for (int i = 0; i < data->CmdListsCount; ++i) {
+        const auto& list = *data->CmdLists[i];
+        for (const auto& command : list.CmdBuffer) {
+            used_offset = used_offset || command.VtxOffset > 0;
+            for (unsigned index = 0; index < command.ElemCount; ++index)
+                check(command.VtxOffset + list.IdxBuffer[command.IdxOffset + index] <
+                          static_cast<unsigned>(list.VtxBuffer.Size),
+                      "crowd glow references vertices outside its draw list");
+        }
+    }
+    check(used_offset, "crowd glow did not split vertex offsets for the renderer");
 }
 
 void test_hat() {
@@ -235,6 +338,8 @@ int main() {
     try {
         test_esp_glow();
         test_filters_and_projection();
+        test_close_esp_glow_spread();
+        test_many_glowing_entities();
         test_hat();
         test_hat_camera_and_interpolation();
         std::cout << checks << " gameplay visual checks passed\n";

@@ -104,6 +104,7 @@ struct PresenceChanged {
     std::int64_t user_id = 0;
     bool online = false;
 };
+struct ModelsChanged { std::vector<PlayerModel> peers; };
 struct SearchFinished {
     std::string query;
     std::vector<SearchResult> items;
@@ -111,7 +112,7 @@ struct SearchFinished {
 };
 using Event = std::variant<StateChanged, SessionStarted, NewsPosted, NewsPage, SettingsLoaded, LoginFinished, LogoutFinished,
                            SettingsSaveFailed, MessageReceived, MessagePage, RequestFinished, ReadBy, FriendsLoaded,
-                           FriendRequested, FriendUpdated, PresenceChanged, SearchFinished>;
+                           FriendRequested, FriendUpdated, PresenceChanged, ModelsChanged, SearchFinished>;
 
 // --- Render thread -> REST worker --------------------------------------------
 
@@ -191,8 +192,12 @@ struct PostNews {
     std::string body;
     std::string version;
 };
+struct SyncModels {
+    std::optional<PlayerModel> self;
+    std::vector<ModelIdentity> watching;
+};
 using Command = std::variant<Login, Logout, Reconnect, SaveSettings, SendChat, MarkRead, RequestFriend, RespondFriend,
-                             RemoveFriend, PostNews>;
+                             RemoveFriend, PostNews, SyncModels>;
 
 // Many producers, one consumer: the render thread (spec 4.3). An idle frame costs
 // one atomic load; a frame with events swaps vectors under the lock.

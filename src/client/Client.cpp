@@ -31,6 +31,7 @@ public:
     const sdk::GameplayFrame& frame() const noexcept override { return game_.frame(); }
     void begin_rotation_control(bool enabled) noexcept override { game_.begin_rotation_control(enabled); }
     void finish_rotation_control() noexcept override { game_.finish_rotation_control(); }
+    void finish_rotation_control(bool requested) noexcept override { game_.finish_rotation_control(requested); }
 
     bool rotate(float yaw, float pitch) override {
         rotations_.set_server_rotation(yaw, pitch);
@@ -169,12 +170,14 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     }
     if (rotation_control_enabled && !rotation_route.has_rotation_request())
         (void)rotation_route.restore_view();
-    game.finish_rotation_control();
+    game.finish_rotation_control(rotation_route.has_rotation_request());
     gameplay_frame_ = game.frame();
     gameplay_age_ = 0.0F;
 }
 
 void Client::clear_gameplay() noexcept {
+    if (auto* rotations = dynamic_cast<RotationsModule*>(modules_.find(RotationsModule::module_id)))
+        rotations->reset_render();
     gameplay_frame_.ready = false;
     gameplay_frame_.projection_ready = false;
     gameplay_frame_.actors.clear();

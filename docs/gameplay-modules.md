@@ -7,12 +7,12 @@ and use the existing ClickGUI, keybind commands, ArrayList and ConfigStore.
 | --- | --- | --- |
 | `chinahat` / ChinaHat | Visual | A translucent conical hat above the local player's head in third person. Radius, height, head offset, color, rainbow and opacity. Hidden in first person. |
 | `derp` / Derp | Player | Spins the local head and body yaw. Speed in degrees per second; view and movement direction are unchanged. |
-| `aimbot` / Aimbot | Player | Smoothly turns head/body yaw and camera pitch toward an eligible target within range and the configured view FOV; camera yaw is unchanged. Smoothing, player filter, visibility filter, and require-click (on by default). |
-| `killaura` / Killaura | Player | Attacks the nearest eligible actor at the configured CPS, at most once per game tick. Rotate offers `None` and `Simple`; `Simple` turns toward the target and retains it while eligible. Swing sends the native Attack swing after successful attacks. Range, head/body yaw, camera pitch, player and visibility filters. |
+| `aimbot` / Aimbot | Player | Smoothly requests head/body yaw and model pitch toward an eligible target within range and the configured view FOV; camera yaw is unchanged. Smoothing, player filter, visibility filter, and require-click (on by default). |
+| `killaura` / Killaura | Player | Attacks the nearest eligible actor at the configured CPS, at most once per game tick. Rotate offers `None` and `Simple`; `Simple` turns toward the target and retains it while eligible. Swing sends the native Attack swing after successful attacks. Range, requested yaw/pitch, player and visibility filters. Rotations owns third-person angle rendering. |
 | `scaffold` / Scaffold | Movement | Finds replaceable cells one level below the feet (the highest cell whose top is at or under them, as Solstice's `y - 2.62`), then along horizontal movement. When the target has no face to click, a cell beside it is placed first as support. Extension, hotbar auto-selection and placement delay. |
-| `sprint` / Sprint | Movement | Strike requests sprint while horizontal movement is detected; Legit requests it while moving forward relative to the view. It sets the local sprint flag and the server-facing PlayerAuthInput sprint state without reading or injecting a sprint key. Client-side movement acceleration still needs in-game verification. |
-| `esp` / ESP | Visual | Projects actor bounds as a screen box. Range, player filter, color, optional fill, line width, glow toggle, glow width and glow intensity. Glow fades outwards around the outline. |
-| `rotations` / Rotations | Misc | Holds the shared requested server yaw/pitch variables and smooths third-person render yaw/pitch every Present frame. Speed sets the maximum angular speed, reached at a fixed 180-degree distance. Always keeps rendering aligned to the current view whenever no gameplay module requests a target angle. |
+| `sprint` / Sprint | Movement | Strike requests sprint for movement input in any direction; Legit requires forward input. It updates the native processed/raw SprintDown input and server-facing PlayerAuthInput sprint state. The game applies sprint acceleration and eligibility checks. Sneaking, locked movement, menus and module disable release the request. |
+| `esp` / ESP | Visual | Projects actor bounds as a screen box. Range, player filter, color, optional fill, line width and glow toggle. Glow combines a tight core and a long exponential tail in one continuous exterior mesh, with a smooth fade at its outer limit. Spread increases smoothly by up to 40% for large, nearby boxes. Width/intensity are source-only constants in `src/gui/GameplayVisuals.cpp`; old config values are ignored. |
+| `rotations` / Rotations | Misc | Owns the shared requested server yaw/pitch and their third-person render interpolation, including pitch-only requests from any source. Speed sets the maximum angular speed, reached at a fixed 180-degree distance. Always keeps rendering aligned to the current view whenever no gameplay module requests a target angle. |
 
 Each built-in feature has its own header and implementation in
 `include/medicon/modules/<Feature>Module.hpp` and `src/modules/<Feature>Module.cpp`
@@ -44,8 +44,18 @@ reapplies the held head/body yaw and view pitch before closing the native
 mutation window with `end_tick`. The renderer's validated body-yaw interpolation
 getter uses the held yaw on every render frame, while the held visual yaw and
 pitch advance once per Present using elapsed time and the Rotations speed
-settings. Sprint updates the local sprint flag and the outgoing PlayerAuthInput
-sprint state from observed movement direction.
+settings. Rotations computes both rendered angles. The existing validated
+DataDriven model callback temporarily applies its pitch to RenderRotation only
+for the local third-person draw, then restores the native render value.
+CustomModel receives the same Rotations pitch through its render adapter;
+first-person arms continue to use the camera pitch. Successful gameplay angle
+requests also update outgoing PlayerAuthInput and MovePlayer pitch, yaw and head
+yaw through the existing packet-send hook. This uses the requested angles rather
+than render interpolation and works with Rotations rendering disabled. The
+request is cleared on target loss, input capture, module disable or world reset;
+Rotations Always alone leaves native packet angles untouched. Sprint updates native movement
+input and outgoing PlayerAuthInput sprint state from view-relative input rather
+than velocity, so it can start from rest and ignores coasting or knockback.
 The host serializes gameplay updates with settings edits. Calls
 from Present only animate the UI and draw copied snapshots. No actor handle is
 dereferenced by Present.

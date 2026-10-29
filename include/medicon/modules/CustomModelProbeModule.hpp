@@ -11,6 +11,7 @@ public:
     Setting& mode;
     Setting& model;
     Setting& animation;
+    Setting& show_users;
     Setting& test_box;
     Setting& material;
     Setting& brightness;

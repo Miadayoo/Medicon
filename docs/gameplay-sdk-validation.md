@@ -33,9 +33,36 @@
 
 使用する hash は古い `Components/ComponentHashes.hpp` の一覧ではなく、現在の `EnttHashs.hpp` の override と実ファイルで一致する値。StateVector `1B5D5238`、AABBShape `BAC1B3CF`、Rotation `75DF36B7`、ActorType `4F6BA419`、ActorOwner `85B93800`。
 
-head/body componentはbaseTickで更新し、描画時に呼ばれるMobBodyRotation補間getter（RVA `0x20874B0`）とActorHeadRotation補間getter（RVA `0x2087610`）をフックする。最後のYawと現在のYawをgetterのrender alphaで最短角度補間して返し、20 Hzのtick更新間も描画を滑らかにする。これは三人称表示にのみ適用し、一人称ではnative yawを返す。縦向きはRotationComponentだけではモデル表示に反映されないため、同版で確認したRenderRotationComponent（hash `D15944E2`）のpitchを三人称描画時だけ更新する。一人称ではRenderRotationComponentを実際の視点pitchに戻し、RotationComponentは書き換えない。視点モードが判定できない場合も描画yaw/pitch overrideを適用しない。両yaw getterはMinecraft 1.26.52.3の実行ファイルでcomponent hashと補間処理を確認し、先頭バイトとlocal actorのvtable内にある関数ポインターが一致した場合だけoverrideを有効にする。vtable slotは派生Actorで異なる可能性があるため固定しない。SprintはActorDataFlagComponent（hash `C67426F3`）のsprinting bit（bit 3）を更新し、PlayerAuthInputPacket（ID 144）のInputDataにSprinting／StartSprinting／StopSprintingを反映する。Strikeは水平速度、Legitは視点前方への水平速度を条件にする。パケットのIDとInputData上位bitを検証し、未対応レイアウトは変更せず送る。
+head/body componentはbaseTickで更新し、描画時に呼ばれるMobBodyRotation補間getter（RVA `0x20874B0`）とActorHeadRotation補間getter（RVA `0x2087610`）をフックする。最後のYawと現在のYawをgetterのrender alphaで最短角度補間して返し、20 Hzのtick更新間も描画を滑らかにする。これは三人称表示にのみ適用し、一人称ではnative yawを返す。縦向きはRotationComponentだけではモデル表示に反映されないため、同版で確認したRenderRotationComponent（hash `D15944E2`）のpitchを三人称描画時だけ更新する。モデル描画callbackが戻る前にRenderRotationComponentの元の値を復元し、RotationComponentは書き換えない。視点モードが判定できない場合も描画yaw/pitch overrideを適用しない。両yaw getterはMinecraft 1.26.52.3の実行ファイルでcomponent hashと補間処理を確認し、先頭バイトとlocal actorのvtable内にある関数ポインターが一致した場合だけoverrideを有効にする。vtable slotは派生Actorで異なる可能性があるため固定しない。SprintはMoveInputComponentのSprintDownを更新し、PlayerAuthInputPacket（ID 144）のInputDataにSprinting／StartSprinting／StopSprintingを反映する。Strikeは任意方向、Legitは前方への移動入力を条件にする（詳細は下記の修正記録）。パケットのIDとInputData上位bitを検証し、未対応レイアウトは変更せず送る。
 
 コピーした sparse slot を packed ID と完全一致で照合するため、entity の version が変わった古いハンドルは使わない。Actor を列挙するためにゲームの `std::vector` を構築・解放せず、ActorOwner の既存 storage だけを読む。
+
+### Rotations の縦描画・Sprint の修正（2026-10-29）
+
+RotationsModule が `server_yaw` / `server_pitch` の共通要求を保持し、`update_render` で両軸を補間する。pitch だけの変化にも対応し、ON/OFF・world/actor の切り替えで補間状態を破棄する。KillAura 等は角度を要求するだけで、描画処理を持たない。Always では要求元モジュールがなくても実際の視点角度を描画する。
+
+native の `0x1D54950` は `0x1D54BAC` で補間した視点角度を RenderRotation に設定する。既存の検証済み DataDriven callback（`0x558D300`、actor は renderData `+0`）でローカル三人称描画を判定し、Rotations の描画 pitch を callback の間だけ設定する。`RenderPitchScope` が元の pitch を復元する。RotationComponent と隣接する render yaw は変更しない。RenderRotation setter 自体への追加フックは使用しない。CustomModel のアニメーション入力は native の読み取りに戻し、三人称モデルの描画アダプターで同じ Rotations の pitch を受け取る。一人称の腕には実際の視点 pitch を使う。
+
+CustomModel P1 と Rotations は body-yaw 関数 `0x20874B0` を共有する。起動時は CustomModel の P0/P1/P2 接続後に Rotations のフックを有効にする。逆順では MinHook の JMP が P1 の先頭バイトを使う signature を消し、P1 接続とモデル worker の起動が止まる。元の PE では signature が一意に一致し、実行中のフック済み関数では先頭が `E9` に変わって一致しないことを読み取りで確認した。解決済みの元の関数アドレスはフック後も有効で、CustomModel は Rotations の yaw 描画を共有する。
+
+Sprint は ActorDataFlag の直接変更を廃止し、MoveInputComponent（hash `018B1887`）の processed/raw 入力（`+0` / `+0x10`）の SprintDown（bit 8）を更新する。要素幅 `0x64` は `0x283481B`、入力リセット・移動ベクトル `+0x24`・制御フラグ `+0x60` は `0x449810`、raw 入力の更新は `0x43739B1` / `0x4373B1A` と pinned Solstice の構造定義で照合した。Strike/Legit の判定には速度ではなく移動入力を用い、しゃがみ・入力ロック時は解除する。実際の加速と走行可否は native 更新に任せる。ActorDataFlag の読み取りも要素幅を8から16 bytes に訂正した。無効化後のパケットは有効化時の古い状態ではなく、現在の native sprint 状態へ戻す。
+
+メモリ fixture、モジュールテストとビルドで検証する。実ゲームでの走行速度・サーバー受理・視点切り替え時の描画確認は別途必要。
+
+### サーバー向け rotation の修正（2026-10-29）
+
+従来は head/body component と描画用 pitch だけを更新しており、送信パケットの角度は変更していなかった。
+既存の送信 hook で PlayerAuthInput（ID 144）の rotation `+0x30/+0x34` と head yaw `+0x44`、
+MovePlayer（ID 19）の rotation `+0x44/+0x48` と head yaw `+0x4C` に要求した pitch/yaw を設定する。
+PlayerAuthInput の native 検証関数 `0x3C8BA90` と MovePlayer の処理 `0x4359463` で角度の配置を照合した。
+対象 vtable RVA はそれぞれ `0xE83A360` / `0xE85BFC0`、getId RVA は `0xB26A00` / `0x2ECD950`。
+送信時にも vtable、getId の先頭命令、既存の角度・位置を確認し、一致しない packet は変更しない。
+
+baseTick で成立したモジュール要求だけを yaw/pitch の atomic なペアとして公開する。
+Rotations の有効状態や三人称描画には依存せず、描画の補間角度も送らない。
+ターゲット消失・入力捕捉・無効化・world clear で送信要求を解除する。Always 単独は視点の描画のみで、packet を上書きしない。
+メモリ fixture では両 packet の角度・head yaw、pitch 単独更新、正規化、不正入力拒否と他フィールドの保持を検査する。
+実サーバーでの受理・他プレイヤー視点での表示確認は未実施。
 
 ## 攻撃・設置
 

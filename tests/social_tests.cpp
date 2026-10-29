@@ -3,6 +3,9 @@
 #include "medicon/social/Events.hpp"
 #include "medicon/social/Protocol.hpp"
 #include "medicon/social/Store.hpp"
+#include <medicon/custom_model/PlayerName.hpp>
+#include <medicon/custom_model/SharedPlayers.hpp>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <iostream>
@@ -53,6 +56,51 @@ void test_server_frames() {
                              R"({"t":"news.new"})", R"({"t":"kicked"})", "{\"t\":\"pong\",\"x\":\"\xFF\"}"}) {
         check(!parse_server_frame(text), std::string("malformed frame accepted: ") + text);
     }
+}
+
+void test_player_models() {
+    const ModelIdentity identity{"-9223372036854775807","MC Player"};
+    const PlayerModel peer{identity,"chocolat",42};
+    const auto wire=nlohmann::json::parse(model_sync_frame(peer,{identity}));
+    check(wire["self"]["actorId"]==identity.actor_id && wire["self"]["model"]=="chocolat" &&
+        !wire["self"].contains("userId") && wire["watching"].size()==1,"model ids preserve int64 precision; server supplies account identity");
+    check(nlohmann::json::parse(model_sync_frame(std::nullopt,{}))["self"].is_null(),"OFF clears the announced avatar");
+    const auto frame=parse_server_frame(R"({"t":"model.peers","peers":[{"actorId":"-9223372036854775807","name":"MC Player","model":"chocolat","userId":42}]})");
+    check(frame && std::get<ModelPeersFrame>(*frame).peers==std::vector<PlayerModel>{peer},"nearby model snapshot parses");
+    for (const auto* model:{"../model.fbx","https://example.com/a.fbx","","future-model"}) {
+        auto invalid=wire["self"];invalid["model"]=model;invalid["userId"]=42;
+        check(!parse_server_frame(nlohmann::json{{"t","model.peers"},{"peers",nlohmann::json::array({invalid})}}.dump()),"arbitrary model files are rejected");
+    }
+    const auto duplicate=nlohmann::json::parse(R"({"actorId":"42","name":"Alex","model":"neon","userId":1})");
+    check(!parse_server_frame(nlohmann::json{{"t","model.peers"},{"peers",nlohmann::json::array({duplicate,duplicate})}}.dump()),"ambiguous model snapshots fail closed");
+    SocialStore store;
+    store.apply(StateChanged{ConnectionState::Online,{}});store.apply(SessionStarted{UserRef{1,"me"},0});
+    check(store.apply(ModelsChanged{{peer}}) && store.player_models().size()==1,"online model appearance is stored");
+    store.apply(StateChanged{ConnectionState::Reconnecting,{}});
+    check(store.player_models().empty() && !store.apply(ModelsChanged{{peer}}),"disconnect clears avatars and ignores late offline updates");
+    const std::string formatted=std::string(" ")+char(0xC2)+char(0xA7)+"aMC Player\nserver title";
+    check(medicon::custom_model::model_player_name(formatted)=="MC Player","Minecraft formatting and extra title lines do not change identity");
+    check(medicon::custom_model::model_player_name("  ").empty(),"empty player identity is not advertised");
+    medicon::sdk::GameplayFrame world;
+    world.ready=true;world.world_identity=12;world.local.unique_id=1;world.local.model_name="My player";
+    medicon::sdk::ActorSnapshot other;
+    other.id=123;other.unique_id=-9223372036854775807LL;other.model_name="MC Player";
+    other.player=other.alive=true;other.position.x=5;world.actors.push_back(other);
+    using namespace medicon::custom_model;
+    auto selection=select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{peer});
+    check(selection.sync.self->model=="neon" && selection.bindings.size()==1 && selection.bindings[0].model==1 &&
+        selection.bindings[0].actor==123 && selection.bindings[0].world==12,"remote selection stays Chocolat when local selection is Neon");
+    selection=select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{peer},false,true);
+    check(!selection.sync.self && selection.bindings.size()==1,"a user without a local model can still see other Medicon users");
+    selection=select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{peer},true,false);
+    check(selection.sync.self && selection.bindings.empty() && selection.sync.watching.empty(),"Show users OFF only disables receiving others' models");
+    auto wrong=peer;wrong.player.name="Different server nickname";
+    check(select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{wrong}).bindings.empty(),"actor id alone never replaces a player");
+    check(select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{peer,peer}).bindings.empty(),"duplicate identity never selects an arbitrary model");
+    world.actors[0].position.x=100;
+    check(select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{peer}).sync.watching.empty(),"distant players are not subscribed or rendered");
+    world.ready=false;
+    check(!select_shared_players(world,BuiltinModel::neon,std::vector<PlayerModel>{peer}).sync.self,"leaving world clears published model");
 }
 
 void test_chat_frames() {
@@ -329,6 +377,7 @@ void test_queues() {
 int main() {
     try {
         test_server_frames();
+        test_player_models();
         test_chat_frames();
         test_chat_store();
         test_rest_bodies();

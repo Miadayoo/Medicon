@@ -18,10 +18,18 @@ export const requestId = z.string().min(1).max(64)
 const userId = z.number().int().positive()
 // Bodies are measured after trimming (checkBody); this only bounds the frame.
 const body = z.string().max(4000)
+const modelIdentity = z.object({
+  actorId: z.string().regex(/^-?[0-9]{1,19}$/),
+  name: z.string().min(1).max(128).refine((name) => Buffer.byteLength(name, 'utf8') <= 128 && !/[\x00-\x1f\x7f]/.test(name)),
+})
+const playerModel = modelIdentity.extend({ model: z.enum(['neon', 'chocolat']) })
+export type PlayerModel = z.infer<typeof playerModel>
+export type ModelIdentity = z.infer<typeof modelIdentity>
 
 // Client -> server frames (spec 2.4). Anything else is answered with ack bad_request.
 export const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('ping') }),
+  z.object({ t: z.literal('model.sync'), self: playerModel.nullable(), watching: z.array(modelIdentity).max(64) }),
   z.object({ t: z.literal('global.send'), id: requestId, body }),
   z.object({ t: z.literal('dm.send'), id: requestId, to: userId, body }),
   z.object({ t: z.literal('dm.read'), with: userId, upTo: z.number().int().nonnegative() }),
@@ -33,7 +41,7 @@ export const clientMessage = z.discriminatedUnion('t', [
 ])
 export type ClientMessage = z.infer<typeof clientMessage>
 // The frames handled outside the hub itself.
-export type RequestMessage = Exclude<ClientMessage, { t: 'ping' }>
+export type RequestMessage = Exclude<ClientMessage, { t: 'ping' | 'model.sync' }>
 
 export type KickReason = 'revoked' | 'banned'
 
@@ -44,6 +52,7 @@ export type ServerMessage =
   | { t: 'ack'; id: string; ok: true; message?: Message | DmMessage }
   | { t: 'ack'; id: string; ok: false; error: ErrorCode }
   | { t: 'pong' }
+  | { t: 'model.peers'; peers: (PlayerModel & { userId: number })[] }
   | { t: 'global.new'; message: Message }
   | { t: 'dm.new'; message: DmMessage }
   | { t: 'dm.read'; by: number; upTo: number }

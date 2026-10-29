@@ -10,8 +10,6 @@ EspModule::EspModule()
       filled(add_setting({"filled", "Filled", "Add a translucent fill inside the outline.", false})),
       fill_opacity(add_setting({"fill_opacity", "Fill Opacity", "Opacity of the optional box fill.", 0.08F, 0.0F, 0.5F, 0.01F})),
       line_width(add_setting({"line_width", "Line Width", "Outline width in screen pixels.", 1.5F, 1.0F, 4.0F, 0.25F})),
-      glow(add_setting({"glow", "Glow", "Draw a fading halo outside the outline.", true})),
-      glow_width(add_setting({"glow_width", "Glow Width", "Halo spread in screen pixels.", 10.0F, 1.0F, 32.0F, 1.0F})),
-      glow_intensity(add_setting({"glow_intensity", "Glow Intensity", "Brightness of the outline halo.", 1.0F, 0.0F, 2.5F, 0.05F})) {}
+      glow(add_setting({"glow", "Glow", "Draw a soft bloom around the outline.", true})) {}
 
 } // namespace medicon

@@ -124,6 +124,7 @@ bool SocialStore::apply(const Event& event) {
             if (!changed) return false;
             state_ = value.state;
             state_reason_ = value.reason;
+            if (state_ != ConnectionState::Online) player_models_.clear();
             // The account is unknown until the next hello after a failed sign-in,
             // and nothing of the old account's chats or friends stays on screen.
             if (forget_account) {
@@ -138,7 +139,12 @@ bool SocialStore::apply(const Event& event) {
             }
             return true;
         } else if constexpr (std::is_same_v<T, SessionStarted>) {
+            player_models_.clear();
             me_ = value.me;
+            return true;
+        } else if constexpr (std::is_same_v<T, ModelsChanged>) {
+            if (state_ != ConnectionState::Online || player_models_ == value.peers) return false;
+            player_models_ = value.peers;
             return true;
         } else if constexpr (std::is_same_v<T, NewsPosted>) {
             return merge_news(value.item.kind, value.item);

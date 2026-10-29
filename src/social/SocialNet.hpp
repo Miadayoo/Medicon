@@ -52,6 +52,7 @@ private:
     void handle(const RespondFriend& command);
     void handle(const RemoveFriend& command);
     void handle(const PostNews& command);
+    void handle(const SyncModels& command);
     // Sends a request frame; answers `nonce` with "offline" when there is no connection.
     void send_request(const std::string& nonce, const std::string& frame);
     // Connection thread.

@@ -18,6 +18,56 @@ namespace {
 
 constexpr float pi = 3.14159265358979323846F;
 
+// ESP bloom tuning lives only here; never expose it as module/config settings.
+constexpr float esp_glow_width = 40.0F; // physical screen pixels
+constexpr float esp_glow_intensity = 1.0F;
+constexpr float esp_glow_close_scale = 1.4F;
+constexpr float esp_glow_scale_start = 0.25F; // box height / viewport height
+constexpr float esp_glow_scale_end = 0.75F;
+constexpr int esp_glow_bands = 32;
+constexpr int esp_glow_corner_segments = 8;
+
+struct GlowSample { float distance, opacity; };
+
+float esp_glow_scale(ImVec2 minimum, ImVec2 maximum, float viewport_height) {
+    // A fixed pixel radius looks smaller as a nearby actor fills the screen.
+    // Ease up the spread without changing brightness, with a modest close cap.
+    const float height = (maximum.y - minimum.y) / viewport_height;
+    const float t = std::clamp((height - esp_glow_scale_start) /
+        (esp_glow_scale_end - esp_glow_scale_start), 0.0F, 1.0F);
+    return 1.0F + (esp_glow_close_scale - 1.0F) * t * t * (3.0F - 2.0F * t);
+}
+
+const auto& esp_glow_profile() {
+    static const auto samples = [] {
+        std::array<GlowSample, esp_glow_bands + 1> result{};
+        for (int i = 0; i <= esp_glow_bands; ++i) {
+            const float t = static_cast<float>(i) / esp_glow_bands;
+            // More samples near the bright core; vertex alpha interpolates
+            // continuously between bands instead of drawing separate strokes.
+            const float distance = esp_glow_width * t * std::sqrt(t);
+            const float radius = distance / esp_glow_width;
+            const auto exponential = [radius](float decay) {
+                return std::exp(-radius / decay);
+            };
+            // Exponential-style bloom: a tight core with a long luminous tail,
+            // rather than Gaussian lobes that rapidly vanish away from the line.
+            // This is our lightweight ESP approximation, not the plugin's pipeline.
+            float energy = 0.48F * exponential(0.04F) +
+                           0.26F * exponential(0.15F) +
+                           0.22F * exponential(0.35F);
+            // Fade the finite mesh boundary with zero slope so the long tail
+            // never ends in a visible ring, even over a dark background.
+            const float tail = std::clamp((radius - 0.7F) / 0.3F, 0.0F, 1.0F);
+            energy *= 1.0F - tail * tail * (3.0F - 2.0F * tail);
+            result[i] = {distance, i == esp_glow_bands ? 0.0F
+                : -std::expm1(-energy * esp_glow_intensity)};
+        }
+        return result;
+    }();
+    return samples;
+}
+
 float finite_clamp(float value, float minimum, float maximum, float fallback) {
     return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
 }
@@ -106,20 +156,49 @@ bool screen_bounds(const sdk::GameplayFrame& frame, const sdk::Bounds& bounds,
 }
 
 void draw_glow(ImDrawList& draw, ImVec2 minimum, ImVec2 maximum, Color color,
-               float line_width, float spread, float intensity) {
-    if (intensity <= 0.0F || color.a <= 0.0F) return;
-    const int layers = static_cast<int>(std::ceil(spread));
-    const float step = spread / static_cast<float>(layers);
-    for (int layer = layers; layer >= 1; --layer) {
-        const float distance = step * static_cast<float>(layer);
-        const float falloff = 1.0F - distance / (spread + step);
-        const float opacity = std::min(0.6F, 0.22F * intensity * falloff * falloff);
-        // Each stroke lies outside the main border. The halo never paints the
-        // center of the box, including when the actor is small on screen.
-        const float expansion = line_width * 0.5F + distance;
-        draw.AddRect(ImVec2(minimum.x - expansion, minimum.y - expansion),
-                     ImVec2(maximum.x + expansion, maximum.y + expansion),
-                     to_u32(color, opacity), 0.0F, 0, step + 0.5F);
+               float line_width, float glow_scale) {
+    if (esp_glow_intensity <= 0.0F || color.a <= 0.0F) return;
+    constexpr int points_per_corner = esp_glow_corner_segments + 1;
+    constexpr int points_per_ring = 4 * points_per_corner;
+    static const auto normals = [] {
+        std::array<ImVec2, points_per_ring> result{};
+        for (int corner = 0; corner < 4; ++corner) {
+            for (int segment = 0; segment < points_per_corner; ++segment) {
+                const float angle = (static_cast<float>(corner + 2) +
+                    static_cast<float>(segment) / esp_glow_corner_segments) * pi * 0.5F;
+                result[corner * points_per_corner + segment] = ImVec2(std::cos(angle), std::sin(angle));
+            }
+        }
+        return result;
+    }();
+    const std::array<ImVec2, 4> corners{minimum, ImVec2(maximum.x, minimum.y), maximum,
+                                     ImVec2(minimum.x, maximum.y)};
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    draw.PrimReserve(esp_glow_bands * points_per_ring * 6, (esp_glow_bands + 1) * points_per_ring);
+    const unsigned base = draw._VtxCurrentIdx;
+    for (const auto& sample : esp_glow_profile()) {
+        const float radius = line_width * 0.5F + sample.distance * glow_scale;
+        const ImU32 tint = to_u32(color, sample.opacity);
+        for (int point = 0; point < points_per_ring; ++point) {
+            const auto corner = corners[point / points_per_corner];
+            draw.PrimWriteVtx(ImVec2(corner.x + normals[point].x * radius,
+                                    corner.y + normals[point].y * radius), uv, tint);
+        }
+    }
+    // A single exterior mesh: shared vertices, rounded light spread and no
+    // overlapping strokes. Keep the interior empty even for distant actors.
+    for (int band = 0; band < esp_glow_bands; ++band) {
+        for (int point = 0; point < points_per_ring; ++point) {
+            const int next = (point + 1) % points_per_ring;
+            const unsigned inner = base + band * points_per_ring;
+            const unsigned outer = inner + points_per_ring;
+            draw.PrimWriteIdx(static_cast<ImDrawIdx>(inner + point));
+            draw.PrimWriteIdx(static_cast<ImDrawIdx>(inner + next));
+            draw.PrimWriteIdx(static_cast<ImDrawIdx>(outer + next));
+            draw.PrimWriteIdx(static_cast<ImDrawIdx>(inner + point));
+            draw.PrimWriteIdx(static_cast<ImDrawIdx>(outer + next));
+            draw.PrimWriteIdx(static_cast<ImDrawIdx>(outer + point));
+        }
     }
 }
 
@@ -127,8 +206,6 @@ void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFr
                 sdk::Vec2 viewport, float partial_tick) {
     const float range = finite_clamp(module.range.get<float>(), 4.0F, 256.0F, 64.0F);
     const float line_width = finite_clamp(module.line_width.get<float>(), 1.0F, 4.0F, 1.5F);
-    const float spread = finite_clamp(module.glow_width.get<float>(), 1.0F, 32.0F, 10.0F);
-    const float intensity = finite_clamp(module.glow_intensity.get<float>(), 0.0F, 2.5F, 1.0F);
     const float fill_opacity = finite_clamp(module.fill_opacity.get<float>(), 0.0F, 0.5F, 0.08F);
     const Color color = safe_color(module.color.get<Color>());
     if (!finite(frame.local.position) || color.a <= 0.0F) return;
@@ -144,13 +221,14 @@ void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFr
         ImVec2 minimum, maximum;
         if (!screen_bounds(frame, moved(actor.bounds, drawn_offset(actor, partial_tick)), viewport, minimum, maximum))
             continue;
-        const float margin = module.glow.get<bool>() ? spread + line_width : line_width;
+        const float glow_scale = esp_glow_scale(minimum, maximum, viewport.y);
+        const float margin = module.glow.get<bool>() ? esp_glow_width * glow_scale + line_width : line_width;
         if (maximum.x < -margin || maximum.y < -margin ||
             minimum.x > viewport.x + margin || minimum.y > viewport.y + margin) continue;
 
         if (module.filled.get<bool>() && fill_opacity > 0.0F)
             draw.AddRectFilled(minimum, maximum, to_u32(color, fill_opacity));
-        if (module.glow.get<bool>()) draw_glow(draw, minimum, maximum, color, line_width, spread, intensity);
+        if (module.glow.get<bool>()) draw_glow(draw, minimum, maximum, color, line_width, glow_scale);
         draw.AddRect(minimum, maximum, to_u32(color), 0.0F, 0, line_width);
     }
 }

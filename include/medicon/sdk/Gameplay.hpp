@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace medicon::sdk {
@@ -34,10 +35,13 @@ struct ActorSnapshot {
     // (RenderPositionComponent), reread every Present.
     Vec3 render_position;
     bool has_render_position = false;
+    std::int64_t unique_id{};
+    std::string model_name;
 };
 
 struct GameplayFrame {
     bool ready = false;
+    std::uint64_t world_identity{};
     ActorSnapshot local;
     std::vector<ActorSnapshot> actors;
     Vec3 eye;
@@ -47,6 +51,10 @@ struct GameplayFrame {
     bool head_yaw_ready = false;
     bool attack_down = false;
     bool sprinting = false;
+    // View-relative native movement input (x: strafe, y: forward).
+    Vec2 move_input;
+    bool move_input_ready = false;
+    bool sneaking = false;
     std::array<float, 16> view_matrix{};
     Vec2 fov;
     bool projection_ready = false;
@@ -71,7 +79,13 @@ public:
         begin_rotation_control(enabled);
     }
     virtual void finish_rotation_control() noexcept {}
-    // Applies yaw to head/body and retains pitch for third-person rendering;
+    // Only an actual feature request should override outgoing movement angles.
+    // Restoring the view (including Rotations Always) leaves native packets alone.
+    virtual void finish_rotation_control(bool rotation_requested) noexcept {
+        (void)rotation_requested;
+        finish_rotation_control();
+    }
+    // Applies yaw to head/body and retains yaw/pitch for server updates and third-person rendering;
     // the local camera and first-person arm pose stay at the user's view angle.
     virtual bool rotate(float yaw, float pitch) = 0;
     // Changes local head/body yaw without changing camera yaw or movement input.
@@ -83,7 +97,8 @@ public:
         return rotate_head_and_body(yaw);
     }
     virtual bool attack(std::uintptr_t actor_id) = 0;
-    // Sets or clears the local player's sprinting actor-data flag.
+    // Requests sprint through native movement input so the game applies its
+    // normal sprint transition, movement speed and eligibility checks.
     virtual bool set_sprinting(bool sprinting) { (void)sprinting; return false; }
     // Starts the local player's native Attack swing, including the game's
     // normal animation notification path when the host supports it.

@@ -29,6 +29,7 @@ struct BoxVec3 { float x{}, y{}, z{}; };
 using InterpolatedPositionFn = BoxVec3* (*)(void*, BoxVec3*, float);
 using RidingOffsetFn = BoxVec3* (*)(BoxVec3*, void*, float);
 using BodyYawFn = float (*)(void*, float);
+using RenderPitchProvider = bool (*)(void* actor, float& pitch, void* owner) noexcept;
 using HeightOffsetFn = float (*)(void*);
 using MaterialLookupFn = void* (*)(void*, void*, const void*);
 using MaterialReleaseFn = void (*)(void*);
@@ -75,6 +76,7 @@ struct BoxFrame {
 
 class BoxRenderer {
 public:
+    static constexpr float body_scale = 1.10F;
     BoxRenderer();
     ~BoxRenderer();
     void configure_static(StaticTargets targets, medicon::custom_model::ModelRegistry& registry);
@@ -89,6 +91,11 @@ public:
     void observe_texture_group(void* group, TextureGetFn original) noexcept;
     // Published before enabling hooks and retained until callbacks drain.
     void configure(BoxTargets targets) noexcept { native_ = targets; }
+    void set_render_pitch_provider(RenderPitchProvider provider, void* owner) noexcept {
+        render_pitch_provider_ = provider;
+        render_pitch_owner_ = owner;
+    }
+    [[nodiscard]] float render_pitch(void* actor, ViewMode view, float native_pitch) const noexcept;
     void set_ready(bool value) noexcept { ready_.store(value, std::memory_order_release); }
     [[nodiscard]] bool ready() const noexcept { return ready_.load(std::memory_order_acquire); }
     void set_options(bool enabled, unsigned material, float brightness) noexcept;
@@ -104,6 +111,10 @@ public:
     public:
         WorldScope(BoxRenderer& owner, void* context, void* actor, ViewMode view = ViewMode::unknown) noexcept;
         ~WorldScope();
+        [[nodiscard]] bool drawn() const noexcept { return drawn_; }
+        [[nodiscard]] bool matches_player(std::uint64_t identity, std::uint64_t world) const noexcept {
+            return valid_ && animation_input_.valid && animation_input_.identity == identity && animation_input_.world_identity == world;
+        }
         WorldScope(const WorldScope&) = delete;
         WorldScope& operator=(const WorldScope&) = delete;
     private:
@@ -137,6 +148,8 @@ private:
     void fail(BoxFailure why) noexcept;
     bool prepare(WorldScope& scope, void* context, void* actor) noexcept;
     BoxTargets native_{};
+    RenderPitchProvider render_pitch_provider_{};
+    void* render_pitch_owner_{};
     std::atomic_bool enabled_{false}, ready_{false};
     std::atomic_uint material_{};
     std::atomic<float> brightness_{1.0F};

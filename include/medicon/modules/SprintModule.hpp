@@ -2,6 +2,8 @@
 
 #include "medicon/modules/GameplayModule.hpp"
 
+#include <cstdint>
+
 namespace medicon {
 
 class SprintModule final : public GameplayModule {
@@ -19,8 +21,8 @@ public:
 
 private:
     bool controlling_sprint_{};
-    bool original_sprinting_{};
     bool requested_sprinting_{};
+    std::uintptr_t local_id_{};
 };
 
 } // namespace medicon

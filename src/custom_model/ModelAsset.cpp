@@ -172,7 +172,11 @@ std::string sha256(std::span<const std::byte> bytes) {
     for (unsigned i=0;i<32;++i) { text[i*2]=hex[digest[i]>>4];text[i*2+1]=hex[digest[i]&15]; }return text;
 }
 
-std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& directory,std::string& diagnostic) {
+std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& directory,std::string& diagnostic,bool shared_players) {
+    const auto prepare_shared = [shared_players](ModelAsset& model) {
+        if (shared_players && model.rig)
+            for (unsigned i = 0; i < 8; ++i) model.shared_animations.push_back(std::make_shared<AnimationInstance>(*model.rig));
+    };
     try {
         const auto root=std::filesystem::canonical(directory);
         const auto fbx=read_file(checked(root,root/L"model.fbx"));
@@ -186,6 +190,7 @@ std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& direct
         const std::string config_text(reinterpret_cast<const char*>(config.data()),config.size());
         if (auto cached=read_cache(root,fbx_hash,config_hash)) {
             load_animation_asset(root,fbx,config_text,*cached);
+            prepare_shared(*cached);
             diagnostic=cached->rig?cached->rig->diagnostic:"Static FBX cache ready (no skeleton).";return cached;
         }
         const float scale=config_json.value("scale",1.0F),yaw=config_json.value("yawOffset",180.0F);
@@ -255,6 +260,7 @@ std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& direct
         if (!total||total%3) throw std::runtime_error("FBX has no supported triangles.");
         model->triangle_count=total/3;
         load_animation_asset(root,fbx,config_text,*model,scene.get());
+        prepare_shared(*model);
         try { write_cache(root,*model);diagnostic="Static FBX imported; cache written."; }
         catch (const std::exception&) { diagnostic="Static FBX imported; cache write unavailable."; }
         if(model->rig)diagnostic+=" "+model->rig->diagnostic;
@@ -290,12 +296,12 @@ void ModelRegistry::stop() {
     retained_models_={};
 }
 void ModelRegistry::start_catalog(std::array<std::filesystem::path,builtin_model_count> directories,
-    std::filesystem::path bundled_cache,BuiltinModel initial) {
+    std::filesystem::path bundled_cache,BuiltinModel initial,bool shared_players) {
     stop();
     { std::lock_guard lock(mutex_);requested_model_=std::min(static_cast<unsigned>(initial),builtin_model_count-1);requested_revision_=0;diagnostic_.clear(); }
     status_.store(Status::loading,std::memory_order_release);
     catalog_active_.store(true,std::memory_order_release);
-    worker_=std::jthread([this,directories=std::move(directories),bundled_cache=std::move(bundled_cache)](std::stop_token stop){
+    worker_=std::jthread([this,directories=std::move(directories),bundled_cache=std::move(bundled_cache),shared_players](std::stop_token stop){
         std::uint64_t served=UINT64_MAX;
         std::array<std::string,builtin_model_count> diagnostics;
         while (!stop.stop_requested()) {
@@ -306,13 +312,13 @@ void ModelRegistry::start_catalog(std::array<std::filesystem::path,builtin_model
             auto model=retained_models_[selected];
             auto& diagnostic=diagnostics[selected];
             if (!model) {
-                model=load_model(directories[selected],diagnostic);
+                model=load_model(directories[selected],diagnostic,shared_players);
                 if (!model&&!stop.stop_requested()) {
                     const auto external_error=diagnostic;
                     std::string bundle_diagnostic;
                     const auto directory=materialize_bundled_model(static_cast<BuiltinModel>(selected),bundled_cache,bundle_diagnostic);
                     if (!directory.empty()&&!stop.stop_requested()) {
-                        model=load_model(directory,diagnostic);diagnostic=bundle_diagnostic+". "+diagnostic;
+                        model=load_model(directory,diagnostic,shared_players);diagnostic=bundle_diagnostic+". "+diagnostic;
                     } else diagnostic=bundle_diagnostic;
                     diagnostic="External model unavailable ("+external_error+"). "+diagnostic;
                 }

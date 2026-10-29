@@ -141,7 +141,16 @@ void rig_import_test(){
     text.insert(connections,extra);model_fixture::text(root/L"model.fbx",text);std::string diagnostic;auto model=load_model(root,diagnostic);if(!model)throw std::runtime_error(diagnostic);
     require(model->rig&&model->rig->vertices.size()==3&&model->rig->clips[0].frames==31,"Rig extraction and 30Hz generated clips");
     const auto& weights=model->rig->vertices[0].skin.weight;require(close(weights[0],5.0F/14)&&close(weights[3],2.0F/14),"Keep strongest four influences and renormalize after dropping fifth");
-    model=load_model(root,diagnostic);require(model&&model->rig&&model->rig->from_cache,"Rig binary cache restores skeleton, weights and clips");
+    model=load_model(root,diagnostic,true);require(model&&model->rig&&model->rig->from_cache,"Rig binary cache restores skeleton, weights and clips");
+    require(model->shared_animations.size()==8,"Import worker preallocates independent peer poses");
+    AnimationInput first;first.valid=true;first.identity=1;first.world_identity=2;
+    model->shared_animations[0]->update(*model->rig,first,1.0F/60);
+    const auto first_output=std::vector<SkinOutput>(model->shared_animations[0]->output().begin(),model->shared_animations[0]->output().end());
+    auto second=first;second.identity=3;second.pitch=60;second.speed=6;second.sprinting=true;
+    model->shared_animations[1]->update(*model->rig,second,1.0F/30);
+    require(model->shared_animations[0]!=model->shared_animations[1] &&
+        std::memcmp(first_output.data(),model->shared_animations[0]->output().data(),first_output.size()*sizeof(SkinOutput))==0,
+        "Animating another player cannot overwrite the first player's pose");
     model_fixture::text(root/L"cache"/L"model.rig.mmdl","broken");model=load_model(root,diagnostic);require(model&&model->rig&&!model->rig->from_cache,"Corrupt rig cache rebuilds without losing static geometry");
     // An authored translation track must be sampled, then stripped of its
     // horizontal root motion instead of moving the rendered actor a second time.

@@ -20,6 +20,7 @@ struct RotationDiagnostic {
 };
 
 enum class SprintInputRewrite { ignored, rewritten, layout_rejected };
+enum class RotationInputRewrite { ignored, rewritten, layout_rejected };
 
 // Native calls and ECS reads are confined to the local-player baseTick thread.
 // Call capture() with the client/player validated by BedrockChat, dispatch
@@ -54,6 +55,7 @@ public:
     void begin_rotation_control(bool enabled) noexcept override;
     void begin_rotation_control(bool enabled, bool render_enabled) noexcept override;
     void finish_rotation_control() noexcept override;
+    void finish_rotation_control(bool rotation_requested) noexcept override;
     bool rotate(float yaw, float pitch) override;
     bool rotate_head_and_body(float yaw) override;
     bool rotate_head_and_body(float yaw, float pitch) override;
@@ -62,6 +64,8 @@ public:
     // Updates the sprint state bits in a validated PlayerAuthInputPacket before
     // it is sent. Non-matching packets and unknown input layouts are untouched.
     SprintInputRewrite rewrite_sprint_input(void* packet, bool override_enabled, bool sprinting) noexcept;
+    // Send-thread safe: uses a copied angle pair, independent of render settings.
+    RotationInputRewrite rewrite_rotation_input(void* packet) noexcept;
     bool swing() override;
     bool place_block(BlockPos position, bool auto_select) override;
     [[nodiscard]] bool replaceable(BlockPos position) const override;

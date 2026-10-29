@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -45,7 +46,8 @@ void geometry_test() {
     for (const auto yaw : {0.0F,90.0F,180.0F,-90.0F}) {
         const auto model=model_world_matrix(identity(),{3,4,5},yaw,180);
         const auto radians=yaw*3.14159265358979323846F/180;
-        require(close(model[8],-std::sin(radians))&&close(model[10],std::cos(radians)),"Model faces the movement direction at all cardinal yaws");
+        require(close(model[8],-std::sin(radians)*BoxRenderer::body_scale)&&close(model[10],std::cos(radians)*BoxRenderer::body_scale),"Larger model faces the movement direction at all cardinal yaws");
+        require(close(model[5],1.10F),"Body grows ten percent around its feet");
         require(close(model[12],3)&&close(model[13],4)&&close(model[14],5),"Facing correction preserves world translation");
     }
     const auto arms=first_person_world_matrix(identity(),90,30);
@@ -272,7 +274,11 @@ void static_model_test() {
     while (!f.renderer.static_progress().textures&&std::chrono::steady_clock::now()<texture_deadline) f.renderer.observe_texture_group(&f,fake_texture_get);
     require(f.texture_requests==2&&f.renderer.static_progress().textures==1,"Native owned texture retained when GPU ready");
     // First-person warmup must complete without displaying the full model.
-    for (unsigned i=0;i<2;++i) { BoxRenderer::WorldScope world(f.renderer,f.context.data(),f.actor.data(),ViewMode::first_person);f.renderer.finish_world(fake_submit); }
+    for (unsigned i=0;i<2;++i) {
+        BoxRenderer::WorldScope world(f.renderer,f.context.data(),f.actor.data(),ViewMode::first_person);f.renderer.finish_world(fake_submit);
+        require(!world.drawn(),"Warmup never suppresses the stock model before a custom draw succeeds");
+        require(!world.matches_player(1,2),"Missing native identity cannot match a previously captured player");
+    }
     require(f.renderer.static_progress().ready&&f.mesh_ends==1&&f.builder_clears==1&&!f.mesh_draws&&f.tess==saved,"Prepare cached mesh without suppressing vanilla or leaving draw state");
     f.renderer.set_static_mode(true,true);
     for (const auto view : {ViewMode::first_person,ViewMode::unknown}) {
@@ -281,6 +287,7 @@ void static_model_test() {
     }
     for (const auto view : {ViewMode::third_person,ViewMode::third_person_front,ViewMode::third_person}) {
         BoxRenderer::WorldScope world(f.renderer,f.context.data(),f.actor.data(),view);f.renderer.finish_world(fake_submit);
+        require(world.drawn(),"Only a completed custom draw may replace the stock model");
     }
     require(f.mesh_draws==3&&f.mesh_ends==1&&f.begins==1&&f.tess==saved&&f.top==identity(),"Steady frames reuse native mesh and restore state");
     f.renderer.set_options(false,0,1);
@@ -324,8 +331,35 @@ void resource_location_test() {
     require(std::memcmp(location.data()+8,"hello\0",6)==0&&get<std::uint64_t>(location.data(),0x28)==0xA430D84680AABD0BULL,"Native FNV-1a golden hash");
     require(get<std::uint64_t>(location.data(),0x30)==(((0xCBF29CE484222325ULL^2)*0x100000001B3ULL)^0xA430D84680AABD0BULL),"Native combined resource hash includes filesystem type");
 }
+
+void rotations_pitch_test() {
+    struct Request { void* actor{}; float pitch{-45}; bool enabled{true}; } request;
+    int actor{}, other{};
+    request.actor = &actor;
+    BoxRenderer renderer;
+    renderer.set_render_pitch_provider([](void* target, float& pitch, void* owner) noexcept {
+        const auto& current = *static_cast<Request*>(owner);
+        if (!current.enabled || current.actor != target) return false;
+        pitch = current.pitch;
+        return true;
+    }, &request);
+    require(renderer.render_pitch(&actor, ViewMode::third_person, 12) == -45 &&
+            renderer.render_pitch(&actor, ViewMode::third_person_front, 12) == -45,
+            "Both third-person views must use Rotations' rendered pitch");
+    require(renderer.render_pitch(&actor, ViewMode::first_person, 12) == 12 &&
+            renderer.render_pitch(&actor, ViewMode::unknown, 12) == 12 &&
+            renderer.render_pitch(&other, ViewMode::third_person, 12) == 12,
+            "Rotations changed first-person arms, an unknown view or a different actor");
+    request.enabled = false;
+    require(renderer.render_pitch(&actor, ViewMode::third_person, 12) == 12,
+            "Turning Rotations off left the model pitch override active");
+    request.enabled = true;
+    request.pitch = std::numeric_limits<float>::quiet_NaN();
+    require(renderer.render_pitch(&actor, ViewMode::third_person, 12) == 12,
+            "CustomModel accepted a non-finite Rotations pitch");
+}
 }
 int main() {
-    try { geometry_test(); view_reader_test(); lifecycle_test(); retained_binding_test(); resource_location_test(); static_model_test(); model_switch_test(); std::cout<<"Model geometry / native view / ABI / restoration / ownership / character switch passed\n"; }
+    try { geometry_test(); view_reader_test(); lifecycle_test(); retained_binding_test(); resource_location_test(); rotations_pitch_test(); static_model_test(); model_switch_test(); std::cout<<"Model geometry / native view / ABI / restoration / ownership / character switch passed\n"; }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

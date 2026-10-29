@@ -48,6 +48,7 @@ public:
     bool state_known() const noexcept { return state_known_; }
     const std::string& state_reason() const noexcept { return state_reason_; }
     const std::optional<UserRef>& me() const noexcept { return me_; }
+    const std::vector<PlayerModel>& player_models() const noexcept { return player_models_; }
     // Newest first.
     const std::vector<NewsItem>& news(NewsKind kind) const noexcept { return news_[slot(kind)]; }
     // An older page may exist (false once a page came back shorter than asked for).
@@ -99,6 +100,7 @@ private:
     bool state_known_ = false;
     std::string state_reason_;
     std::optional<UserRef> me_;
+    std::vector<PlayerModel> player_models_;
     std::array<std::vector<NewsItem>, news_kind_count> news_{};
     std::array<bool, news_kind_count> has_more_{true, true};
     std::array<bool, news_kind_count> loading_{};

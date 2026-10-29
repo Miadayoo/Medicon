@@ -4,6 +4,7 @@
 #include "medicon/modules/BuiltinModules.hpp"
 #include "medicon/modules/ClientModules.hpp"
 #include "medicon/modules/ExampleModule.hpp"
+#include "medicon/modules/EspModule.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -229,6 +230,28 @@ void test_config_validation() {
     check(sample.alignment.get<Choice>().options.size() == 3, "Choice metadata was changed by config");
 }
 
+void test_esp_glow_source_only() {
+    TestDirectory directory;
+    const auto path = directory.path / "esp.json";
+    ConfigStore store(path);
+    ModuleManager modules;
+    auto& esp = modules.add<EspModule>();
+    for (const auto& setting : esp.settings())
+        check(setting.id != "glow_width" && setting.id != "glow_intensity",
+              "ESP exposes internal bloom tuning as a user setting");
+    // Unknown keys from old configs are ignored, including invalid old values.
+    write_json(path, Json{{"version", 1}, {"modules", {{"esp", {{"settings", {
+        {"glow", false}, {"line_width", 2.0F}, {"glow_width", -500}, {"glow_intensity", "old value"}
+    }}}}}}});
+    std::string error;
+    check(store.load(modules, error) && !esp.glow.get<bool>() && esp.line_width.get<float>() == 2.0F,
+          "Removing glow tuning broke loading an existing ESP config");
+    check(store.save(modules, error), "ESP config save failed");
+    const auto settings = read_json(path)["modules"]["esp"]["settings"];
+    check(!settings.contains("glow_width") && !settings.contains("glow_intensity") && settings.contains("glow"),
+          "ESP persisted internal bloom width or intensity");
+}
+
 void test_events() {
     struct Event { int value = 0; };
     struct Other { int value = 0; };
@@ -309,6 +332,7 @@ int main() {
         test_watermark_defaults();
         test_config_round_trip();
         test_config_validation();
+        test_esp_glow_source_only();
         test_events();
         std::cout << "Core tests passed\n";
         return 0;

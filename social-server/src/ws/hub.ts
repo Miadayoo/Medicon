@@ -8,6 +8,8 @@ import {
   requestId,
   type ClientMessage,
   type KickReason,
+  type PlayerModel,
+  type ModelIdentity,
   type RequestMessage,
   type ServerMessage,
 } from './protocol.ts'
@@ -30,6 +32,11 @@ interface Connection {
   user: Member
   idleTimer: NodeJS.Timeout
   expiryTimer: NodeJS.Timeout
+  model: PlayerModel | null
+  watching: ModelIdentity[]
+  modelPeers: string | null
+  modelTimer: NodeJS.Timeout | null
+  lastModelSync: number
 }
 
 // setTimeout fires immediately for longer delays.
@@ -63,6 +70,7 @@ export class Hub {
     const conn: Connection = {
       ws,
       user: session.user,
+      model: null, watching: [], modelPeers: null, modelTimer: null, lastModelSync: -Infinity,
       // No frame for this long means the peer is gone, possibly without a TCP close.
       idleTimer: setTimeout(() => ws.terminate(), this.options.idleTimeoutMs),
       // 4001 makes the client sign in again with its stored key before reconnecting.
@@ -75,6 +83,7 @@ export class Hub {
     const previous = this.connections.get(conn.user.id)
     this.connections.set(conn.user.id, conn)
     if (previous) {
+      if (previous.modelTimer) clearTimeout(previous.modelTimer)
       previous.ws.close(CLOSE.replaced, 'replaced')
     } else {
       log.info(`ws connections=${this.connections.size}`)
@@ -94,11 +103,13 @@ export class Hub {
     ws.on('close', () => {
       clearTimeout(conn.idleTimer)
       clearTimeout(conn.expiryTimer)
+      if (conn.modelTimer) clearTimeout(conn.modelTimer)
       this.sockets.delete(ws)
       this.release(conn)
     })
 
     this.sendTo(conn, { t: 'hello', user: conn.user, serverTime: this.options.now() })
+    if (previous?.model) this.refreshModels()
   }
 
   send(userId: number, message: ServerMessage): boolean {
@@ -155,6 +166,8 @@ export class Hub {
   private release(conn: Connection): void {
     if (this.connections.get(conn.user.id) !== conn) return
     this.connections.delete(conn.user.id)
+    if (conn.modelTimer) clearTimeout(conn.modelTimer)
+    if (conn.model) this.refreshModels()
     log.info(`ws connections=${this.connections.size}`)
     this.events?.presence(conn.user, false)
   }
@@ -177,11 +190,59 @@ export class Hub {
 
   private dispatch(conn: Connection, message: ClientMessage): void {
     if (message.t === 'ping') return this.sendTo(conn, { t: 'pong' })
+    if (message.t === 'model.sync') {
+      const now = this.options.now()
+      if (now - conn.lastModelSync < 500) return
+      conn.lastModelSync = now
+      const watching = [...message.watching].sort((a, b) =>
+        JSON.stringify([a.actorId, a.name]).localeCompare(JSON.stringify([b.actorId, b.name])))
+      const changed = JSON.stringify(conn.model) !== JSON.stringify(message.self) ||
+        JSON.stringify(conn.watching) !== JSON.stringify(watching)
+      conn.model = message.self
+      conn.watching = watching
+      if (conn.modelTimer) clearTimeout(conn.modelTimer)
+      conn.modelTimer = setTimeout(() => {
+        conn.model = null
+        this.refreshModels()
+      }, 15_000)
+      if (changed || conn.modelPeers === null) this.refreshModels(conn)
+      return
+    }
     try {
       this.events?.request(conn.user, message, (frame) => this.sendTo(conn, frame))
     } catch (err) {
       log.error('ws request failed', err)
       if ('id' in message) this.sendTo(conn, { t: 'ack', id: message.id, ok: false, error: 'internal' })
+    }
+  }
+
+  private refreshModels(requester?: Connection): void {
+    const key = (player: ModelIdentity): string => JSON.stringify([player.actorId, player.name])
+    const models = new Map<string, (PlayerModel & { userId: number })[]>()
+    for (const conn of this.connections.values()) {
+      if (!conn.model) continue
+      const id = key(conn.model)
+      const claims = models.get(id) ?? []
+      claims.push({ ...conn.model, userId: conn.user.id })
+      models.set(id, claims)
+    }
+    for (const conn of this.connections.values()) {
+      // Older clients never receive model frames. Only subscribed nearby players are sent.
+      if (conn.modelPeers === null && conn !== requester) continue
+      const peers: (PlayerModel & { userId: number })[] = []
+      const seen = new Set<string>()
+      for (const player of conn.watching) {
+        const id = key(player)
+        if (seen.has(id)) continue
+        seen.add(id)
+        const claims = models.get(id)
+        // Ambiguous claims fail closed; a duplicate cannot choose somebody else's avatar.
+        if (claims?.length === 1 && claims[0]!.userId !== conn.user.id) peers.push(claims[0]!)
+      }
+      const signature = JSON.stringify(peers)
+      if (conn.modelPeers === signature) continue
+      conn.modelPeers = signature
+      this.sendTo(conn, { t: 'model.peers', peers })
     }
   }
 

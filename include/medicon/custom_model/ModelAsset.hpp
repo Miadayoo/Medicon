@@ -33,10 +33,12 @@ struct ModelAsset {
     bool from_cache{};
     std::shared_ptr<const RigAsset> rig;
     std::shared_ptr<AnimationInstance> animation; // worker-allocated; single render writer
+    // Independent poses for nearby users, allocated only by the import worker.
+    std::vector<std::shared_ptr<AnimationInstance>> shared_animations;
 };
 // File I/O, parsing, validation, triangulation and cache access: worker only.
 [[nodiscard]] std::shared_ptr<const ModelAsset> load_model(const std::filesystem::path& directory,
-                                                          std::string& diagnostic);
+                                                          std::string& diagnostic, bool shared_players = false);
 [[nodiscard]] std::string sha256(std::span<const std::byte> bytes);
 
 class ModelRegistry {
@@ -49,7 +51,8 @@ public:
     // One persistent worker loads the requested character on demand and keeps
     // both CPU generations alive until shutdown. select() never parses/joins.
     void start_catalog(std::array<std::filesystem::path,builtin_model_count> directories,
-                       std::filesystem::path bundled_cache, BuiltinModel initial = BuiltinModel::neon);
+                       std::filesystem::path bundled_cache, BuiltinModel initial = BuiltinModel::neon,
+                       bool shared_players = false);
     bool select(BuiltinModel model) noexcept;
     // Shutdown after render callbacks drain. Keeps published generations alive
     // so releasing a render-thread snapshot never frees a large model there.

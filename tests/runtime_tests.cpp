@@ -2,6 +2,7 @@
 #include <medicon/gui/InjectSplash.hpp>
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
+#include <medicon/modules/RotationsModule.hpp>
 #include <Windows.h>
 #include <imgui.h>
 #include <chrono>
@@ -179,16 +180,32 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
         medicon::sdk::GameplayFrame current;
         int rotations = 0;
         int head_body_rotations = 0;
+        float last_yaw = 0;
+        float last_pitch = 0;
+        bool sprint_requested = false;
+        bool render_rotation = false;
         bool rotation_control = false;
+        bool server_rotation = false;
         const medicon::sdk::GameplayFrame& frame() const noexcept override { return current; }
         void begin_rotation_control(bool enabled) noexcept override { rotation_control = enabled; }
+        void begin_rotation_control(bool enabled, bool render) noexcept override {
+            rotation_control = enabled;
+            render_rotation = render;
+        }
+        void finish_rotation_control(bool requested) noexcept override { server_rotation = rotation_control && requested; }
         bool rotate(float, float) override { ++rotations; return true; }
-        bool rotate_head_and_body(float) override {
+        bool rotate_head_and_body(float yaw) override {
+            return rotate_head_and_body(yaw, current.pitch);
+        }
+        bool rotate_head_and_body(float yaw, float pitch) override {
             if (!rotation_control) return false;
+            last_yaw = yaw;
+            last_pitch = pitch;
             ++head_body_rotations;
             return true;
         }
-        bool attack(std::uintptr_t) override { throw std::runtime_error("Unexpected attack"); }
+        bool set_sprinting(bool requested) override { sprint_requested = requested; return true; }
+        bool attack(std::uintptr_t) override { return true; }
         bool place_block(medicon::sdk::BlockPos, bool) override { throw std::runtime_error("Unexpected placement"); }
         bool replaceable(medicon::sdk::BlockPos) const override { return false; }
     } game;
@@ -201,7 +218,8 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "custommodel"})
         require(client.modules().find(id) && !client.modules().find(id)->enabled(), "Gameplay module registered disabled");
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == 0, "Disabled gameplay modules do not act");
+    require(game.rotations == 0 && game.head_body_rotations == 0 && !game.server_rotation,
+            "Disabled gameplay modules do not act");
     client.modules().find("rotations")->set_enabled(true);
     client.game_tick(game, 0.05F);
     require(game.rotations == 0 && game.head_body_rotations == 0 && !game.rotation_control,
@@ -210,21 +228,65 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     client.tick(0.05F);
     require(game.rotations == 0 && game.head_body_rotations == 0, "Present tick never mutates the game");
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == 1 && game.rotation_control,
+    require(game.rotations == 0 && game.head_body_rotations == 1 && game.rotation_control && game.server_rotation,
             "Native game tick dispatches head/body Derp through Rotations");
     client.gui().set_open(true);
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == 1, "ClickGUI suppresses gameplay actions");
+    require(game.rotations == 0 && game.head_body_rotations == 2 && game.last_yaw == game.current.yaw && !game.server_rotation,
+            "ClickGUI suppresses gameplay requests and restores the view angle");
     client.modules().find("rotations")->set_enabled(false);
     client.modules().find("derp")->set_enabled(false);
     client.gui().set_open(false);
+    auto* render_module = dynamic_cast<medicon::RotationsModule*>(client.modules().find("rotations"));
+    render_module->always.get<bool>() = true;
+    render_module->set_enabled(true);
+    game.current.pitch = 35;
+    client.game_tick(game, 0.05F);
+    medicon::RotationsModule::RenderAngles render_angles;
+    require(game.render_rotation && !game.server_rotation &&
+            render_module->update_render(1, game.current.yaw, game.current.pitch, 0, render_angles) &&
+            render_angles.pitch == 35,
+            "Rotations Always renders vertical view angles without Killaura");
+    render_module->always.get<bool>() = false;
+    game.current.pitch = 12;
+    game.current.move_input_ready = true;
+    game.current.move_input = {0, 1};
+    medicon::sdk::ActorSnapshot target;
+    target.id = 2;
+    target.position = {0, 2, 2};
+    target.player = target.alive = target.visible = true;
+    game.current.actors = {target};
+    client.modules().find("rotations")->set_enabled(true);
+    client.modules().find("killaura")->set_enabled(true);
+    client.modules().find("sprint")->set_enabled(true);
+    client.game_tick(game, 0.05F);
+    require(game.sprint_requested && game.render_rotation && game.server_rotation && std::abs(game.last_pitch + 45) < 0.001F &&
+            game.current.pitch == 12,
+            "Client route forwards Sprint input and Killaura model pitch without changing the camera");
+    client.game_tick(game, 0.05F, false);
+    require(!game.sprint_requested && !game.server_rotation && game.last_pitch == 12 && game.last_yaw == game.current.yaw,
+            "Focus loss releases Sprint and restores the actual view angle");
+    render_module->set_enabled(false);
+    client.game_tick(game, 0.05F);
+    require(!game.render_rotation && !render_module->render_enabled() && game.server_rotation,
+            "Killaura enabled vertical model rendering while Rotations was off");
+    game.current.actors.clear();
+    client.game_tick(game, 0.05F);
+    require(!game.server_rotation && game.last_yaw == game.current.yaw && game.last_pitch == game.current.pitch,
+            "Losing the target retained a server rotation request");
+    client.modules().find("rotations")->set_enabled(false);
+    client.modules().find("killaura")->set_enabled(false);
+    client.modules().find("sprint")->set_enabled(false);
+    require(!render_module->update_render(1, game.current.yaw, game.current.pitch, 0.05F, render_angles),
+            "Turning Rotations off did not disable vertical model rendering");
+    const auto final_rotation_count = game.head_body_rotations;
     game.current.ready = false;
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == 1, "Missing world suppresses gameplay actions");
+    require(game.rotations == 0 && game.head_body_rotations == final_rotation_count, "Missing world suppresses gameplay actions");
     require(client.stop(), "Gameplay client stops");
     game.current.ready = true;
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == 1, "Stopped client cannot mutate the game");
+    require(game.rotations == 0 && game.head_body_rotations == final_rotation_count, "Stopped client cannot mutate the game");
 }
 
 void client_test(const std::filesystem::path& path) {

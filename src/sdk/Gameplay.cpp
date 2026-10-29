@@ -1,4 +1,6 @@
 #include <medicon/sdk/BedrockGameplay.hpp>
+#include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/custom_model/PlayerName.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
 #include <medicon/memory/module_view.hpp>
 
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <climits>
 #include <cstring>
@@ -29,6 +32,7 @@ namespace {
 constexpr std::uint32_t state_hash = 0x1B5D5238, bounds_hash = 0xBAC1B3CF;
 constexpr std::uint32_t rotation_hash = 0x75DF36B7, render_rotation_hash = 0xD15944E2;
 constexpr std::uint32_t actor_data_flag_hash = 0xC67426F3;
+constexpr std::uint32_t move_input_hash = 0x018B1887;
 constexpr std::uint32_t type_hash = 0x4F6BA419;
 constexpr std::uint32_t owner_hash = 0x85B93800, dead_hash = 0x710A62C4;
 constexpr std::uint32_t head_hash = 0xBABE7211, body_hash = 0xD7F64BBA;
@@ -36,6 +40,13 @@ constexpr std::uint32_t render_position_hash = 0xE53C7221;
 // PlayerAuthInputPacket/InputData values in the 1.26.50 protocol profile.
 // https://mojang.github.io/bedrock-protocol-docs/1.26.50/types/player-auth-input-data/
 constexpr int player_auth_input_packet_id = 144;
+constexpr int move_player_packet_id = 19;
+// Confirmed against 1.26.52.3 packet validation/serialization routines.
+constexpr std::size_t player_auth_input_rotation_offset = 0x30;
+constexpr std::size_t player_auth_input_head_yaw_offset = 0x44;
+constexpr std::size_t move_player_rotation_offset = 0x44;
+constexpr std::size_t move_player_head_yaw_offset = 0x4C;
+constexpr std::uint64_t no_server_rotation = 0x7FC000007FC00000ULL;
 // In this x64 packet layout, mInputData follows the Packet base and the
 // rotation/position/movement fields. Its reserved upper 62 bits are checked
 // before changing any bit, so an unknown layout is passed through unchanged.
@@ -190,20 +201,71 @@ bool gameplay_contains(std::uintptr_t storage, std::uint32_t entity) noexcept {
     return component_index(storage, entity).has_value();
 }
 
-SlotRestore restore_gameplay_slot(std::uintptr_t player, std::uintptr_t expected_supplies,
-                                 int original_slot, int switched_slot, bool auto_select_active,
-                                 std::uint64_t idle_ms) noexcept {
-    std::uintptr_t supplies = 0;
-    int selected = -1;
-    // An unavailable inventory is not evidence that the user selected another
-    // slot. Keep the original selection until we can read and restore it.
-    if (!read_at(player, 0x5B8, supplies) || !supplies ||
-        !read_at(supplies, 0x10, selected)) return SlotRestore::wait;
-    if (supplies != expected_supplies) return SlotRestore::forget;
-    if (selected < 0 || selected > 8) return SlotRestore::wait;
-    const auto action = slot_restore(selected == switched_slot, auto_select_active, idle_ms);
-    if (action == SlotRestore::restore && !write_at(supplies, 0x10, original_slot)) return SlotRestore::wait;
-    return action;
+bool read_gameplay_move_input(std::uintptr_t component, GameplayMoveInput& input) noexcept {
+    input = {};
+    std::uint32_t flags{};
+    std::uint16_t control{};
+    Vec2 move{};
+    // 1.26.52.3: lookup at 0x283481B uses a 0x64-byte stride; reset at
+    // 0x449810 accesses input +0/+0x10, move +0x24 and control +0x60.
+    if (!read_at(component, 0, flags) || (flags >> 27) != 0 ||
+        !read_at(component, 0x24, move) || !read_at(component, 0x60, control) ||
+        !std::isfinite(move.x) || !std::isfinite(move.y) ||
+        std::abs(move.x) > 1.01F || std::abs(move.y) > 1.01F) return false;
+    input.sneaking = (flags & 1U) != 0 || (control & 1U) != 0;
+    if ((control & (1U << 6)) == 0) {
+        input.strafe = move.x;
+        input.forward = move.y;
+    }
+    return true;
+}
+
+bool write_gameplay_sprint_input(std::uintptr_t component, bool sprinting) noexcept {
+    std::uint32_t input{}, raw{};
+    if (!read_at(component, 0, input) || !read_at(component, 0x10, raw) ||
+        (input >> 27) != 0 || (raw >> 27) != 0) return false;
+    constexpr std::uint32_t sprint_down = 1U << 8;
+    const auto update = [=](std::uint32_t flags) { return sprinting ? flags | sprint_down : flags & ~sprint_down; };
+    if (!write_at(component, 0, update(input))) return false;
+    if (write_at(component, 0x10, update(raw))) return true;
+    (void)write_at(component, 0, input);
+    return false;
+}
+
+bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch) noexcept {
+    if (!std::isfinite(yaw) || !std::isfinite(pitch)) return false;
+    const bool auth_input = packet_id == player_auth_input_packet_id;
+    if (!auth_input && packet_id != move_player_packet_id) return false;
+    const auto rotation_offset = auth_input ? player_auth_input_rotation_offset : move_player_rotation_offset;
+    const auto head_offset = auth_input ? player_auth_input_head_yaw_offset : move_player_head_yaw_offset;
+    Vec2 original_rotation{};
+    float original_head{};
+    Vec3 position{};
+    const auto valid_angle = [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; };
+    if (!read_at(packet, rotation_offset, original_rotation) || !read_at(packet, head_offset, original_head) ||
+        !valid_angle(original_rotation.x) || !valid_angle(original_rotation.y) || !valid_angle(original_head) ||
+        !read_at(packet, 0x38, position) || !valid_position(position)) return false;
+    if (!auth_input) {
+        std::array<std::uint8_t, 2> mode_and_ground{};
+        if (!read_at(packet, 0x50, mode_and_ground) || mode_and_ground[0] > 3 || mode_and_ground[1] > 1)
+            return false;
+    }
+    yaw = std::remainder(yaw, 360.0F);
+    const Vec2 rotation{std::clamp(pitch, -90.0F, 90.0F), yaw};
+    if (!write_at(packet, rotation_offset, rotation)) return false;
+    if (write_at(packet, head_offset, yaw)) return true;
+    (void)write_at(packet, rotation_offset, original_rotation);
+    return false;
+}
+
+RenderPitchScope::RenderPitchScope(std::uintptr_t render_component, float pitch) noexcept {
+    if (!std::isfinite(pitch) || !read_at(render_component, 0, original_) ||
+        !std::isfinite(original_)) return;
+    if (write_at(render_component, 0, std::clamp(pitch, -90.0F, 90.0F))) component_ = render_component;
+}
+
+RenderPitchScope::~RenderPitchScope() {
+    if (component_) (void)write_at(component_, 0, original_);
 }
 
 } // namespace detail
@@ -219,8 +281,10 @@ struct BedrockGameplay::Impl {
     // frame to where it draws the model. Resolved again by every capture.
     std::uintptr_t render_position = 0;
     std::atomic_bool sprint_packet_override{};
-    std::atomic_bool sprint_packet_restore_state{};
     std::atomic_bool sprint_packet_last_state{};
+    // NaN marks no request. Publishing both axes at once prevents a send on
+    // another thread from pairing a new yaw with the previous tick's pitch.
+    std::atomic<std::uint64_t> server_rotation{no_server_rotation};
     // Auto Select keeps the block slot selected while placing (like Solstice's
     // default Full switch) so the game reports it to the server on its own
     // tick before a placement uses it. The original slot comes back once
@@ -244,6 +308,7 @@ struct BedrockGameplay::Impl {
     std::uintptr_t rotation_player = 0, rotation_registry = 0;
     std::uint32_t rotation_entity = 0;
     std::uintptr_t body_yaw_interpolator = 0, head_yaw_interpolator = 0;
+    const void* (*model_name_getter)(void*){};
     std::uintptr_t local_swing_method = 0;
     memory::AddressRange image;
     std::vector<memory::AddressRange> executable_regions;
@@ -324,6 +389,12 @@ struct BedrockGameplay::Impl {
         result = {actor, state.position, state.velocity, shape.bounds,
                   (type & 0xFF) == 63, (type & 0x100) != 0 &&
                   !(dead_pool && detail::gameplay_contains(dead_pool, entity)), actor == player, false};
+        std::uintptr_t actor_data{};
+        if (result.player && model_name_getter && read_at(actor, 0x128, actor_data) && actor_data &&
+            read_at(component(entity, 0x18F957AF, 8), 0, result.unique_id)) {
+            if (const auto name = read_msvc_string(model_name_getter(reinterpret_cast<void*>(actor)), 512))
+                result.model_name = medicon::custom_model::model_player_name(*name);
+        }
         // A teleport is not motion to draw between.
         if (valid_position(state.old_position) && distance_squared(state.old_position, state.position) <= 8 * 8) {
             result.previous_position = state.old_position;
@@ -368,9 +439,6 @@ struct BedrockGameplay::Impl {
             !read_at(supplies, 0x10, selected) || selected != switch_to) { forget_switch(); return; }
         if (GetTickCount64() - switch_used < 1000) return;
         write_at(supplies, 0x10, switch_from);
-        const auto action = detail::restore_gameplay_slot(player, switch_supplies, switch_from,
-            switch_to, switch_active, GetTickCount64() - switch_used);
-        if (action == SlotRestore::wait) return;
         forget_switch();
     }
 
@@ -490,6 +558,15 @@ bool BedrockGameplay::locate(std::string& diagnostic) {
                 for (const auto& region : module->executable_regions)
                     state.executable_regions.push_back({region.address, region.bytes.size()});
                 state.supported = true;
+                // Actor_getNameTag 1.26.52.3: borrowed MSVC string result.
+                // The bounded body reads SynchedActorData +0x128 and returns
+                // its type-4 string; no DLL STL object crosses this ABI.
+                constexpr std::array<unsigned char, 32> name_prefix{
+                    0x56,0x48,0x83,0xEC,0x20,0x48,0x8B,0x81,0x28,0x01,0,0,0x48,0x85,0xC0,0x74,
+                    0x4A,0x8B,0x50,0x08,0x48,0x8B,0x08,0x29,0xCA,0x81,0xE2,0xF8,0xFF,0x07,0,0x48};
+                const auto name_target = state.image.address + 0x1A14AC0;
+                if (state.native_identity(name_target, 0x1A14AC0, name_prefix))
+                    state.model_name_getter = reinterpret_cast<const void* (*)(void*)>(name_target);
                 state.diagnostic = "Gameplay SDK ready for Minecraft 1.26.52.3; waiting for validated world components.";
             }
         }
@@ -501,6 +578,7 @@ bool BedrockGameplay::locate(std::string& diagnostic) {
 const std::string& BedrockGameplay::diagnostic() const noexcept { return impl_->diagnostic; }
 
 void BedrockGameplay::clear() noexcept {
+    impl_->server_rotation.store(no_server_rotation, std::memory_order_release);
     impl_->active = false;
     impl_->switched_this_tick = false;
     impl_->frame = {};
@@ -542,6 +620,7 @@ void BedrockGameplay::begin_rotation_control(bool enabled) noexcept {
 
 void BedrockGameplay::begin_rotation_control(bool enabled, bool render_enabled) noexcept {
     auto& state = *impl_;
+    state.server_rotation.store(no_server_rotation, std::memory_order_release);
     // Restore the current camera yaw before dropping an active head/body
     // override (for example when Killaura or Rotations is turned off).
     if (!enabled && state.rotation_control_enabled && state.rotation_override_active &&
@@ -602,6 +681,20 @@ void BedrockGameplay::finish_rotation_control() noexcept {
         state.rotation_player != state.player || state.rotation_registry != state.registry ||
         state.rotation_entity != state.local_entity || !state.on_tick()) return;
     (void)rotate_head_and_body(state.rotation_yaw, state.rotation_pitch);
+}
+
+void BedrockGameplay::finish_rotation_control(bool rotation_requested) noexcept {
+    finish_rotation_control();
+    auto& state = *impl_;
+    if (!rotation_requested || !state.rotation_control_enabled || !state.rotation_yaw_valid ||
+        !state.rotation_override_active || state.rotation_player != state.player ||
+        state.rotation_registry != state.registry || state.rotation_entity != state.local_entity || !state.on_tick()) {
+        state.server_rotation.store(no_server_rotation, std::memory_order_release);
+        return;
+    }
+    const auto angles = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(state.rotation_yaw)) |
+        (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(state.rotation_pitch)) << 32);
+    state.server_rotation.store(angles, std::memory_order_release);
 }
 
 std::uintptr_t BedrockGameplay::body_yaw_interpolator_target() const noexcept {
@@ -741,6 +834,7 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
          state.head_body_rotation_registry != state.registry ||
          state.head_body_rotation_entity != state.local_entity))
         state.head_body_rotation_valid = false;
+    state.frame.world_identity = state.registry;
     // Verified on 1.26.52.3: 12-byte elements (lea [i+i*2], shl 2 at 0x28A56C3).
     state.render_position = state.component(state.local_entity, render_position_hash, sizeof(Vec3));
     state.read_render_position(state.frame.local);
@@ -766,9 +860,14 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
     state.frame.yaw = rotation.yaw;
     state.frame.pitch = rotation.pitch;
     std::uint64_t actor_flags{};
-    const auto actor_data_flags = state.component(state.local_entity, actor_data_flag_hash, sizeof(actor_flags));
+    const auto actor_data_flags = state.component(state.local_entity, actor_data_flag_hash, detail::actor_data_flags_size);
     if (read_at(actor_data_flags, 0, actor_flags))
         state.frame.sprinting = (actor_flags & (std::uint64_t{1} << 3)) != 0;
+    detail::GameplayMoveInput movement{};
+    state.frame.move_input_ready = detail::read_gameplay_move_input(
+        state.component(state.local_entity, move_input_hash, detail::move_input_size), movement);
+    state.frame.move_input = {movement.strafe, movement.forward};
+    state.frame.sneaking = movement.sneaking;
     std::array<float, 2> head_rotation{};
     const auto head = state.component(state.local_entity, head_hash, sizeof(head_rotation));
     if (read_at(head, 0, head_rotation) && std::isfinite(head_rotation[0]) &&
@@ -918,14 +1017,10 @@ bool BedrockGameplay::attack(std::uintptr_t actor_id) {
 bool BedrockGameplay::set_sprinting(bool sprinting) {
     auto& state = *impl_;
     if (!state.on_tick()) return false;
-    const auto actor_data_flags = state.component(state.local_entity, actor_data_flag_hash, sizeof(std::uint64_t));
-    std::uint64_t flags{};
-    if (!read_at(actor_data_flags, 0, flags)) return false;
-    constexpr std::uint64_t sprinting_flag = std::uint64_t{1} << 3;
-    flags = sprinting ? (flags | sprinting_flag) : (flags & ~sprinting_flag);
-    if (!write_at(actor_data_flags, 0, flags)) return false;
-    state.frame.sprinting = sprinting;
-    return true;
+    // Let the native movement update perform the sprint transition and change
+    // acceleration. Writing ActorDataFlag alone skips that transition.
+    return detail::write_gameplay_sprint_input(
+        state.component(state.local_entity, move_input_hash, detail::move_input_size), sprinting);
 }
 
 SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
@@ -953,12 +1048,8 @@ SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
     const bool previous = was_overriding
         ? state.sprint_packet_last_state.load(std::memory_order_acquire)
         : packet_was_sprinting;
-    const bool desired = override_enabled
-        ? sprinting
-        : state.sprint_packet_restore_state.load(std::memory_order_acquire);
-
-    if (!was_overriding && override_enabled)
-        state.sprint_packet_restore_state.store(packet_was_sprinting, std::memory_order_release);
+    // Resume current native input rather than a state saved on module enable.
+    const bool desired = override_enabled ? sprinting : packet_was_sprinting;
     if (desired) input_flags[0] |= bit(sprinting_input_bit);
     else input_flags[0] &= ~bit(sprinting_input_bit);
     if (override_enabled || was_overriding) {
@@ -972,6 +1063,31 @@ SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
     state.sprint_packet_last_state.store(desired, std::memory_order_release);
     state.sprint_packet_override.store(override_enabled, std::memory_order_release);
     return SprintInputRewrite::rewritten;
+}
+
+RotationInputRewrite BedrockGameplay::rewrite_rotation_input(void* packet) noexcept {
+    const auto& state = *impl_;
+    const auto angles = state.server_rotation.load(std::memory_order_acquire);
+    if (!state.supported || !packet || angles == no_server_rotation) return RotationInputRewrite::ignored;
+    const auto address = reinterpret_cast<std::uintptr_t>(packet);
+    const auto get_id = state.method(address, 1);
+    if (!get_id) return RotationInputRewrite::ignored;
+    using GetId = int(__fastcall*)(void*);
+    const int id = reinterpret_cast<GetId>(get_id)(packet);
+    if (id != player_auth_input_packet_id && id != move_player_packet_id) return RotationInputRewrite::ignored;
+    // Both the vtable and getId implementation were checked in the supported
+    // PE. A matching numeric ID alone does not establish a packet's layout.
+    const std::uintptr_t vtable_rva = id == player_auth_input_packet_id ? 0xE83A360 : 0xE85BFC0;
+    const std::uintptr_t get_id_rva = id == player_auth_input_packet_id ? 0xB26A00 : 0x2ECD950;
+    const std::array<unsigned char, 6> get_id_code{0xB8, static_cast<unsigned char>(id), 0, 0, 0, 0xC3};
+    std::uintptr_t vtable{};
+    if (!read_at(address, 0, vtable) || !state.image.contains(vtable) ||
+        vtable - state.image.address != vtable_rva || !state.native_identity(get_id, get_id_rva, get_id_code))
+        return RotationInputRewrite::layout_rejected;
+    const auto yaw = std::bit_cast<float>(static_cast<std::uint32_t>(angles));
+    const auto pitch = std::bit_cast<float>(static_cast<std::uint32_t>(angles >> 32));
+    return detail::write_gameplay_rotation_input(address, id, yaw, pitch)
+        ? RotationInputRewrite::rewritten : RotationInputRewrite::layout_rejected;
 }
 
 bool BedrockGameplay::swing() {

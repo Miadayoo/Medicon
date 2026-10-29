@@ -17,8 +17,6 @@ public:
     Setting& fill_opacity;
     Setting& line_width;
     Setting& glow;
-    Setting& glow_width;
-    Setting& glow_intensity;
 };
 
 } // namespace medicon

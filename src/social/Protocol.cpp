@@ -101,6 +101,17 @@ const char* news_kind_name(NewsKind kind) noexcept {
     return kind == NewsKind::Changelog ? "changelog" : "news";
 }
 
+bool valid_model_identity(const ModelIdentity& player) noexcept {
+    if (player.actor_id.empty() || player.actor_id.size() > 20 || player.name.empty() || player.name.size() > 128) return false;
+    const auto start = player.actor_id.front() == '-' ? 1U : 0U;
+    if (start == player.actor_id.size()) return false;
+    for (std::size_t i = start; i < player.actor_id.size(); ++i)
+        if (player.actor_id[i] < '0' || player.actor_id[i] > '9') return false;
+    return std::none_of(player.name.begin(), player.name.end(), [](unsigned char c) { return c < 32 || c == 127; });
+}
+
+bool valid_model_id(std::string_view model) noexcept { return model == "neon" || model == "chocolat"; }
+
 std::optional<ServerFrame> parse_server_frame(std::string_view text) {
     const auto json = parse_object(text);
     if (!json) return std::nullopt;
@@ -116,6 +127,23 @@ std::optional<ServerFrame> parse_server_frame(std::string_view text) {
         return hello;
     }
     if (type == "pong") return PongFrame{};
+    if (type == "model.peers") {
+        const auto peers = json->find("peers");
+        if (peers == json->end() || !peers->is_array() || peers->size() > max_model_peers) return std::nullopt;
+        ModelPeersFrame frame;
+        for (const auto& item : *peers) {
+            PlayerModel peer;
+            if (!item.is_object() || !read_string(item, "actorId", peer.player.actor_id) ||
+                !read_string(item, "name", peer.player.name) || !valid_model_identity(peer.player) ||
+                !read_string(item, "model", peer.model) || !valid_model_id(peer.model) ||
+                !read_int(item, "userId", peer.user_id) || peer.user_id <= 0) return std::nullopt;
+            if (std::any_of(frame.peers.begin(), frame.peers.end(), [&](const auto& previous) {
+                return previous.player == peer.player || previous.user_id == peer.user_id;
+            })) return std::nullopt;
+            frame.peers.push_back(std::move(peer));
+        }
+        return frame;
+    }
     if (type == "news.new") {
         const auto item = json->find("item");
         if (item == json->end()) return std::nullopt;
@@ -176,6 +204,17 @@ std::optional<ServerFrame> parse_server_frame(std::string_view text) {
 }
 
 std::string ping_frame() { return dump(Json{{"t", "ping"}}); }
+
+std::string model_sync_frame(const std::optional<PlayerModel>& self, const std::vector<ModelIdentity>& watching) {
+    Json frame{{"t", "model.sync"}, {"self", nullptr}, {"watching", Json::array()}};
+    if (self && valid_model_identity(self->player) && valid_model_id(self->model))
+        frame["self"] = {{"actorId", self->player.actor_id}, {"name", self->player.name}, {"model", self->model}};
+    for (const auto& player : watching) {
+        if (frame["watching"].size() >= max_model_peers) break;
+        if (valid_model_identity(player)) frame["watching"].push_back({{"actorId", player.actor_id}, {"name", player.name}});
+    }
+    return dump(frame);
+}
 
 std::string global_send_frame(std::string_view nonce, std::string_view body) {
     return dump(Json{{"t", "global.send"}, {"id", nonce}, {"body", body}});

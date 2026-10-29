@@ -110,12 +110,27 @@ struct PresenceFrame {
     std::int64_t user_id = 0;
     bool online = false;
 };
+// A server actor id is a decimal string: int64 ids must not pass through a JS number.
+struct ModelIdentity {
+    std::string actor_id, name;
+    bool operator==(const ModelIdentity&) const = default;
+};
+struct PlayerModel {
+    ModelIdentity player;
+    std::string model; // Allowlisted bundled model id, never a URL or a file path.
+    std::int64_t user_id{};
+    bool operator==(const PlayerModel&) const = default;
+};
+inline constexpr std::size_t max_model_peers = 64;
+bool valid_model_identity(const ModelIdentity& player) noexcept;
+bool valid_model_id(std::string_view model) noexcept;
+struct ModelPeersFrame { std::vector<PlayerModel> peers; };
 // A type this client does not handle yet. Newer servers stay compatible.
 struct OtherFrame {
     std::string type;
 };
 using ServerFrame = std::variant<HelloFrame, PongFrame, NewsFrame, KickedFrame, AckFrame, GlobalNewFrame, DmNewFrame,
-                                 DmReadFrame, FriendRequestFrame, FriendUpdateFrame, PresenceFrame, OtherFrame>;
+                                 DmReadFrame, FriendRequestFrame, FriendUpdateFrame, PresenceFrame, ModelPeersFrame, OtherFrame>;
 
 // nullopt when the text is not a JSON object with a string "t", or when a known
 // type lacks a required field.
@@ -124,6 +139,7 @@ std::optional<ServerFrame> parse_server_frame(std::string_view text);
 // --- Client -> server ----------------------------------------------------------
 
 std::string ping_frame();
+std::string model_sync_frame(const std::optional<PlayerModel>& self, const std::vector<ModelIdentity>& watching);
 std::string login_body(std::string_view key, std::string_view client_version);
 // `nonce` comes back in the ack.
 std::string global_send_frame(std::string_view nonce, std::string_view body);

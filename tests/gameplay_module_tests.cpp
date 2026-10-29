@@ -43,6 +43,8 @@ public:
     GameplayFrame state;
     std::vector<std::pair<float, float>> rotations;
     std::vector<float> head_body_rotations;
+    std::vector<bool> sprint_requests;
+    bool sprint_result = true;
     std::vector<std::uintptr_t> attacks;
     std::vector<std::pair<BlockPos, bool>> placements;
     std::set<Cell> solid;
@@ -75,6 +77,10 @@ public:
         if (throw_attack) throw std::runtime_error("attack");
         attacks.push_back(actor_id);
         return attack_result;
+    }
+    bool set_sprinting(bool sprinting) override {
+        sprint_requests.push_back(sprinting);
+        return sprint_result;
     }
     bool place_block(BlockPos position, bool auto_select) override {
         if (throw_place) throw std::runtime_error("place");
@@ -115,7 +121,7 @@ void test_disabled_and_unavailable() {
           aura.category() == Category::Player && scaffold.category() == Category::Movement,
           "Gameplay module categories changed");
     check(rotations.category() == Category::Misc && !rotations.enabled() &&
-          rotations.settings().size() == 1 && !rotations.always.get<bool>(),
+          rotations.settings().size() == 2 && !rotations.always.get<bool>(),
           "Rotations must start disabled with Always off");
     for (auto* module : modules) {
         check(!module->enabled(), "Gameplay modules must be disabled by default");
@@ -181,6 +187,7 @@ void test_derp_spin_and_reset() {
     derp.game_tick(game, 0.05F);
     game.throw_rotation = false;
     game.state.yaw = 30.0F;
+    game.state.head_yaw_ready = false;
     derp.game_tick(game, 0.05F);
     check(near(game.head_body_rotations.back(), 48.0F), "Derp did not recover after a bridge exception");
 }
@@ -338,6 +345,121 @@ void test_killaura_failures_are_throttled() {
     check(game.attacks.size() == 2, "Killaura did not recover after a bridge exception");
 }
 
+void test_rotations_vertical_render() {
+    RotationsModule rotations;
+    RotationsModule::RenderAngles angles;
+    rotations.set_server_rotation(20, -50);
+    check(!rotations.update_render(1, 20, 10, 0.05F, angles), "Disabled Rotations rendered a pitch request");
+    rotations.set_enabled(true);
+    check(!rotations.update_render(1, 20, 10, 0.05F, angles), "Enabling Rotations reused a stale angle request");
+    rotations.set_server_rotation(20, -50);
+    check(rotations.update_render(1, 20, 10, 0, angles) && near(angles.pitch, 10),
+          "Rotations did not start vertical interpolation at the current view");
+    check(rotations.update_render(1, 20, 10, 1.0F / 60, angles) && near(angles.yaw, 20) &&
+          angles.pitch < 10 && angles.pitch > -50, "Pitch-only requests did not animate independently of yaw");
+    for (int i = 0; i < 180; ++i) rotations.update_render(1, 20, 10, 1.0F / 60, angles);
+    check(near(angles.pitch, -50), "Rotations did not converge to its shared server pitch");
+    rotations.set_server_rotation(20, 65);
+    rotations.update_render(1, 20, 10, 1.0F / 60, angles);
+    check(angles.pitch > -50 && angles.pitch < 65, "Rotations failed to follow a downward pitch request");
+    rotations.update_render(2, -30, 35, 0, angles);
+    check(near(angles.pitch, 35) && near(angles.yaw, -30), "Another actor inherited the previous model's rendered angles");
+    rotations.reset_render();
+    rotations.update_render(2, 40, -15, 0, angles);
+    check(near(angles.pitch, -15), "View/world reset retained a stale rendered pitch");
+    rotations.set_enabled(false);
+    check(!rotations.update_render(2, 40, -15, 0.05F, angles), "Disabling Rotations left vertical rendering active");
+    rotations.set_enabled(true);
+    rotations.set_server_rotation(-179, 25);
+    rotations.update_render(1, 179, 25, 0, angles);
+    rotations.update_render(1, 179, 25, 1.0F / 60, angles);
+    check(angles.yaw > 179 && near(angles.pitch, 25), "Rotations lost shortest-path yaw interpolation while drawing pitch");
+    rotations.server_pitch.store(std::numeric_limits<float>::quiet_NaN());
+    check(!rotations.update_render(1, 179, 25, 0.05F, angles), "Rotations accepted a non-finite render pitch");
+    RotationsModule slow, fast;
+    slow.set_enabled(true); fast.set_enabled(true);
+    slow.speed.get<float>() = 240; fast.speed.get<float>() = 1440;
+    slow.set_server_rotation(0, 60); fast.set_server_rotation(0, 60);
+    RotationsModule::RenderAngles slow_angles, fast_angles;
+    slow.update_render(1, 0, 0, 1.0F / 60, slow_angles);
+    fast.update_render(1, 0, 0, 1.0F / 60, fast_angles);
+    check(fast_angles.pitch > slow_angles.pitch && slow_angles.pitch > 0,
+          "Rotations Speed did not control vertical render interpolation");
+}
+
+void test_sprint_input_and_release() {
+    MockGame game;
+    SprintModule sprint;
+    sprint.update(game, true);
+    check(game.sprint_requests.empty(), "Disabled Sprint changed native input");
+    sprint.set_enabled(true);
+    game.state.move_input_ready = true;
+    game.state.move_input = {0, 1};
+    sprint.update(game, true);
+    check(game.sprint_requests.back() && sprint.requested_sprinting() && sprint.packet_sprint_override(),
+          "Sprint failed to start from rest on forward input");
+    game.state.move_input = {1, 0};
+    sprint.update(game, true);
+    check(game.sprint_requests.back(), "Strike failed on strafe input");
+    game.state.move_input = {0, -1};
+    sprint.update(game, true);
+    check(game.sprint_requests.back(), "Strike failed on backward input");
+    sprint.mode.get<Choice>().index = 1;
+    sprint.update(game, true);
+    check(!game.sprint_requests.back(), "Legit sprinted on backward input");
+    game.state.move_input = {1, 0};
+    sprint.update(game, true);
+    check(!game.sprint_requests.back(), "Legit sprinted on strafe-only input");
+    game.state.yaw = 179;
+    game.state.move_input = {1, 1};
+    sprint.update(game, true);
+    check(game.sprint_requests.back(), "Legit rejected forward-diagonal input after turning the camera");
+    game.state.move_input = {};
+    game.state.local.velocity = {0, 0, 0.4F};
+    sprint.update(game, true);
+    check(!game.sprint_requests.back(), "Sprint treated knockback or coasting as movement input");
+    game.state.move_input = {0, 1};
+    game.state.sneaking = true;
+    sprint.update(game, true);
+    check(!game.sprint_requests.back(), "Sprint ignored sneaking");
+    game.state.sneaking = false;
+    game.state.move_input.y = std::numeric_limits<float>::quiet_NaN();
+    sprint.update(game, true);
+    check(!game.sprint_requests.back(), "Sprint accepted non-finite input");
+    game.state.move_input = {0, 1};
+    game.state.move_input_ready = false;
+    sprint.update(game, true);
+    check(!game.sprint_requests.back(), "Sprint used unavailable native input");
+    game.state.move_input_ready = true;
+    sprint.update(game, true);
+    game.sprint_result = false;
+    sprint.update(game, true);
+    check(!sprint.requested_sprinting(), "Rejected input write retained a stale server sprint request");
+    game.sprint_result = true;
+    sprint.update(game, true);
+    sprint.update(game, false);
+    check(!game.sprint_requests.back() && !sprint.needs_restore() && !sprint.packet_sprint_override(),
+          "Sprint stayed forced while a menu captured input");
+    sprint.update(game, true);
+    sprint.set_enabled(false);
+    game.sprint_result = false;
+    sprint.update(game, true);
+    check(sprint.needs_restore() && !sprint.packet_sprint_override(), "Failed sprint release was not retained for retry");
+    game.sprint_result = true;
+    sprint.update(game, true);
+    check(!sprint.needs_restore() && !game.sprint_requests.back(), "Disabling Sprint did not clear native input");
+    sprint.set_enabled(true);
+    sprint.update(game, true);
+    game.state.ready = false;
+    sprint.update(game, true);
+    check(!sprint.needs_restore() && !sprint.packet_sprint_override(), "Sprint retained control across world unload");
+    game.state.ready = true;
+    game.state.local.id = 9;
+    game.sprint_result = false;
+    sprint.update(game, true);
+    check(!sprint.packet_sprint_override(), "Sprint reused another player's successful input write");
+}
+
 void test_scaffold_floor_extension_and_delay() {
     MockGame game;
     ScaffoldModule scaffold;
@@ -463,6 +585,8 @@ int main() {
         test_aimbot_yaw_wrap_and_bounds_range();
         test_killaura_cadence_and_filters();
         test_killaura_failures_are_throttled();
+        test_rotations_vertical_render();
+        test_sprint_input_and_release();
         test_scaffold_floor_extension_and_delay();
         test_scaffold_stationary_failure_and_invalid_data();
         test_scaffold_level_and_support();

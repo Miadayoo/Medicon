@@ -18,11 +18,13 @@
 #include <medicon/sdk/BedrockChat.hpp>
 #include <medicon/sdk/BedrockInput.hpp>
 #include <medicon/sdk/BedrockGameplay.hpp>
+#include <medicon/sdk/detail/GameplayMemory.hpp>
 #include <medicon/sdk/BedrockMenu.hpp>
 #include <medicon/sdk/VanillaNavigation.hpp>
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/sdk/CustomModelBox.hpp>
 #include <medicon/sdk/CustomModelAnimation.hpp>
+#include <medicon/custom_model/SharedPlayers.hpp>
 #include <medicon/sdk/CustomModelView.hpp>
 #include <medicon/update/HostApi.h>
 #include <medicon/social/Service.hpp>
@@ -201,6 +203,16 @@ public:
     bool model_static_registered{};
     sdk::custom_model::Probe model_probe;
     sdk::custom_model::BoxRenderer model_box;
+    struct SharedModelRenderer {
+        medicon::custom_model::ModelRegistry assets;
+        sdk::custom_model::BoxRenderer box;
+    };
+    std::array<SharedModelRenderer,medicon::custom_model::builtin_model_count> shared_models;
+    using SharedModelBinding=medicon::custom_model::SharedModelBinding;
+    std::shared_ptr<const std::vector<SharedModelBinding>> shared_model_bindings;
+    std::atomic<ULONGLONG> shared_models_until{};
+    ULONGLONG model_sync_after{}; // Present thread, under render_mutex.
+    bool model_sync_online{},model_sync_active{};
     sdk::custom_model::WorldRenderFn model_world_render{};
     sdk::custom_model::MeshImmediateFn model_mesh_immediate{};
     sdk::custom_model::MeshImmediateViewFn model_mesh_view{};
@@ -230,19 +242,17 @@ public:
     std::atomic<std::uint64_t> rotation_visual_angles{};
     std::atomic_bool rotation_visual_ready{};
     std::atomic<std::uintptr_t> rotation_override_render_component{};
-    std::atomic<std::uintptr_t> rotation_override_component{};
     std::atomic<sdk::custom_model::ViewMode> rotation_view_mode{sdk::custom_model::ViewMode::unknown};
     std::atomic_bool sprint_packet_override_enabled{};
     std::atomic_bool sprint_packet_requested{};
     std::atomic_bool sprint_packet_route_reported{};
     std::atomic_bool sprint_packet_layout_error_reported{};
-    std::atomic<ULONGLONG> pitch_render_diagnostic_last{};
+    std::atomic_bool rotation_packet_route_reported{};
+    std::atomic_bool rotation_packet_layout_error_reported{};
     bool rotation_getter_identity_reported{}; // Game thread.
     ULONGLONG killaura_rotation_diagnostic_last{}; // Game thread, under render_mutex.
     ULONGLONG pitch_diagnostic_last{}; // Game thread, under render_mutex.
     unsigned pitch_diagnostic_count{};
-    bool rotation_visual_initialized{}; // Present thread, under render_mutex.
-    std::uintptr_t rotation_visual_actor{};
     std::chrono::steady_clock::time_point rotation_visual_updated{};
     std::atomic_bool gameplay_ready{false};
     std::chrono::steady_clock::time_point last_game_tick{}; // Under render_mutex.
@@ -658,6 +668,13 @@ public:
         model_box.set_ready(false);
         model_box.release_resources();
         model_assets.stop();
+        shared_models_until.store(0,std::memory_order_release);
+        std::atomic_store_explicit(&shared_model_bindings,std::shared_ptr<const std::vector<SharedModelBinding>>{},std::memory_order_release);
+        for (auto& peer : shared_models) {
+            peer.box.set_options(false,0,1);peer.box.set_ready(false);
+            peer.box.release_resources();peer.assets.stop();
+        }
+        model_sync_after=0;model_sync_online=model_sync_active=false;
         (void)model_box.take_frame();
         model_sample_seconds = {};
         model_sample_frames = {};
@@ -693,6 +710,8 @@ public:
     void connect_model_box();
     void connect_model_static();
     void draw_model_probe();
+    void sync_shared_models(bool local_enabled,bool show_users,medicon::custom_model::BuiltinModel selected);
+    bool draw_shared_model(void* context,void* actor) noexcept;
 };
 
 // Intentionally process-lifetime. Never destroy hook trampolines, C++ locks or
@@ -1446,75 +1465,31 @@ HWND swap_window(IDXGISwapChain* swap) {
 }
 
 void advance_rotation_render(Runtime& state) noexcept {
+    auto* module = state.client ? dynamic_cast<RotationsModule*>(
+        state.client->modules().find(RotationsModule::module_id)) : nullptr;
     const auto reset = [&] {
-        state.rotation_visual_initialized = false;
-        state.rotation_visual_actor = 0;
+        if (module) module->reset_render();
         state.rotation_visual_updated = {};
         state.rotation_visual_ready.store(false, std::memory_order_release);
     };
-    if (!state.client || !state.rotation_override_enabled.load(std::memory_order_acquire) ||
+    if (!module || !module->enabled() || !state.rotation_override_enabled.load(std::memory_order_acquire) ||
         !sdk::custom_model::third_person(state.rotation_view_mode.load(std::memory_order_acquire))) {
         reset();
         return;
     }
-
     const auto actor = state.rotation_override_actor.load(std::memory_order_acquire);
     const auto yaws = state.rotation_override_yaws.load(std::memory_order_acquire);
     const auto pitches = state.rotation_override_pitches.load(std::memory_order_acquire);
-    const float previous_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws));
-    const float target_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws >> 32));
-    const float previous_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches));
-    const float target_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches >> 32));
-    if (!actor || !std::isfinite(previous_yaw) || !std::isfinite(target_yaw) ||
-        !std::isfinite(previous_pitch) || !std::isfinite(target_pitch)) {
-        reset();
-        return;
-    }
-
+    const float initial_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws));
+    const float initial_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches));
     const auto now = std::chrono::steady_clock::now();
-    float yaw = previous_yaw;
-    float pitch = previous_pitch;
-    if (state.rotation_visual_initialized && state.rotation_visual_actor == actor) {
-        const auto current = state.rotation_visual_angles.load(std::memory_order_acquire);
-        yaw = std::bit_cast<float>(static_cast<std::uint32_t>(current));
-        pitch = std::bit_cast<float>(static_cast<std::uint32_t>(current >> 32));
-    } else {
-        state.rotation_visual_initialized = true;
-        state.rotation_visual_actor = actor;
-    }
-
-    float delta_seconds = 0.0F;
-    if (state.rotation_visual_updated != std::chrono::steady_clock::time_point{}) {
-        delta_seconds = std::clamp(
-            std::chrono::duration<float>(now - state.rotation_visual_updated).count(), 0.0F, 0.1F);
-    }
+    const float delta = state.rotation_visual_updated == std::chrono::steady_clock::time_point{}
+        ? 0.0F : std::chrono::duration<float>(now - state.rotation_visual_updated).count();
     state.rotation_visual_updated = now;
-
-    float maximum_speed = 1300.0F;
-    if (const auto* module = dynamic_cast<const RotationsModule*>(
-            state.client->modules().find(RotationsModule::module_id))) {
-        maximum_speed = module->speed.get<float>();
-    }
-    if (!std::isfinite(maximum_speed)) maximum_speed = 1300.0F;
-    maximum_speed = std::clamp(maximum_speed, 0.0F, 10000.0F);
-
-    const float yaw_delta = std::remainder(target_yaw - yaw, 360.0F);
-    const float pitch_delta = std::clamp(target_pitch, -90.0F, 90.0F) - pitch;
-    const float distance = std::hypot(yaw_delta, pitch_delta);
-    if (distance > 0.0001F && delta_seconds > 0.0F) {
-        const float speed_scale = std::clamp(distance / 180.0F, 0.0F, 1.0F);
-        const float step = maximum_speed * speed_scale * delta_seconds;
-        const float fraction = std::min(1.0F, step / distance);
-        yaw = std::remainder(yaw + yaw_delta * fraction, 360.0F);
-        pitch = std::clamp(pitch + pitch_delta * fraction, -90.0F, 90.0F);
-        if (fraction >= 1.0F) {
-            yaw = std::remainder(target_yaw, 360.0F);
-            pitch = std::clamp(target_pitch, -90.0F, 90.0F);
-        }
-    }
-
-    const auto packed = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(yaw)) |
-        (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(pitch)) << 32);
+    RotationsModule::RenderAngles angles;
+    if (!module->update_render(actor, initial_yaw, initial_pitch, delta, angles)) { reset(); return; }
+    const auto packed = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(angles.yaw)) |
+        (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(angles.pitch)) << 32);
     state.rotation_visual_angles.store(packed, std::memory_order_release);
     state.rotation_visual_ready.store(true, std::memory_order_release);
 }
@@ -1752,6 +1727,50 @@ const char* model_status_name(medicon::custom_model::ModelRegistry::Status statu
     return status==S::ready?"ready":status==S::failed?"failed":status==S::loading?"loading":"not started";
 }
 
+void Runtime::sync_shared_models(bool local_enabled,bool show_users,medicon::custom_model::BuiltinModel selected) {
+    const bool online=social && client->overlay().social().store().state()==social::ConnectionState::Online;
+    const auto* frame=client->gameplay_view();
+    const bool active=online && (local_enabled||show_users) && frame && frame->ready;
+    const auto now=GetTickCount64();
+    if (online!=model_sync_online || active!=model_sync_active) model_sync_after=0;
+    if (!active) {
+        shared_models_until.store(0,std::memory_order_release);
+        for (auto& peer:shared_models) peer.box.set_options(false,0,1);
+        if (online && (model_sync_active || !model_sync_online)) social->channel().commands.push(social::SyncModels{});
+        model_sync_online=online;model_sync_active=false;
+        return;
+    }
+    model_sync_online=online;model_sync_active=true;
+    if (now<model_sync_after) return;
+    model_sync_after=now+1000;
+    const auto& advertised=client->overlay().social().store().player_models();
+    auto selection=medicon::custom_model::select_shared_players(*frame,selected,advertised,local_enabled,show_users);
+    auto bindings=std::make_shared<std::vector<SharedModelBinding>>(std::move(selection.bindings));
+    for (unsigned i=0;i<shared_models.size();++i) {
+        auto& box=shared_models[i].box;
+        box.set_static_mode(true,true);box.set_animation(true);
+        box.set_options(std::any_of(bindings->begin(),bindings->end(),[&](const auto& peer){return peer.model==i;}),0,1);
+    }
+    std::atomic_store_explicit(&shared_model_bindings,std::shared_ptr<const std::vector<SharedModelBinding>>(std::move(bindings)),std::memory_order_release);
+    shared_models_until.store(now+2500,std::memory_order_release);
+    social->channel().commands.push(std::move(selection.sync));
+}
+
+bool Runtime::draw_shared_model(void* context,void* actor) noexcept {
+    if (!actor || stopping.load(std::memory_order_acquire) || GetTickCount64()>=shared_models_until.load(std::memory_order_acquire)) return false;
+    const auto bindings=std::atomic_load_explicit(&shared_model_bindings,std::memory_order_acquire);
+    if (!bindings) return false;
+    const auto found=std::find_if(bindings->begin(),bindings->end(),[&](const auto& peer){return peer.actor==reinterpret_cast<std::uintptr_t>(actor);});
+    if (found==bindings->end() || found->model>=shared_models.size()) return false;
+    auto& box=shared_models[found->model].box;
+    // actor/context are freshly borrowed from this native draw. A saved frame
+    // handle is only compared, and identity/world are revalidated before drawing.
+    sdk::custom_model::BoxRenderer::WorldScope scope(box,context,actor,sdk::custom_model::ViewMode::third_person);
+    if (!scope.matches_player(found->identity,found->world)) return false;
+    box.finish_world(model_mesh_immediate);
+    return scope.drawn(); // Warmup/failure always keeps the original player visible.
+}
+
 void Runtime::draw_model_probe() {
     auto* module = dynamic_cast<CustomModelProbeModule*>(client->modules().find(CustomModelProbeModule::module_id));
     const auto selected=static_cast<medicon::custom_model::BuiltinModel>(module?module->model.get<Choice>().index:0);
@@ -1760,6 +1779,7 @@ void Runtime::draw_model_probe() {
     }
     const bool requested = module && module->enabled();
     const auto mode=module?module->mode.get<Choice>().index:0;
+    sync_shared_models(requested&&mode==0,module&&module->show_users.get<bool>(),selected);
     const auto progress=model_box.static_progress();
     const bool visible=requested&&mode==0&&progress.ready&&model_box.view_mode()!=sdk::custom_model::ViewMode::unknown;
     using ModelStatus=medicon::custom_model::ModelRegistry::Status;
@@ -1829,6 +1849,9 @@ void Runtime::draw_model_probe() {
         ImGui::TextUnformatted("World queue candidates: near 0x4716E80 / ECS 0x47172D0");
         ImGui::Text("DataDriven 0x558D300: %s", mode != 0 || model_box.first_person_ready() ? "native arms suppressed" : "native arms while custom arms prepare");
         ImGui::Text("Custom model view: %s", sdk::custom_model::view_mode_name(model_box.view_mode()));
+        const auto shared=std::atomic_load_explicit(&shared_model_bindings,std::memory_order_acquire);
+        ImGui::Text("Other users: %u | Social: %s",shared_models_until.load(std::memory_order_acquire)>GetTickCount64()&&shared?static_cast<unsigned>(shared->size()):0U,
+            model_sync_online?"online":"offline");
         ImGui::Text("Candidates / Present: %llu | local: %llu | skipped: %llu | invalid: %llu",
             static_cast<unsigned long long>(sample.calls), static_cast<unsigned long long>(sample.local),
             static_cast<unsigned long long>(sample.skipped), static_cast<unsigned long long>(sample.invalid));
@@ -1887,88 +1910,39 @@ bool model_actor_is_local(void* actor, void* owner) noexcept {
     return static_cast<Runtime*>(owner)->bedrock_chat.is_local_player(actor);
 }
 
-bool restore_rotation_render_pitch(Runtime& state, void* actor) noexcept {
-    if (reinterpret_cast<std::uintptr_t>(actor) != state.rotation_override_actor.load(std::memory_order_relaxed)) return false;
-    const auto render_component = state.rotation_override_render_component.load(std::memory_order_acquire);
-    const auto rotation_component = state.rotation_override_component.load(std::memory_order_acquire);
-    if (!render_component || !rotation_component || render_component > UINTPTR_MAX - sizeof(float) ||
-        rotation_component > UINTPTR_MAX - sizeof(float)) return false;
-    float view_pitch{};
-    SIZE_T read = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(rotation_component),
-            &view_pitch, sizeof(view_pitch), &read) || read != sizeof(view_pitch) || !std::isfinite(view_pitch)) return false;
-    SIZE_T written = 0;
-    return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(render_component),
-        &view_pitch, sizeof(view_pitch), &written) && written == sizeof(view_pitch);
-}
-
 float held_rotation_yaw(Runtime& state, void* actor, float alpha, float native_yaw) noexcept {
     if (state.stopping.load(std::memory_order_acquire) ||
-        reinterpret_cast<std::uintptr_t>(actor) != state.rotation_override_actor.load(std::memory_order_relaxed))
+        !state.rotation_override_enabled.load(std::memory_order_acquire) ||
+        reinterpret_cast<std::uintptr_t>(actor) != state.rotation_override_actor.load(std::memory_order_acquire) ||
+        !sdk::custom_model::third_person(state.rotation_view_mode.load(std::memory_order_acquire)))
         return native_yaw;
-
-    const auto view_mode = state.rotation_view_mode.load(std::memory_order_acquire);
-    if (!sdk::custom_model::third_person(view_mode)) {
-        const bool override_enabled = state.rotation_override_enabled.load(std::memory_order_acquire);
-        const bool restored = restore_rotation_render_pitch(state, actor);
-        const auto now = GetTickCount64();
-        auto last = state.pitch_render_diagnostic_last.load(std::memory_order_relaxed);
-        if (now - last >= 500 && state.pitch_render_diagnostic_last.compare_exchange_strong(
-                last, now, std::memory_order_relaxed)) {
-            char message[160]{};
-            std::snprintf(message, sizeof(message),
-                "Rotations first-person render guard: view=%s yaw=native pitch=%s",
-                sdk::custom_model::view_mode_name(view_mode),
-                restored ? "restored" : (override_enabled ? "restore failed" : "native"));
-            state.report(message, override_enabled && !restored);
-        }
-        return native_yaw;
-    }
-
-    if (!state.rotation_override_enabled.load(std::memory_order_acquire)) {
-        restore_rotation_render_pitch(state, actor);
-        return native_yaw;
-    }
-
+    const auto* module = state.client ? dynamic_cast<const RotationsModule*>(
+        state.client->modules().find(RotationsModule::module_id)) : nullptr;
+    if (!module || !module->render_enabled()) return native_yaw;
+    if (state.rotation_visual_ready.load(std::memory_order_acquire))
+        return std::bit_cast<float>(static_cast<std::uint32_t>(state.rotation_visual_angles.load(std::memory_order_acquire)));
     const auto yaws = state.rotation_override_yaws.load(std::memory_order_acquire);
-    const float previous_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws));
-    const float yaw = std::bit_cast<float>(static_cast<std::uint32_t>(yaws >> 32));
-    const auto render_component = state.rotation_override_render_component.load(std::memory_order_acquire);
-    const auto pitches = state.rotation_override_pitches.load(std::memory_order_acquire);
-    const float previous_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches));
-    const float pitch = std::bit_cast<float>(static_cast<std::uint32_t>(pitches >> 32));
-    float render_yaw = sdk::interpolate_yaw(previous_yaw, yaw, alpha);
-    float render_pitch = std::isfinite(alpha)
-        ? previous_pitch + (pitch - previous_pitch) * std::clamp(alpha, 0.0F, 1.0F)
-        : pitch;
-    const bool visual_ready = state.rotation_visual_ready.load(std::memory_order_acquire);
-    if (visual_ready) {
-        const auto visual = state.rotation_visual_angles.load(std::memory_order_acquire);
-        render_yaw = std::bit_cast<float>(static_cast<std::uint32_t>(visual));
-        render_pitch = std::bit_cast<float>(static_cast<std::uint32_t>(visual >> 32));
-    }
-    bool render_write_ok = false;
-    if (std::isfinite(render_pitch)) {
-        // The same render rotation can affect first-person arms, so this
-        // branch is reached only after a validated third-person view check.
-        if (render_component && render_component <= UINTPTR_MAX - sizeof(float)) {
-            SIZE_T written = 0;
-            render_write_ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(render_component),
-                &render_pitch, sizeof(render_pitch), &written) && written == sizeof(render_pitch);
-        }
-        const auto now = GetTickCount64();
-        auto last = state.pitch_render_diagnostic_last.load(std::memory_order_relaxed);
-        if (now - last >= 500 && state.pitch_render_diagnostic_last.compare_exchange_strong(
-                last, now, std::memory_order_relaxed)) {
-            char message[224]{};
-            std::snprintf(message, sizeof(message),
-                "Rotations render: view=%s mode=%s pitch=%.2f->%.2f yaw=%.2f render_write=%s",
-                sdk::custom_model::view_mode_name(view_mode), visual_ready ? "smooth" : "tick-fallback",
-                render_pitch, pitch, render_yaw, render_write_ok ? "ok" : "failed");
-            state.report(message, !render_write_ok);
-        }
-    }
-    return render_yaw;
+    return sdk::interpolate_yaw(std::bit_cast<float>(static_cast<std::uint32_t>(yaws)),
+        std::bit_cast<float>(static_cast<std::uint32_t>(yaws >> 32)), alpha);
+}
+
+bool held_rotation_pitch(Runtime& state, void* actor, float& pitch) noexcept {
+    if (state.stopping.load(std::memory_order_acquire) ||
+        !state.rotation_override_enabled.load(std::memory_order_acquire) ||
+        reinterpret_cast<std::uintptr_t>(actor) != state.rotation_override_actor.load(std::memory_order_acquire) ||
+        !sdk::custom_model::third_person(state.rotation_view_mode.load(std::memory_order_acquire))) return false;
+    const auto* module = state.client ? dynamic_cast<const RotationsModule*>(
+        state.client->modules().find(RotationsModule::module_id)) : nullptr;
+    if (!module || !module->render_enabled()) return false;
+    const auto packed = state.rotation_visual_ready.load(std::memory_order_acquire)
+        ? state.rotation_visual_angles.load(std::memory_order_acquire)
+        : state.rotation_override_pitches.load(std::memory_order_acquire);
+    pitch = std::bit_cast<float>(static_cast<std::uint32_t>(packed >> 32));
+    return std::isfinite(pitch);
+}
+
+bool model_rotation_pitch(void* actor, float& pitch, void* owner) noexcept {
+    return held_rotation_pitch(*static_cast<Runtime*>(owner), actor, pitch);
 }
 
 float hook_body_yaw(void* actor, float alpha) {
@@ -2025,14 +1999,27 @@ void hook_model_data_render(model_native::DataDrivenRenderer* renderer,
     auto& state = callback.state;
     const auto original = state.model_data_render;
     if (!original) return;
-    if (state.stopping.load(std::memory_order_acquire) || inside_model_probe)
+    if (state.stopping.load(std::memory_order_acquire))
         return original(renderer, context, data);
     FlagScope entered(inside_model_probe);
     // CustomModel replaces native arms only after its arm-only draw succeeded.
     // Failed/missing current pose input immediately restores native hands.
     // Proven void(this, context*, renderData*) ABI; actor at renderData +0.
     const bool allow_suppression=!state.model_box.custom_model_mode()||state.model_box.first_person_ready();
-    if (state.model_probe.inspect_render(renderer, context, data, model_actor_is_local, &state,allow_suppression)) return;
+    if (!entered.previous && state.model_probe.inspect_render(
+            renderer, context, data, model_actor_is_local, &state,allow_suppression)) return;
+    // Only the local model draw borrows Rotations' rendered pitch. The native
+    // value is restored before leaving this callback; camera pitch is untouched.
+    std::uintptr_t component = 0;
+    void* actor = nullptr;
+    float pitch{};
+    SIZE_T copied{};
+    if (data && ReadProcessMemory(GetCurrentProcess(), data, &actor, sizeof(actor), &copied) && copied == sizeof(actor)) {
+        if (state.draw_shared_model(context,actor)) return;
+        if (held_rotation_pitch(state, actor, pitch))
+            component = state.rotation_override_render_component.load(std::memory_order_acquire);
+    }
+    sdk::detail::RenderPitchScope render_pitch(component, pitch);
     return original(renderer, context, data);
 }
 
@@ -2150,7 +2137,10 @@ void hook_model_mesh_immediate(void* screen, void* tess, const void* material, c
     const auto original = state.model_mesh_immediate;
     if (!original) return;
     original(screen,tess,material,texture,metadata);
-    if (!state.stopping.load(std::memory_order_acquire)) state.model_box.after_submit(screen,tess,texture,metadata,original);
+    if (!state.stopping.load(std::memory_order_acquire)) {
+        state.model_box.after_submit(screen,tess,texture,metadata,original);
+        for (auto& peer:state.shared_models) peer.box.after_submit(screen,tess,texture,metadata,original);
+    }
 }
 
 void hook_model_mesh_view(void* screen, void* tess, const void* material, const void* texture, std::uint16_t view, const void* metadata) {
@@ -2159,8 +2149,10 @@ void hook_model_mesh_view(void* screen, void* tess, const void* material, const 
     const auto original = state.model_mesh_view;
     if (!original) return;
     original(screen,tess,material,texture,view,metadata);
-    if (!state.stopping.load(std::memory_order_acquire))
+    if (!state.stopping.load(std::memory_order_acquire)) {
         state.model_box.after_submit(screen,tess,texture,metadata,state.model_mesh_immediate);
+        for (auto& peer:state.shared_models) peer.box.after_submit(screen,tess,texture,metadata,state.model_mesh_immediate);
+    }
 }
 
 void hook_model_native_submit(void* mesh, void* context, const void* material, void* bindings,
@@ -2169,8 +2161,10 @@ void hook_model_native_submit(void* mesh, void* context, const void* material, v
     auto& state=callback.state;
     const auto original=state.model_native_submit;
     if (!original) return;
-    if (!state.stopping.load(std::memory_order_acquire))
+    if (!state.stopping.load(std::memory_order_acquire)) {
         state.model_box.before_mesh_submit(context,bindings,metadata,state.model_mesh_immediate);
+        for (auto& peer:state.shared_models) peer.box.before_mesh_submit(context,bindings,metadata,state.model_mesh_immediate);
+    }
     return original(mesh,context,material,bindings,unused5,unused6,metadata,unused8,optional);
 }
 
@@ -2181,6 +2175,11 @@ void Runtime::connect_model_box() {
         const auto targets = sdk::custom_model::locate_box_targets(error);
         if (!targets) { report("CustomModel " + error,true); return; }
         model_box.configure(targets);
+        for (auto& peer:shared_models) {
+            peer.box.configure(targets);
+            peer.box.set_static_mode(true,true);
+        }
+        model_box.set_render_pitch_provider(&model_rotation_pitch, this);
         std::string view_diagnostic;
         const bool view_ready=sdk::custom_model::initialize_view_reader(view_diagnostic);
         report(view_diagnostic,!view_ready);
@@ -2205,6 +2204,7 @@ void Runtime::connect_model_box() {
     }
     if (!model_box_hooks.enable_all(error)) { model_box.set_ready(false); report("P1 enable failed: " + error,true); return; }
     model_box.set_ready(true);
+    for (auto& peer:shared_models) peer.box.set_ready(true);
     report("CustomModel P1 hooks ready. P1 Test Box / Material / Brightness / Show Debug are in CustomModel. Visual validation pending.");
 }
 
@@ -2212,7 +2212,10 @@ void* hook_model_texture_get(void* group,void* output,const void* location,bool 
     CallbackScope callback;auto& state=callback.state;const auto original=state.model_texture_get;
     if (!original) return output;
     auto* result=original(group,output,location,flag,optional,mode);
-    if (!state.stopping.load(std::memory_order_acquire)) state.model_box.observe_texture_group(group,original);
+    if (!state.stopping.load(std::memory_order_acquire)) {
+        state.model_box.observe_texture_group(group,original);
+        for (auto& peer:state.shared_models) peer.box.observe_texture_group(group,original);
+    }
     return result;
 }
 void Runtime::connect_model_static() {
@@ -2222,6 +2225,7 @@ void Runtime::connect_model_static() {
         const auto targets=sdk::custom_model::locate_static_targets(error);
         if (!targets) { report("CustomModel "+error,true);return; }
         model_box.configure_static(targets,model_assets);
+        for (auto& peer:shared_models) peer.box.configure_static(targets,peer.assets);
         std::string animation_diagnostic;const bool animation_reader=sdk::custom_model::initialize_animation_reader(animation_diagnostic);
         report(animation_diagnostic,!animation_reader);
         if (!model_static_hooks.create("CustomModel P2 async texture request",reinterpret_cast<void*>(targets.texture_get),
@@ -2245,6 +2249,12 @@ void Runtime::connect_model_static() {
         }
     }
     model_assets.start_catalog(std::move(directories),data_directory/L"cache"/L"models");
+    for (unsigned i=0;i<shared_models.size();++i) {
+        // Shared ids always use the bundled version, never another user's path
+        // or a local external override with different geometry/textures.
+        shared_models[i].assets.start_catalog({},data_directory/L"cache"/L"shared-models"/std::to_wstring(i),
+            static_cast<medicon::custom_model::BuiltinModel>(i),true);
+    }
     report("CustomModel worker started: bundled Neon / Chocolat; Model selects the character. Mode=Custom model; vanilla retained until ready.");
 }
 
@@ -2257,6 +2267,15 @@ void hook_send_packet(void* sender, void* packet) {
             if (state.pending_commands.size() < 64) state.pending_commands.push_back(std::move(input));
         })) return;
     if (!state.stopping.load(std::memory_order_acquire)) {
+        if (!state.input_open() && state.window_focused_cached.load(std::memory_order_acquire)) {
+            const auto result = state.gameplay.rewrite_rotation_input(packet);
+            if (result == sdk::RotationInputRewrite::rewritten &&
+                !state.rotation_packet_route_reported.exchange(true, std::memory_order_acq_rel))
+                state.report("Server rotation movement-packet rewrite active (pitch/yaw/head yaw).");
+            else if (result == sdk::RotationInputRewrite::layout_rejected &&
+                !state.rotation_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
+                state.report("Server rotation movement-packet layout check failed; angles left unchanged.", true);
+        }
         const auto sprint_result = state.gameplay.rewrite_sprint_input(packet,
             state.sprint_packet_override_enabled.load(std::memory_order_acquire),
             state.sprint_packet_requested.load(std::memory_order_acquire));
@@ -2314,9 +2333,7 @@ void hook_base_tick(void* actor) {
     // also after every gameplay module was turned off.
     if (!wanted && !state.gameplay.slot_restore_pending()) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-        (void)restore_rotation_render_pitch(state, actor);
         state.rotation_override_render_component.store(0, std::memory_order_release);
-        state.rotation_override_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.gameplay.clear();
@@ -2334,9 +2351,7 @@ void hook_base_tick(void* actor) {
             (aura && aura->enabled() && aura->visible_only.get<bool>());
         if (!state.gameplay.capture(state.bedrock_chat.mouse_client(), actor, visibility)) {
             state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-            (void)restore_rotation_render_pitch(state, actor);
             state.rotation_override_render_component.store(0, std::memory_order_release);
-            state.rotation_override_component.store(0, std::memory_order_release);
             state.rotation_override_enabled.store(false, std::memory_order_release);
             state.client->clear_gameplay();
             state.last_game_tick = {};
@@ -2407,32 +2422,34 @@ void hook_base_tick(void* actor) {
             std::memory_order_release);
         sdk::RotationDiagnostic pitch{};
         const bool pitch_diagnostic_ready = state.gameplay.rotation_diagnostic(pitch);
+        const auto* rotations_module = dynamic_cast<const RotationsModule*>(
+            state.client->modules().find(RotationsModule::module_id));
         float previous_yaw = 0.0F, requested_yaw = 0.0F;
-        const bool rotation_requested = state.gameplay.rotation_override(previous_yaw, requested_yaw);
+        const bool rotation_requested = rotations_module && rotations_module->enabled() &&
+            rotations_module->server_rotation_valid.load(std::memory_order_acquire) &&
+            state.gameplay.rotation_override(previous_yaw, requested_yaw);
         const bool body_getter_matches = rotation_requested &&
             state.gameplay.validates_body_yaw_interpolator(actor);
         const bool head_getter_matches = rotation_requested &&
             state.gameplay.validates_head_yaw_interpolator(actor);
         if (rotation_requested && body_getter_matches && head_getter_matches) {
+            requested_yaw = rotations_module->server_yaw.load(std::memory_order_relaxed);
             state.rotation_override_actor.store(reinterpret_cast<std::uintptr_t>(actor), std::memory_order_relaxed);
             const auto yaws = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(previous_yaw)) |
                 (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(requested_yaw)) << 32);
             state.rotation_override_yaws.store(yaws, std::memory_order_release);
             if (pitch_diagnostic_ready && pitch.render_component) {
-                const auto pitches = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(pitch.previous_pitch)) |
-                    (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(pitch.requested_pitch)) << 32);
+                const float requested_pitch = rotations_module->server_pitch.load(std::memory_order_relaxed);
+                const auto pitches = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(state.gameplay.frame().pitch)) |
+                    (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(requested_pitch)) << 32);
                 state.rotation_override_pitches.store(pitches, std::memory_order_release);
                 state.rotation_override_render_component.store(pitch.render_component, std::memory_order_release);
-                state.rotation_override_component.store(pitch.rotation_component, std::memory_order_release);
             } else {
                 state.rotation_override_render_component.store(0, std::memory_order_release);
-                state.rotation_override_component.store(0, std::memory_order_release);
             }
             state.rotation_override_enabled.store(true, std::memory_order_release);
         } else {
-            (void)restore_rotation_render_pitch(state, actor);
             state.rotation_override_render_component.store(0, std::memory_order_release);
-            state.rotation_override_component.store(0, std::memory_order_release);
             state.rotation_override_enabled.store(false, std::memory_order_release);
             if (rotation_requested && !body_getter_matches && !state.rotation_getter_identity_reported) {
                 state.report("Rotations render hold withheld: local actor body-yaw getter did not match its verified profile. " +
@@ -2466,17 +2483,13 @@ void hook_base_tick(void* actor) {
         }
     } catch (const std::exception& error) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-        (void)restore_rotation_render_pitch(state, actor);
         state.rotation_override_render_component.store(0, std::memory_order_release);
-        state.rotation_override_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.report(std::string("Gameplay update: ") + error.what(), true);
     } catch (...) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-        (void)restore_rotation_render_pitch(state, actor);
         state.rotation_override_render_component.store(0, std::memory_order_release);
-        state.rotation_override_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
     }
@@ -3075,21 +3088,22 @@ DWORD WINAPI start_worker(void*) {
         unsigned starting = 1;
         state.status.compare_exchange_strong(starting, 2);
         state.report("DXGI hooks ready.");
-        try { state.connect_rotation(); }
-        catch (const std::exception& error) {
-            state.report(std::string("Rotations hook unavailable: ") + error.what(), true);
-        }
         // Spec 4.4: after Medicon finished initializing, never from DllMain.
         if (state.social) state.social->start();
         try { state.connect_mouse(); state.connect_chat(); state.connect_chat_feedback(); }
         catch (const std::exception& error) { state.report(std::string("Minecraft native chat SDK unavailable: ") + error.what(), true); }
-        // Append P0 after the existing native startup sequence; preserve the
-        // relative order and readiness contracts of every existing hook.
+        // P1 must resolve the shared body-yaw entry before Rotations detours
+        // its prologue. Scanning after connect_rotation() loses the P1 yaw
+        // signature and prevents both CustomModel drawing and asset loading.
         try { state.connect_model_probe(); state.connect_model_box(); state.connect_model_static(); }
         catch (const std::exception& error) {
             state.model_probe.set_ready(false);
             state.model_box.set_ready(false);
             state.report(std::string("CustomModel P0 unavailable: ") + error.what(), true);
+        }
+        try { state.connect_rotation(); }
+        catch (const std::exception& error) {
+            state.report(std::string("Rotations hook unavailable: ") + error.what(), true);
         }
         return 0;
     } catch (const std::exception& error) { state.report(error.what(), true); }

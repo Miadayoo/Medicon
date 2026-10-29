@@ -122,13 +122,15 @@ BoxMatrix model_world_matrix(const BoxMatrix& base, BoxVec3 position, float body
     // model.json yawOffset is additive to the native 180-bodyYaw basis.
     // The previous composition subtracted another 180 degrees, reversing the
     // supplied Sprinter model (whose configured yawOffset is 180).
-    return box_world_matrix(base, position, body_yaw - yaw_offset);
+    auto world = box_world_matrix(base, position, body_yaw - yaw_offset);
+    for (unsigned i = 0; i < 12; ++i) world[i] *= BoxRenderer::body_scale;
+    return world;
 }
 
 BoxMatrix first_person_world_matrix(const BoxMatrix& base,float head_yaw,float pitch) noexcept {
     // Arm geometry is authored into camera-relative +Z-forward space by the
     // worker/Animator. No player-feet translation or third-person yawOffset.
-    const auto yaw=model_world_matrix(base,{},head_yaw,180);
+    const auto yaw=box_world_matrix(base,{},head_yaw-180);
     const float angle=pitch*3.14159265358979323846F/180,c=std::cos(angle),s=std::sin(angle);
     auto out=yaw;
     for(unsigned row=0;row<4;++row){out[4+row]=yaw[4+row]*c+yaw[8+row]*s;out[8+row]=yaw[8+row]*c-yaw[4+row]*s;}
@@ -235,6 +237,9 @@ struct BoxRenderer::StaticState {
     std::atomic_uint animation_motion{};
     std::atomic_bool animation_input_ready{};
     LARGE_INTEGER animation_last{};
+    struct PlayerPose { std::uint64_t identity{}, world{}, used{}; LARGE_INTEGER last{}; };
+    std::array<PlayerPose,8> player_poses{};
+    std::uint64_t pose_serial{};
 };
 BoxRenderer::BoxRenderer() : static_(std::make_unique<StaticState>()) {}
 BoxRenderer::~BoxRenderer() = default; // Runtime explicitly releases after callback drain.
@@ -313,6 +318,14 @@ BoxRenderer::WorldScope::WorldScope(BoxRenderer& owner, void* context, void* act
     current_ = this;
 }
 BoxRenderer::WorldScope::~WorldScope() { current_ = previous_; }
+float BoxRenderer::render_pitch(void* actor, ViewMode view, float native_pitch) const noexcept {
+    float pitch{};
+    if (actor && third_person(view) && render_pitch_provider_ &&
+        render_pitch_provider_(actor, pitch, render_pitch_owner_) && std::isfinite(pitch))
+        return std::clamp(pitch, -90.0F, 90.0F);
+    return native_pitch;
+}
+
 bool BoxRenderer::prepare(WorldScope& scope, void* context, void* actor) noexcept {
     const auto c = reinterpret_cast<std::uintptr_t>(context);
     const auto a = reinterpret_cast<std::uintptr_t>(actor);
@@ -346,6 +359,8 @@ bool BoxRenderer::prepare(WorldScope& scope, void* context, void* actor) noexcep
             scope.world_=model_world_matrix(base,position,body_yaw,scope.model_->yaw_offset);
         if(animation_enabled_.load(std::memory_order_acquire)||scope.view_==ViewMode::first_person){
             scope.animation_input_=read_animation_input(actor,alpha,body_yaw);
+            if (scope.animation_input_.valid)
+                scope.animation_input_.pitch=render_pitch(actor,scope.view_,scope.animation_input_.pitch);
             scope.animation_input_.world_position={position.x+origin.x,position.y+origin.y,position.z+origin.z};
             if(scope.view_==ViewMode::first_person&&scope.animation_input_.valid)
                 scope.world_=first_person_world_matrix(base,body_yaw-scope.animation_input_.head_yaw,scope.animation_input_.pitch);
@@ -501,6 +516,7 @@ void BoxRenderer::finish_static(WorldScope& scope,MeshImmediateFn original) noex
         for(auto& texture:state->textures)if(texture.owned){native_.release_binding(texture.bytes.data());texture.owned=false;}
         state->uploaded.store(0);state->loaded.store(0);state->requests.store(0);state->ticks.store(0);
         state->next_request=0;state->request_index=0;state->animation_last={};
+        state->player_poses={};state->pose_serial=0;
         state->generation.store(model.get(),std::memory_order_release);
     }
     void* tess{};const auto screen=reinterpret_cast<std::uintptr_t>(scope.screen_);
@@ -561,14 +577,29 @@ void BoxRenderer::finish_static(WorldScope& scope,MeshImmediateFn original) noex
         if(!input.valid){state->animation_read_failures.fetch_add(1,std::memory_order_relaxed);
             if(first_person){state->first_person_ready.store(false,std::memory_order_release);return;}}
         else{
+            auto* animator = model->animation.get();
+            auto* previous = &state->animation_last;
+            if (!first_person && model->shared_animations.size()==state->player_poses.size()) {
+                auto found = std::find_if(state->player_poses.begin(),state->player_poses.end(),[&](const auto& pose) {
+                    return pose.used && pose.identity==input.identity && pose.world==input.world_identity;
+                });
+                if (found==state->player_poses.end()) {
+                    found=std::min_element(state->player_poses.begin(),state->player_poses.end(),[](const auto& a,const auto& b){return a.used<b.used;});
+                    *found={input.identity,input.world_identity,0,{}};
+                    model->shared_animations[static_cast<std::size_t>(found-state->player_poses.begin())]->reset();
+                }
+                found->used=++state->pose_serial;
+                animator=model->shared_animations[static_cast<std::size_t>(found-state->player_poses.begin())].get();
+                previous=&found->last;
+            }
             LARGE_INTEGER now{},frequency{},skinned{},finished{};QueryPerformanceCounter(&now);QueryPerformanceFrequency(&frequency);
-            const float dt=state->animation_last.QuadPart?float(double(now.QuadPart-state->animation_last.QuadPart)/frequency.QuadPart):1.0F/60;
-            state->animation_last=now;
-            if(first_person)model->animation->update_first_person(*model->rig,input,dt,animate);
-            else model->animation->update(*model->rig,input,dt);
+            const float dt=previous->QuadPart?float(double(now.QuadPart-previous->QuadPart)/frequency.QuadPart):1.0F/60;
+            *previous=now;
+            if(first_person)animator->update_first_person(*model->rig,input,dt,animate);
+            else animator->update(*model->rig,input,dt);
             QueryPerformanceCounter(&skinned);
-            state->animation_motion.store(static_cast<unsigned>(model->animation->motion()),std::memory_order_relaxed);
-            const auto output=first_person?model->animation->first_person_output():model->animation->output();
+            state->animation_motion.store(static_cast<unsigned>(animator->motion()),std::memory_order_relaxed);
+            const auto output=first_person?animator->first_person_output():animator->output();
             const auto& batches=first_person?model->rig->first_person.batches:model->rig->batches;
             for(const auto& batch:batches){
                 native_.begin(tess,nullptr,2,static_cast<int>(batch.vertices.size()),0);

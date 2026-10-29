@@ -345,6 +345,8 @@ SocialNet::Ending SocialNet::receive_loop(net::WebSocket& socket, Backoff& backo
                 core_->channel().events.push(FriendUpdated{value.user, value.status});
             } else if constexpr (std::is_same_v<T, PresenceFrame>) {
                 core_->channel().events.push(PresenceChanged{value.user_id, value.online});
+            } else if constexpr (std::is_same_v<T, ModelPeersFrame>) {
+                core_->channel().events.push(ModelsChanged{value.peers});
             }
         }, *frame);
     }
@@ -497,6 +499,11 @@ void SocialNet::run_sender() {
         next_ping = std::chrono::steady_clock::now() + heartbeat;
     }
     if (const auto current = socket()) current->shutdown(close_going_away, "client_shutdown");
+}
+
+void SocialNet::handle(const SyncModels& command) {
+    DWORD error{};
+    if (const auto current = socket()) current->send_text(model_sync_frame(command.self, command.watching), error);
 }
 
 } // namespace medicon::social::detail
