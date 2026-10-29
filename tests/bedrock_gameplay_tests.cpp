@@ -179,15 +179,19 @@ void server_rotation_packets() {
         store(packet, 0x38, std::array<float, 3>{123, 64, -456});
         store(packet, rotation, std::array<float, 2>{12, 73});
         store(packet, head, 61.0F);
+        // PlayerAuthInput interact rotation; MovePlayer has no such field.
+        if (id == 144) store(packet, 0x6C, std::array<float, 2>{12, 73});
         if (id == 19) store(packet, 0x50, std::array<std::uint8_t, 2>{0, 1});
         const auto address = reinterpret_cast<std::uintptr_t>(packet.data());
         const auto before = packet;
         auto expected = before;
         store(expected, rotation, std::array<float, 2>{-45, -170});
         store(expected, head, -170.0F);
+        if (id == 144) store(expected, 0x6C, std::array<float, 2>{-45, -170});
         require(write_gameplay_rotation_input(address, id, 190, -45) && packet == expected,
-                "server rotation did not update only packet pitch/yaw/head yaw");
+                "server rotation did not update only packet pitch/yaw/head yaw/interact rotation");
         store(expected, rotation, std::array<float, 2>{90, -170});
+        if (id == 144) store(expected, 0x6C, std::array<float, 2>{90, -170});
         require(write_gameplay_rotation_input(address, id, -170, 120) && packet == expected,
                 "pitch-only server rotation or pitch clamp failed");
         const auto rotated = packet;
@@ -204,6 +208,13 @@ void server_rotation_packets() {
         const auto invalid_position = packet;
         require(!write_gameplay_rotation_input(address, id, 90, -30) && packet == invalid_position,
                 "invalid movement position was accepted");
+        if (id == 144) {
+            packet = before;
+            store(packet, 0x6C, std::array<float, 2>{std::numeric_limits<float>::quiet_NaN(), 73});
+            const auto invalid_interact = packet;
+            require(!write_gameplay_rotation_input(address, id, 90, -30) && packet == invalid_interact,
+                    "unknown PlayerAuthInput interact rotation layout was changed");
+        }
         if (id == 19) {
             packet = before;
             store(packet, 0x50, std::array<std::uint8_t, 2>{4, 1});

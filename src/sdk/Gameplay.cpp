@@ -47,10 +47,19 @@ constexpr std::size_t player_auth_input_head_yaw_offset = 0x44;
 constexpr std::size_t move_player_rotation_offset = 0x44;
 constexpr std::size_t move_player_head_yaw_offset = 0x4C;
 constexpr std::uint64_t no_server_rotation = 0x7FC000007FC00000ULL;
-// In this x64 packet layout, mInputData follows the Packet base and the
-// rotation/position/movement fields. Its reserved upper 62 bits are checked
-// before changing any bit, so an unknown layout is passed through unchanged.
-constexpr std::size_t player_auth_input_flags_offset = 0x98;
+// PlayerAuthInputPacketPayload follows the 0x30-byte Packet base:
+// rot +0x30, pos +0x38, head yaw +0x44, pos delta +0x48, vehicle rot +0x54,
+// analog move +0x5C, move +0x64, interact rot +0x6C, camera +0x74,
+// raw move +0x80, then the 16-byte InputData set at +0x88 and InputMode +0x98.
+// The rotation/position offsets above (and MovePlayer's) are the validated
+// ones; this order is LeviLamina's 26.51 payload, whose field set matches the
+// 1.26.52 protocol schema. Servers take interactions (attacks, block use)
+// from the interact rotation, so it must follow the requested rotation too.
+// https://github.com/LiteLDev/LeviLamina/blob/a0d87a55ea2593d28e63fa1eb6879d373ce95899/src/mc/network/packet/PlayerAuthInputPacketPayload.h
+constexpr std::size_t player_auth_input_interact_rotation_offset = 0x6C;
+// InputData's reserved upper 62 bits are checked before changing any bit, so
+// an unknown layout is passed through unchanged.
+constexpr std::size_t player_auth_input_flags_offset = 0x88;
 constexpr std::uint32_t sprinting_input_bit = 20;
 constexpr std::uint32_t start_sprinting_input_bit = 25;
 constexpr std::uint32_t stop_sprinting_input_bit = 26;
@@ -238,14 +247,17 @@ bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float y
     if (!auth_input && packet_id != move_player_packet_id) return false;
     const auto rotation_offset = auth_input ? player_auth_input_rotation_offset : move_player_rotation_offset;
     const auto head_offset = auth_input ? player_auth_input_head_yaw_offset : move_player_head_yaw_offset;
-    Vec2 original_rotation{};
+    Vec2 original_rotation{}, original_interact{};
     float original_head{};
     Vec3 position{};
     const auto valid_angle = [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; };
     if (!read_at(packet, rotation_offset, original_rotation) || !read_at(packet, head_offset, original_head) ||
         !valid_angle(original_rotation.x) || !valid_angle(original_rotation.y) || !valid_angle(original_head) ||
         !read_at(packet, 0x38, position) || !valid_position(position)) return false;
-    if (!auth_input) {
+    if (auth_input) {
+        if (!read_at(packet, player_auth_input_interact_rotation_offset, original_interact) ||
+            !valid_angle(original_interact.x) || !valid_angle(original_interact.y)) return false;
+    } else {
         std::array<std::uint8_t, 2> mode_and_ground{};
         if (!read_at(packet, 0x50, mode_and_ground) || mode_and_ground[0] > 3 || mode_and_ground[1] > 1)
             return false;
@@ -253,7 +265,9 @@ bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float y
     yaw = std::remainder(yaw, 360.0F);
     const Vec2 rotation{std::clamp(pitch, -90.0F, 90.0F), yaw};
     if (!write_at(packet, rotation_offset, rotation)) return false;
-    if (write_at(packet, head_offset, yaw)) return true;
+    if (write_at(packet, head_offset, yaw) &&
+        (!auth_input || write_at(packet, player_auth_input_interact_rotation_offset, rotation))) return true;
+    (void)write_at(packet, head_offset, original_head);
     (void)write_at(packet, rotation_offset, original_rotation);
     return false;
 }

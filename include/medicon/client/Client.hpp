@@ -29,6 +29,10 @@ public:
     [[nodiscard]] sdk::GameplayFrame* gameplay_view() noexcept {
         return gameplay_frame_.ready && gameplay_frame_.projection_ready ? &gameplay_frame_ : nullptr;
     }
+    // The copied world snapshot, also when the camera profile is unavailable.
+    [[nodiscard]] const sdk::GameplayFrame* gameplay_snapshot() const noexcept {
+        return gameplay_frame_.ready ? &gameplay_frame_ : nullptr;
+    }
     // Before ImGui::NewFrame(); true when the host must re-upload its font texture.
     bool prepare_frame();
     void render(); // An ImGui context and an active NewFrame() are required.

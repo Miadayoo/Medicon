@@ -50,7 +50,8 @@ for the local third-person draw, then restores the native render value.
 CustomModel receives the same Rotations pitch through its render adapter;
 first-person arms continue to use the camera pitch. Successful gameplay angle
 requests also update outgoing PlayerAuthInput and MovePlayer pitch, yaw and head
-yaw through the existing packet-send hook. This uses the requested angles rather
+yaw, plus PlayerAuthInput's interact rotation (which servers use for attacks and
+block use), through the existing packet-send hook. This uses the requested angles rather
 than render interpolation and works with Rotations rendering disabled. The
 request is cleared on target loss, input capture, module disable or world reset;
 Rotations Always alone leaves native packet angles untouched. Sprint updates native movement
