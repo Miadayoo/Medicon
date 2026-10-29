@@ -27,6 +27,7 @@ public:
     void update(bool available, bool compact, MusicWidgetPose target, float dt);
     const MusicWidgetPose& pose() const noexcept { return pose_; }
     MusicWidgetState state() const noexcept { return state_; }
+    bool settled() const noexcept { return elapsed_ >= 0.35F; }
 private:
     MusicWidgetPose pose_{}, from_{}, target_{};
     MusicWidgetState state_ = MusicWidgetState::Hidden;
@@ -82,6 +83,18 @@ private:
     bool just_started_ = false;
 };
 
+// A fully expanded, stable song waits three seconds, pans to the title's end,
+// pauses there, then returns. Distances are reference pixels at 1080p.
+class MusicWidgetTitleScroll {
+public:
+    void update(bool fully_expanded, float overflow, float dt);
+    void reset() noexcept { overflow_ = 0; elapsed_ = 0; }
+    float offset() const noexcept;
+private:
+    float overflow_ = 0;
+    double elapsed_ = 0;
+};
+
 // One instance lives with SocialUi, independently of network attachment. Native
 // providers are lazy, so headless UI tests and deterministic previews can inject
 // snapshots without starting COM/audio workers.
@@ -105,6 +118,7 @@ public:
     float art_rotation() const noexcept { return art_rotation_; }
     float track_progress() const noexcept { return tracks_.progress(); }
     bool track_transitioning() const noexcept { return tracks_.previous() != nullptr; }
+    float title_scroll_offset() const noexcept { return title_draw_offset_; }
     // Uses the last drawn rounded shape; captured presses keep their release
     // away from panels underneath even if the pointer leaves the widget.
     bool captures_pointer(const PointerInput& pointer) const noexcept;
@@ -131,6 +145,8 @@ private:
     MusicWidgetAnimator animator_;
     MusicWidgetPresentation presentation_;
     MusicWidgetVisibility visibility_;
+    MusicWidgetTitleScroll title_scroll_;
+    float title_draw_offset_ = 0, previous_title_offset_ = 0;
     std::optional<MusicWidgetPose> hit_pose_;
     bool pressed_ = false;
     bool enabled_ = true;

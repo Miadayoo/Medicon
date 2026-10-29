@@ -200,6 +200,29 @@ float MusicWidgetTracks::progress() const noexcept {
     return t < 0.5F ? 4 * t * t * t : 1 - 4 * u * u * u;
 }
 
+void MusicWidgetTitleScroll::update(bool fully_expanded, float overflow, float dt) {
+    if (!fully_expanded || !std::isfinite(overflow) || overflow <= 0.5F) { reset(); return; }
+    if (overflow_ == 0 || std::abs(overflow - overflow_) > 0.5F) {
+        overflow_ = overflow;
+        elapsed_ = 0; // Do not count the frame that finishes expanding/changes layout.
+        return;
+    }
+    if (!std::isfinite(dt) || dt <= 0) return;
+    const double travel = std::max(2.0, static_cast<double>(overflow_) / 24.0);
+    // Use actual elapsed time for the three-second wait, even after a slow frame.
+    elapsed_ = std::fmod(elapsed_ + static_cast<double>(dt), 3.0 + travel * 2 + 1.0);
+}
+
+float MusicWidgetTitleScroll::offset() const noexcept {
+    if (overflow_ == 0 || elapsed_ <= 3) return 0;
+    const double travel = std::max(2.0, static_cast<double>(overflow_) / 24.0);
+    const double t = elapsed_ - 3;
+    const auto ease = [](double value) { return (1 - std::cos(std::numbers::pi * std::clamp(value, 0.0, 1.0))) * 0.5; };
+    if (t < travel) return static_cast<float>(overflow_ * ease(t / travel));
+    if (t < travel + 1) return overflow_;
+    return static_cast<float>(overflow_ * (1 - ease((t - travel - 1) / travel)));
+}
+
 void MusicWidgetPresentation::update(bool playing, float dt) {
     if (!playing) { playing_ = false; elapsed_ = 0; return; }
     if (!playing_) { playing_ = true; elapsed_ = 0; return; }
@@ -306,6 +329,7 @@ void MusicWidget::set_enabled(bool enabled) {
         presentation_.update(false, 0);
         hit_pose_.reset();
         pressed_ = false;
+        title_scroll_.reset();
     }
 }
 bool MusicWidget::available() const noexcept { return enabled_ && snapshot_ && snapshot_->available && snapshot_->playing; }
@@ -342,6 +366,12 @@ void MusicWidget::update(SocialFonts& fonts) {
         if (audio_) audio_->set_enabled(available() && snapshot_->playing);
     }
     if (available()) {
+        if (tracks_.current() && !tracks_.previous() && !same_song(*tracks_.current(), *snapshot_)) {
+            // Keep a scrolling title at its drawn position while that song slides out.
+            previous_title_offset_ = title_draw_offset_;
+            title_draw_offset_ = 0;
+            title_scroll_.reset();
+        }
         tracks_.update(snapshot_, visibility_.morph().content > 0);
         if (requested_title_ != snapshot_->title) {
             requested_title_ = snapshot_->title;
@@ -353,6 +383,7 @@ void MusicWidget::update(SocialFonts& fonts) {
         }
     }
     if (!available()) {
+        title_scroll_.reset();
         presentation_.update(false, 0);
         hit_pose_.reset();
         pressed_ = false;
@@ -367,6 +398,8 @@ void MusicWidget::finish_hide() {
     level_time_ = 0;
     hit_pose_.reset();
     pressed_ = false;
+    title_scroll_.reset();
+    title_draw_offset_ = previous_title_offset_ = 0;
 }
 void MusicWidget::upload_art() {
     // A session can vanish with no remaining art or metadata. Keep the last
@@ -404,6 +437,7 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
                          const ToastManager& toasts, const ToastFrame& frame) {
     const bool ready = list && fonts.ready();
     const bool showing = available() && ready;
+    if (!showing) title_scroll_.reset();
     if (showing) {
         handle_pointer(frame.pointer, !toasts.empty());
         presentation_.update(true, frame.dt);
@@ -422,8 +456,14 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
     // While exiting, hold the current shape and use the last displayed song.
     // Resuming reverses opacity from here and retargets that same morph.
     if (!ready || alpha <= 0 || appearance.scale < 0.001F || !tracks_.current()) return;
+    const auto before_track = tracks_.current();
     if (showing && appearance.content > 0 && fonts.has(SocialText::Title, tracks_.current()->title) &&
         fonts.has(SocialText::Small, tracks_.current()->artist)) tracks_.advance(frame.dt);
+    if (tracks_.current() != before_track) {
+        previous_title_offset_ = title_draw_offset_;
+        title_draw_offset_ = 0;
+        title_scroll_.reset();
+    }
     upload_art();
     // The host can Present at hundreds of FPS; visualizer updates stay at 60 Hz.
     level_time_ += clamp_dt(frame.dt);
@@ -440,6 +480,15 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
     const auto& full_pose = animator_.pose();
     auto pose = visibility_.apply(full_pose);
     const float s = frame.display.y / theme::social::metrics::reference_height;
+    const float title_room = std::max(0.0F, full_pose.width - 92 * s);
+    const bool title_ready = fonts.has(SocialText::Title, tracks_.current()->title);
+    const bool fully_expanded = showing && title_ready && toasts.empty() && !tracks_.previous() &&
+        animator_.state() == MusicWidgetState::Expanded && animator_.settled() && appearance.content >= 1 &&
+        appearance.stretch == 1 && appearance.scale == 1;
+    const float overflow = fonts.measure(SocialText::Title, tracks_.current()->title) - title_room;
+    title_scroll_.update(fully_expanded, overflow / std::max(s, 0.001F), frame.dt);
+    // Ease back during a collapse/exit rather than snapping a scrolled title.
+    title_draw_offset_ = follow(title_draw_offset_, title_scroll_.offset(), clamp_dt(frame.dt), 0.06F);
     // A resize can shrink the viewport below an in-flight pose. Clamp the drawn
     // geometry immediately while its target continues the shared morph.
     pose.width = std::min(pose.width, frame.display.x);
@@ -484,7 +533,7 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
         // Keep the frame and spectrum still; only the song's art/text slides.
         // The inset clip also keeps a moving image clear of rounded corners.
         list->PushClipRect({min.x + 14 * s, min.y}, {std::max(min.x + 14 * s, max.x - 14 * s), max.y}, true);
-        const auto song = [&](const music::MusicSnapshot& track, float offset) {
+        const auto song = [&](const music::MusicSnapshot& track, float offset, float title_offset) {
             const float art_size = 52 * s;
             const ImVec2 a{min.x + 14 * s + offset, min.y + 10 * s}, b{a.x + art_size, a.y + art_size};
             if (const auto texture = art_texture(track.art)) {
@@ -502,13 +551,35 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
                 music_icon(list, {(a.x+b.x)*0.5F,(a.y+b.y)*0.5F}, 23*s, expanded);
             }
             const float x = b.x + 12 * s, room = std::max(0.0F, full_pose.width - 92 * s);
-            fonts.draw(list, SocialText::Title, x, min.y + 13 * s, to_u32(theme::white, expanded),
-                fonts.ellipsize(SocialText::Title, track.title, room, scratch_));
+            const float title_top = min.y + 13 * s;
+            const float excess = std::max(0.0F, fonts.measure(SocialText::Title, track.title) - room);
+            const float pan = std::clamp(title_offset * s, 0.0F, excess);
+            // The full title is clipped only to its own text lane, so panning
+            // never paints over album art, the artist, or the neighbouring song.
+            list->PushClipRect({x, title_top}, {x + room, title_top + fonts.line_height(SocialText::Title)}, true);
+            const int first_title_vertex = list->VtxBuffer.Size;
+            fonts.draw(list, SocialText::Title, x - pan, title_top, to_u32(theme::white, expanded), track.title);
+            if (excess > 0.5F) {
+                // SocialFonts aligns static text to pixels. Restore the fractional
+                // translation here so a slow pan remains smooth at every frame.
+                const float subpixel = x - pan - std::round(x - pan);
+                const float fade_width = std::max(1.0F, std::min(10 * s, room * 0.25F));
+                for (int i = first_title_vertex; i < list->VtxBuffer.Size; ++i) {
+                    auto& vertex = list->VtxBuffer[i];
+                    vertex.pos.x += subpixel;
+                    float fade = 1;
+                    if (pan > 0.5F) fade *= std::clamp((vertex.pos.x - x) / fade_width, 0.0F, 1.0F);
+                    if (pan < excess - 0.5F) fade *= std::clamp((x + room - vertex.pos.x) / fade_width, 0.0F, 1.0F);
+                    const auto a = static_cast<ImU32>(static_cast<float>((vertex.col >> IM_COL32_A_SHIFT) & 0xFFu) * fade);
+                    vertex.col = (vertex.col & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+                }
+            }
+            list->PopClipRect();
             fonts.draw(list, SocialText::Small, x, min.y + 38 * s, to_u32({0.68F, 0.73F, 0.82F, 1}, expanded),
                 fonts.ellipsize(SocialText::Small, track.artist, room, scratch_));
         };
-        if (tracks_.previous()) song(*tracks_.previous(), -travel * track_progress);
-        song(*tracks_.current(), tracks_.previous() ? travel * (1 - track_progress) : 0);
+        if (tracks_.previous()) song(*tracks_.previous(), -travel * track_progress, previous_title_offset_);
+        song(*tracks_.current(), tracks_.previous() ? travel * (1 - track_progress) : 0, title_draw_offset_);
         list->PopClipRect();
         const float width = std::max(1.0F, full_pose.width - 28 * s);
         const float step = width / static_cast<float>(music::bar_count);

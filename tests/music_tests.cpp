@@ -76,6 +76,55 @@ void track_slides() {
     check(!tracks.current() && !tracks.previous(), "hide completion releases all song snapshots");
 }
 
+void title_scrolling() {
+    MusicWidgetTitleScroll scroll;
+    scroll.update(false, 96, 10);
+    check(scroll.offset() == 0, "titles stay still until expansion and song transitions finish");
+    scroll.update(true, 96, 1);
+    scroll.update(true, 96, 2.99F);
+    check(scroll.offset() == 0, "a fully expanded long title waits three seconds");
+    scroll.update(true, 96, 0.51F);
+    check(scroll.offset() > 0 && scroll.offset() < 8, "title scrolling starts slowly without a jump");
+    float before = scroll.offset();
+    for (int i = 0; i < 35; ++i) {
+        scroll.update(true, 96, 0.1F);
+        check(scroll.offset() >= before && scroll.offset() <= 96, "outbound scroll reveals the suffix without overshooting");
+        before = scroll.offset();
+    }
+    check(std::abs(scroll.offset() - 96) < 0.001F, "the entire title suffix reaches the visible text lane");
+    scroll.update(true, 96, 0.8F);
+    check(scroll.offset() == 96, "the title pauses at its end so it can be read");
+    scroll.update(true, 96, 0.7F);
+    check(scroll.offset() < 96 && scroll.offset() > 88, "the return also starts slowly");
+    before = scroll.offset();
+    for (int i = 0; i < 35; ++i) {
+        scroll.update(true, 96, 0.1F);
+        check(scroll.offset() <= before && scroll.offset() >= 0, "return scroll continuously restores the beginning");
+        before = scroll.offset();
+    }
+    check(scroll.offset() < 0.001F, "the title returns completely to its beginning");
+    scroll.update(true, 96, 2.9F);
+    check(scroll.offset() == 0, "each repeat waits again at the beginning");
+    scroll.update(true, 96, 1);
+    check(scroll.offset() > 0, "long titles repeat their round trip while expanded");
+    scroll.update(false, 96, 1);
+    scroll.update(true, 96, 1);
+    scroll.update(true, 96, 2.9F);
+    check(scroll.offset() == 0, "compact mode resets both position and the three-second wait");
+    scroll.update(true, 96, 1);
+    scroll.update(true, 144, 1);
+    check(scroll.offset() == 0, "resizing the text lane restarts at its beginning");
+    scroll.update(true, 144, std::numeric_limits<float>::quiet_NaN());
+    scroll.update(true, 144, -1);
+    check(scroll.offset() == 0, "invalid frame times do not advance the title");
+    scroll.update(true, 144, 4);
+    check(scroll.offset() > 0, "the wait uses elapsed time even after a slow frame");
+    scroll.update(true, 0, 20);
+    check(scroll.offset() == 0, "titles that fit never scroll");
+    scroll.update(true, std::numeric_limits<float>::infinity(), 20);
+    check(scroll.offset() == 0, "invalid measurements cannot produce invalid text positions");
+}
+
 void sliding_texture_lifecycle() {
     struct Host : TextureHost {
         ImTextureID next = 100;
@@ -186,6 +235,45 @@ void sliding_texture_lifecycle() {
         widget.set_enabled(true); tick(50);
         check(widget.available() && widget.visible() && widget.state() == MusicWidgetState::Compact,
               "music on restores playing media and the saved manual shape");
+        const auto click = [&] {
+            const auto p = widget.pose();
+            frame.pointer.valid = true;
+            frame.pointer.position = {p.x + p.width / 2, p.y + p.height / 2};
+            frame.pointer.buttons[0].pressed = frame.pointer.buttons[0].down = true;
+            tick(1);
+            frame.pointer.buttons[0] = {};
+            frame.pointer.buttons[0].released = true;
+            tick(1);
+            frame.pointer = {};
+        };
+        auto long_song = song("Midnight City Lights - A Long Journey to the Other Side", 50);
+        widget.set_preview(long_song); tick(35);
+        click(); tick(20);
+        check(widget.title_scroll_offset() == 0, "opening the full widget does not immediately pan a long title");
+        tick(177);
+        check(widget.title_scroll_offset() == 0, "rendered title waits three seconds after the expansion finishes");
+        tick(70);
+        check(widget.title_scroll_offset() > 1, "overflowing titles really pan in the production renderer");
+        const float pan_before = widget.title_scroll_offset();
+        auto art_only = std::make_shared<music::MusicSnapshot>(*long_song);
+        art_only->art = a->art;
+        widget.set_preview(art_only); tick(1);
+        check(widget.title_scroll_offset() >= pan_before, "late album art does not reset the title scroll");
+        widget.set_preview(c); tick(1);
+        check(widget.track_transitioning() && widget.title_scroll_offset() == 0, "a new song starts its title at the beginning");
+        tick(240);
+        check(widget.title_scroll_offset() == 0, "a short title remains still even after the wait");
+        widget.set_preview(long_song); tick(245);
+        check(widget.title_scroll_offset() > 0, "a long replacement song scrolls after its own wait");
+        click(); tick(35);
+        check(widget.state() == MusicWidgetState::Compact && widget.title_scroll_offset() == 0,
+              "switching to the disk resets title scrolling");
+        click(); tick(20 + 177);
+        check(widget.title_scroll_offset() == 0, "reopening the disk gives the title a fresh three-second wait");
+        tick(60);
+        check(widget.title_scroll_offset() > 0, "reopened long titles resume scrolling after the new wait");
+        widget.set_enabled(false); tick(45);
+        check(!widget.visible() && widget.title_scroll_offset() == 0, "turning music off clears the scroll after its exit");
     }
     ImGui::DestroyContext();
 }
@@ -419,7 +507,7 @@ void texture_lifecycle() {
 } // namespace
 int main() {
     try {
-        spectrum(); animation(); presentation(); visibility(); coordination(); texture_lifecycle(); track_slides(); sliding_texture_lifecycle();
+        spectrum(); animation(); presentation(); visibility(); coordination(); texture_lifecycle(); track_slides(); title_scrolling(); sliding_texture_lifecycle();
         std::cout << "music tests passed (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception& error) {
