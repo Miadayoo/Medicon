@@ -7,6 +7,7 @@
 #include <medicon/music/AudioVisualizer.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
 
@@ -14,6 +15,9 @@ namespace medicon::gui {
 namespace {
 constexpr float duration = 0.35F;
 constexpr float pi = std::numbers::pi_v<float>;
+bool same_song(const music::MusicSnapshot& a, const music::MusicSnapshot& b) {
+    return a.title == b.title && a.artist == b.artist && a.source_app == b.source_app;
+}
 MusicWidgetPose blend(const MusicWidgetPose& a, const MusicWidgetPose& b, float t) {
     return {std::lerp(a.x,b.x,t), std::lerp(a.y,b.y,t), std::lerp(a.width,b.width,t),
             std::lerp(a.height,b.height,t), std::lerp(a.radius,b.radius,t), std::lerp(a.compact,b.compact,t)};
@@ -72,7 +76,129 @@ void spinning_art(ImDrawList* list, ImTextureID texture, const music::AlbumArt& 
     }
     list->PopTextureID();
 }
+
+struct ArtVertex { ImVec2 position, uv; float opacity; };
+
+int clip_art(const std::array<ArtVertex, 6>& in, int count, std::array<ArtVertex, 6>& out,
+             float boundary, bool keep_right) {
+    if (count == 0) return 0;
+    const auto inside = [&](const ArtVertex& v) { return keep_right ? v.position.x >= boundary : v.position.x <= boundary; };
+    int written = 0;
+    auto previous = in[count - 1];
+    for (int i = 0; i < count; ++i) {
+        const auto current = in[i];
+        if (inside(previous) != inside(current)) {
+            const float t = std::clamp((boundary - previous.position.x) / (current.position.x - previous.position.x), 0.0F, 1.0F);
+            out[written++] = {{boundary, std::lerp(previous.position.y, current.position.y, t)},
+                {std::lerp(previous.uv.x, current.uv.x, t), std::lerp(previous.uv.y, current.uv.y, t)},
+                std::lerp(previous.opacity, current.opacity, t)};
+        }
+        if (inside(current)) out[written++] = current;
+        previous = current;
+    }
+    return written;
+}
+
+// Slide the artwork underneath a fixed circular aperture. Clipping the same
+// antialiased disk's triangles keeps both the circular rim and the moving seam
+// clean; a rectangular scissor alone would leak art outside the round icon.
+void sliding_art(ImDrawList* list, ImTextureID texture, const music::AlbumArt& image,
+                 ImVec2 center, float radius, float angle, float alpha, float offset) {
+    if (std::abs(offset) < 0.001F) { spinning_art(list, texture, image, center, radius, angle, alpha); return; }
+    if (std::abs(offset) >= radius * 2) return;
+    constexpr int segments = 48, triangles = segments * 3;
+    constexpr int max_indices = triangles * 9, max_vertices = triangles * 5;
+    const float fringe = std::min(0.65F, radius * 0.2F);
+    const float u_radius = 0.5F * std::min(1.0F, static_cast<float>(image.height) / image.width);
+    const float v_radius = 0.5F * std::min(1.0F, static_cast<float>(image.width) / image.height);
+    const float cs = std::cos(angle), sn = std::sin(angle);
+    const auto vertex = [&](ImVec2 position, float opacity) {
+        const float x = (position.x - center.x - offset) / radius, y = (position.y - center.y) / radius;
+        return ArtVertex{position, {0.5F + (x * cs + y * sn) * u_radius, 0.5F + (-x * sn + y * cs) * v_radius}, opacity};
+    };
+    std::array<ArtVertex, segments * 2 + 1> vertices;
+    vertices[0] = vertex(center, 1);
+    for (int i = 0; i < segments; ++i) {
+        const float theta = static_cast<float>(i) / segments * 2 * pi;
+        for (int ring = 0; ring < 2; ++ring) {
+            const float r = radius + (ring == 0 ? -fringe : fringe);
+            vertices[1 + i * 2 + ring] = vertex({center.x + std::cos(theta) * r, center.y + std::sin(theta) * r}, ring == 0 ? 1 : 0);
+        }
+    }
+    list->PushTextureID(texture);
+    list->PrimReserve(max_indices, max_vertices);
+    int indices = 0, count = 0;
+    const auto triangle = [&](int a, int b, int c) {
+        std::array<ArtVertex, 6> polygon{vertices[a], vertices[b], vertices[c]}, clipped;
+        int n = clip_art(polygon, 3, clipped, center.x + offset - radius, true);
+        n = clip_art(clipped, n, polygon, center.x + offset + radius, false);
+        if (n < 3) return;
+        const auto base = list->_VtxCurrentIdx;
+        for (int i = 0; i < n; ++i)
+            list->PrimWriteVtx(polygon[i].position, polygon[i].uv, to_u32(theme::white, alpha * polygon[i].opacity));
+        for (int i = 1; i < n - 1; ++i) {
+            list->PrimWriteIdx(static_cast<ImDrawIdx>(base));
+            list->PrimWriteIdx(static_cast<ImDrawIdx>(base + i));
+            list->PrimWriteIdx(static_cast<ImDrawIdx>(base + i + 1));
+        }
+        count += n;
+        indices += (n - 2) * 3;
+    };
+    for (int i = 0; i < segments; ++i) {
+        const int inner = 1 + i * 2, outer = inner + 1;
+        const int next_inner = 1 + ((i + 1) % segments) * 2, next_outer = next_inner + 1;
+        triangle(0, inner, next_inner);
+        triangle(inner, outer, next_outer);
+        triangle(inner, next_outer, next_inner);
+    }
+    list->PrimUnreserve(max_indices - indices, max_vertices - count);
+    list->PopTextureID();
+}
 } // namespace
+
+void MusicWidgetTracks::update(std::shared_ptr<const music::MusicSnapshot> next, bool animate) {
+    if (!next) return;
+    if (!current_ || !animate) {
+        clear();
+        current_ = std::move(next);
+    } else if (same_song(*current_, *next)) {
+        current_ = std::move(next); // Metadata/art arrived later for the same song.
+        pending_.reset();
+    } else if (previous_) {
+        pending_ = std::move(next); // Do not snap either visible layer on a rapid skip.
+    } else {
+        previous_ = std::move(current_);
+        current_ = std::move(next);
+        elapsed_ = 0;
+        just_started_ = true;
+    }
+}
+
+void MusicWidgetTracks::advance(float dt) {
+    if (!previous_) return;
+    if (just_started_) { just_started_ = false; return; }
+    elapsed_ = std::min(duration, elapsed_ + clamp_dt(dt));
+    if (elapsed_ < duration) return;
+    previous_.reset();
+    if (pending_) {
+        auto next = std::move(pending_);
+        update(std::move(next), true);
+        just_started_ = false; // Its zero-progress frame is drawn by this render.
+    }
+}
+
+void MusicWidgetTracks::clear() {
+    current_.reset(); previous_.reset(); pending_.reset();
+    elapsed_ = duration;
+    just_started_ = false;
+}
+
+float MusicWidgetTracks::progress() const noexcept {
+    if (!previous_) return 1;
+    const float t = std::clamp(elapsed_ / duration, 0.0F, 1.0F);
+    const float u = 1 - t;
+    return t < 0.5F ? 4 * t * t * t : 1 - 4 * u * u * u;
+}
 
 void MusicWidgetPresentation::update(bool playing, float dt) {
     if (!playing) { playing_ = false; elapsed_ = 0; return; }
@@ -165,15 +291,24 @@ void MusicWidget::set_texture_host(TextureHost* host) noexcept {
     if (host == host_) return;
     // TextureHost owns resources and frees them when replaced; retain CPU art.
     host_ = host;
-    texture_ = 0;
-    uploaded_.reset();
+    art_textures_ = {};
 }
 void MusicWidget::set_preview(std::shared_ptr<const music::MusicSnapshot> value, music::AudioLevels levels) {
     preview_ = std::move(value);
     preview_levels_ = levels;
     if (audio_) audio_->set_enabled(false);
 }
-bool MusicWidget::available() const noexcept { return snapshot_ && snapshot_->available && snapshot_->playing; }
+void MusicWidget::set_enabled(bool enabled) {
+    if (enabled_ == enabled) return;
+    enabled_ = enabled;
+    if (!enabled) {
+        if (audio_) audio_->set_enabled(false);
+        presentation_.update(false, 0);
+        hit_pose_.reset();
+        pressed_ = false;
+    }
+}
+bool MusicWidget::available() const noexcept { return enabled_ && snapshot_ && snapshot_->available && snapshot_->playing; }
 bool MusicWidget::covers(ImVec2 point) const noexcept {
     if (!available() || !hit_pose_) return false;
     const auto& p = *hit_pose_;
@@ -198,7 +333,8 @@ void MusicWidget::handle_pointer(const PointerInput& pointer, bool notifications
     if (!left.down && !left.pressed && !left.released) pressed_ = false;
 }
 void MusicWidget::update(SocialFonts& fonts) {
-    if (preview_) snapshot_ = preview_;
+    if (!enabled_) snapshot_.reset(); // Do not start native providers while disabled.
+    else if (preview_) snapshot_ = preview_;
     else {
         if (!sessions_) sessions_ = std::make_unique<music::MusicSessionManager>();
         snapshot_ = sessions_->snapshot();
@@ -206,7 +342,7 @@ void MusicWidget::update(SocialFonts& fonts) {
         if (audio_) audio_->set_enabled(available() && snapshot_->playing);
     }
     if (available()) {
-        displayed_ = snapshot_;
+        tracks_.update(snapshot_, visibility_.morph().content > 0);
         if (requested_title_ != snapshot_->title) {
             requested_title_ = snapshot_->title;
             fonts.request(SocialText::Title, requested_title_);
@@ -226,7 +362,7 @@ void MusicWidget::update(SocialFonts& fonts) {
 }
 void MusicWidget::finish_hide() {
     animator_.update(false, false, {}, 0);
-    displayed_.reset();
+    tracks_.clear();
     levels_.fill(0);
     level_time_ = 0;
     hit_pose_.reset();
@@ -235,15 +371,33 @@ void MusicWidget::finish_hide() {
 void MusicWidget::upload_art() {
     // A session can vanish with no remaining art or metadata. Keep the last
     // drawn content intact throughout its exit, then retain paused art as usual.
-    const auto image = displayed_ ? displayed_->art : (snapshot_ ? snapshot_->art : nullptr);
-    if (uploaded_ == image && (texture_ || !image)) return;
-    if (texture_ && host_) host_->release(texture_);
-    texture_ = 0;
-    uploaded_.reset();
-    if (!image || !host_ || image->width <= 0 || image->height <= 0 || image->width > 192 || image->height > 192 ||
-        image->rgba.size() != static_cast<std::size_t>(image->width * image->height * 4)) return;
-    texture_ = host_->create(image->rgba.data(), image->width, image->height);
-    if (texture_) uploaded_ = image;
+    const std::array images{
+        tracks_.current() ? tracks_.current()->art : (snapshot_ ? snapshot_->art : nullptr),
+        tracks_.previous() ? tracks_.previous()->art : nullptr};
+    // Retain the old song's existing texture, including while its replacement
+    // art loads. Two songs with the same album share one upload.
+    for (auto& slot : art_textures_) {
+        if (slot.image && slot.image != images[0] && slot.image != images[1]) {
+            if (slot.texture && host_) host_->release(slot.texture);
+            slot = {};
+        }
+    }
+    for (const auto& image : images) {
+        if (!image || !host_ || art_texture(image) || image->width <= 0 || image->height <= 0 ||
+            image->width > 192 || image->height > 192 ||
+            image->rgba.size() != static_cast<std::size_t>(image->width * image->height * 4)) continue;
+        for (auto& slot : art_textures_) {
+            if (slot.texture) continue;
+            slot.texture = host_->create(image->rgba.data(), image->width, image->height);
+            if (slot.texture) slot.image = image;
+            break;
+        }
+    }
+}
+
+ImTextureID MusicWidget::art_texture(const std::shared_ptr<const music::AlbumArt>& image) const noexcept {
+    if (image) for (const auto& slot : art_textures_) if (slot.image == image) return slot.texture;
+    return 0;
 }
 
 void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRenderer& shadows,
@@ -267,7 +421,10 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
     }
     // While exiting, hold the current shape and use the last displayed song.
     // Resuming reverses opacity from here and retargets that same morph.
-    if (!ready || alpha <= 0 || appearance.scale < 0.001F || !displayed_) return;
+    if (!ready || alpha <= 0 || appearance.scale < 0.001F || !tracks_.current()) return;
+    if (showing && appearance.content > 0 && fonts.has(SocialText::Title, tracks_.current()->title) &&
+        fonts.has(SocialText::Small, tracks_.current()->artist)) tracks_.advance(frame.dt);
+    upload_art();
     // The host can Present at hundreds of FPS; visualizer updates stay at 60 Hz.
     level_time_ += clamp_dt(frame.dt);
     constexpr float step = 1.0F / 60;
@@ -320,29 +477,39 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
             theme::social::metrics::toast_dot * 0.5F * s * appearance.scale, to_u32(rainbow(0), dot));
     }
     const float content = alpha * appearance.content;
+    const float track_progress = tracks_.progress();
     const float expanded = std::clamp(1 - pose.compact * 1.65F, 0.0F, 1.0F) * content;
     if (expanded > 0) {
-        const float art_size = 52 * s;
-        const ImVec2 a{min.x + 14 * s, min.y + 10 * s}, b{a.x + art_size, a.y + art_size};
-        if (texture_) {
-            ImVec2 uv0{0, 0}, uv1{1, 1};
-            if (uploaded_->width > uploaded_->height) {
-                const float crop = static_cast<float>(uploaded_->height) / uploaded_->width;
-                uv0.x = (1 - crop) * 0.5F; uv1.x = 1 - uv0.x;
+        const float travel = std::max(1.0F, pose.width - 28 * s);
+        // Keep the frame and spectrum still; only the song's art/text slides.
+        // The inset clip also keeps a moving image clear of rounded corners.
+        list->PushClipRect({min.x + 14 * s, min.y}, {std::max(min.x + 14 * s, max.x - 14 * s), max.y}, true);
+        const auto song = [&](const music::MusicSnapshot& track, float offset) {
+            const float art_size = 52 * s;
+            const ImVec2 a{min.x + 14 * s + offset, min.y + 10 * s}, b{a.x + art_size, a.y + art_size};
+            if (const auto texture = art_texture(track.art)) {
+                ImVec2 uv0{0, 0}, uv1{1, 1};
+                if (track.art->width > track.art->height) {
+                    const float crop = static_cast<float>(track.art->height) / track.art->width;
+                    uv0.x = (1 - crop) * 0.5F; uv1.x = 1 - uv0.x;
+                } else {
+                    const float crop = static_cast<float>(track.art->width) / track.art->height;
+                    uv0.y = (1 - crop) * 0.5F; uv1.y = 1 - uv0.y;
+                }
+                list->AddImageRounded(texture, a, b, uv0, uv1, to_u32(theme::white, expanded), 10 * s);
             } else {
-                const float crop = static_cast<float>(uploaded_->width) / uploaded_->height;
-                uv0.y = (1 - crop) * 0.5F; uv1.y = 1 - uv0.y;
+                list->AddRectFilled(a, b, to_u32({0.14F, 0.18F, 0.27F, 1}, expanded), 10 * s);
+                music_icon(list, {(a.x+b.x)*0.5F,(a.y+b.y)*0.5F}, 23*s, expanded);
             }
-            list->AddImageRounded(texture_, a, b, uv0, uv1, to_u32(theme::white, expanded), 10 * s);
-        } else {
-            list->AddRectFilled(a, b, to_u32({0.14F, 0.18F, 0.27F, 1}, expanded), 10 * s);
-            music_icon(list, {(a.x+b.x)*0.5F,(a.y+b.y)*0.5F}, 23*s, expanded);
-        }
-        const float x = b.x + 12 * s, room = std::max(0.0F, full_pose.width - 92 * s);
-        fonts.draw(list, SocialText::Title, x, min.y + 13 * s, to_u32(theme::white, expanded),
-            fonts.ellipsize(SocialText::Title, displayed_->title, room, scratch_));
-        fonts.draw(list, SocialText::Small, x, min.y + 38 * s, to_u32({0.68F, 0.73F, 0.82F, 1}, expanded),
-            fonts.ellipsize(SocialText::Small, displayed_->artist, room, scratch_));
+            const float x = b.x + 12 * s, room = std::max(0.0F, full_pose.width - 92 * s);
+            fonts.draw(list, SocialText::Title, x, min.y + 13 * s, to_u32(theme::white, expanded),
+                fonts.ellipsize(SocialText::Title, track.title, room, scratch_));
+            fonts.draw(list, SocialText::Small, x, min.y + 38 * s, to_u32({0.68F, 0.73F, 0.82F, 1}, expanded),
+                fonts.ellipsize(SocialText::Small, track.artist, room, scratch_));
+        };
+        if (tracks_.previous()) song(*tracks_.previous(), -travel * track_progress);
+        song(*tracks_.current(), tracks_.previous() ? travel * (1 - track_progress) : 0);
+        list->PopClipRect();
         const float width = std::max(1.0F, full_pose.width - 28 * s);
         const float step = width / static_cast<float>(music::bar_count);
         for (std::size_t i = 0; i < music::bar_count; ++i) {
@@ -355,8 +522,18 @@ void MusicWidget::render(ImDrawList* list, const SocialFonts& fonts, IShadowRend
     }
     const float compact = std::clamp((pose.compact - 0.25F) / 0.75F, 0.0F, 1.0F) * content;
     if (compact > 0) {
-        if (texture_ && uploaded_) spinning_art(list, texture_, *uploaded_, center, 19 * s, art_rotation_, compact);
-        else music_icon(list, center, 22 * s, compact);
+        const float radius = 19 * s, travel = radius * 2;
+        const auto song = [&](const music::MusicSnapshot& track, float offset) {
+            if (const auto texture = art_texture(track.art))
+                sliding_art(list, texture, *track.art, center, radius, art_rotation_, compact, offset);
+            else {
+                list->PushClipRect({center.x - radius, center.y - radius}, {center.x + radius, center.y + radius}, true);
+                music_icon(list, {center.x + offset, center.y}, 22 * s, compact);
+                list->PopClipRect();
+            }
+        };
+        if (tracks_.previous()) song(*tracks_.previous(), -travel * track_progress);
+        song(*tracks_.current(), tracks_.previous() ? travel * (1 - track_progress) : 0);
         constexpr std::size_t count = 36;
         for (std::size_t i = 0; i < count; ++i) {
             const float angle = static_cast<float>(i) / count * 2 * pi - pi * 0.5F;

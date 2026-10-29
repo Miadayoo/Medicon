@@ -6,6 +6,7 @@
 #include <medicon/gui/Textures.hpp>
 #include <medicon/gui/Toasts.hpp>
 #include <medicon/social/LicenseStore.hpp>
+#include <medicon/social/Service.hpp>
 
 #include <imgui.h>
 
@@ -414,6 +415,59 @@ void test_background_cache() {
     check(host.width > 0 && host.height > 0 && host.pixels[3] == 255, "bundled back.png is opaque");
 }
 
+void test_music_setting_persistence() {
+    // Exercise the production file writer/loader without credentials or a live
+    // server; this service remains in NoLicense throughout the test.
+    struct Directory {
+        std::filesystem::path path = std::filesystem::temp_directory_path() /
+            (L"MediconMusicPrefs-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        ~Directory() {
+            std::error_code error;
+            std::filesystem::remove(path / "social.json", error);
+            std::filesystem::remove(path, error);
+        }
+    } fixture;
+    check(std::filesystem::create_directory(fixture.path), "create isolated music preference fixture");
+    const auto file = fixture.path / "social.json";
+    std::ofstream(file) << R"({"music":{"enabled":true},"other":42})";
+    const auto loaded = [&](social::SocialService& service) {
+        std::optional<social::SettingsLoaded> settings;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!settings && std::chrono::steady_clock::now() < deadline) {
+            std::vector<social::Event> events;
+            service.channel().events.drain(events);
+            for (const auto& event : events)
+                if (const auto* value = std::get_if<social::SettingsLoaded>(&event)) settings = *value;
+            if (!settings) std::this_thread::sleep_for(2ms);
+        }
+        check(settings.has_value(), "native service loads persisted music settings");
+        return *settings;
+    };
+    for (bool enabled : {false, true}) {
+        social::SocialService service({fixture.path, "music-setting-test", {}});
+        service.start();
+        auto settings = loaded(service);
+        check(settings.music_enabled == !enabled, "restart restores the last saved music switch");
+        const auto old_size = std::filesystem::file_size(file);
+        settings.notify.sound = false;
+        service.channel().commands.push(social::SaveSettings{settings.notify, enabled});
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (std::filesystem::file_size(file) == old_size && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(2ms);
+        check(std::filesystem::file_size(file) != old_size, "native settings writer commits the music switch");
+        check(service.stop(), "settings worker joins after saving");
+        std::ifstream stream(file);
+        const std::string saved((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const auto config = social::parse_config(saved).config;
+        check(config.music_enabled == enabled && !config.notify.sound && saved.find("42") != std::string::npos,
+              "native save keeps music, notification and unrelated settings across restart");
+    }
+    social::SocialService restarted({fixture.path, "music-setting-test", {}});
+    restarted.start();
+    check(loaded(restarted).music_enabled, "a final restart reloads music on");
+    check(restarted.stop(), "final preference reload shuts down cleanly");
+}
+
 void test_license_store() {
     const auto directory = std::filesystem::temp_directory_path() /
         ("medicon-social-test-" + std::to_string(GetCurrentProcessId()));
@@ -675,6 +729,7 @@ int main() {
         test_text_input_drawing();
         test_background_cache();
         test_license_store();
+        test_music_setting_persistence();
         std::cout << "social ui tests passed (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception& error) {

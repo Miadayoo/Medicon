@@ -189,7 +189,7 @@ void SocialScreen::request_glyphs(SocialFonts& fonts) {
         fonts.request(SocialText::Heading, text);
     for (const char* text : {"News", "Change Log", "Sign in", "Signing in…", "Sign out", "Medicon", "Global"})
         fonts.request(SocialText::Title, text);
-    for (const char* text : {"Enter your license key to sign in", "Direct messages", "Friend requests", "News",
+    for (const char* text : {"Enter your license key to sign in", "Direct messages", "Friend requests", "News", "Show music",
                              "Show while playing", "Sound", "Position while playing", "Signed in as ", "Coming soon",
                              "No news yet", "No change log yet", "Loading…", "Could not load",
                              "Settings could not be saved (social.json is invalid)", "MDC-XXXX-XXXX-XXXX-XXXX*"})
@@ -214,7 +214,7 @@ void SocialScreen::request_glyphs(SocialFonts& fonts) {
                              "Posting\xE2\x80\xA6", "Only owners can post", "A title and text are required", "Not connected",
                              "Could not post"})
         fonts.request(SocialText::Small, text);
-    for (const char* text : {"DM", "NOTIFICATIONS", "ACCOUNT", "No friends yet", "SEARCH", "REQUESTS", "SENT", "99+", "Online", "Connecting…", "Reconnecting…",
+    for (const char* text : {"DM", "NOTIFICATIONS", "MUSIC", "ACCOUNT", "No friends yet", "SEARCH", "REQUESTS", "SENT", "99+", "Online", "Connecting…", "Reconnecting…",
                              "Signed in elsewhere", "Offline", "Reconnect", "Retry", "+0123456789 px",
                              "Keys start with MDC- and are issued by an admin"})
         fonts.request(SocialText::Small, text);
@@ -445,7 +445,7 @@ void SocialScreen::request_news(Context& context, NewsKind kind, std::optional<s
 
 void SocialScreen::save_settings(Context& context) {
     settings_failed_ = false;
-    if (context.channel) context.channel->commands.push(social::SaveSettings{context.store.notify()});
+    if (context.channel) context.channel->commands.push(social::SaveSettings{context.store.notify(), context.store.music_enabled()});
 }
 
 void SocialScreen::submit_login(Context& context) {
@@ -802,7 +802,7 @@ void SocialScreen::draw_settings(Context& context, const SocialRect& area, float
                            {"News", &notify.news}, {"Show while playing", &notify.in_game}, {"Sound", &notify.sound}};
     bool changed = false;
     std::uint32_t id = id_toggle_first;
-    for (const auto& toggle : toggles) {
+    const auto draw_toggle = [&](const Toggle& toggle) {
         const SocialRect rect{{x0, y}, {x1, y + row}};
         toggle_rects_[id - id_toggle_first] = rect;
         const auto& m = motion(id, rect, context.frame.dt);
@@ -825,7 +825,8 @@ void SocialScreen::draw_settings(Context& context, const SocialRect& area, float
             changed = true;
         }
         y += row;
-    }
+    };
+    for (const auto& toggle : toggles) draw_toggle(toggle);
 
     // In-game vertical offset of notifications, previewed while dragging and saved on release.
     const SocialRect offset_row{{x0, y}, {x1, y + row}};
@@ -853,6 +854,13 @@ void SocialScreen::draw_settings(Context& context, const SocialRect& area, float
                y + (row - fonts.line_height(SocialText::Small)) * 0.5F, to_u32(style::text_secondary, alpha), value_text);
     (void)offset_row;
     y += row + 12.0F * s;
+
+    fonts.draw(list, SocialText::Small, x0 + 4.0F * s, y, to_u32(style::text_secondary, alpha), "MUSIC");
+    y += fonts.line_height(SocialText::Small) + 4.0F * s;
+    bool music_enabled = store.music_enabled();
+    draw_toggle({"Show music", &music_enabled});
+    store.set_music_enabled(music_enabled);
+    y += 12.0F * s;
 
     if (changed) {
         store.set_notify(notify);

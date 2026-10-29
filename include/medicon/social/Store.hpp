@@ -58,6 +58,8 @@ public:
     const NotifySettings& notify() const noexcept { return notify_; }
     // The settings screen applies a change at once; saving happens on the net side.
     void set_notify(const NotifySettings& notify) noexcept { notify_ = notify; }
+    bool music_enabled() const noexcept { return music_enabled_; }
+    void set_music_enabled(bool enabled) noexcept { music_enabled_ = enabled; }
     bool debug_timing() const noexcept { return debug_timing_; }
 
     // --- Chat (phases 4-6) ----------------------------------------------------
@@ -101,6 +103,7 @@ private:
     std::array<bool, news_kind_count> has_more_{true, true};
     std::array<bool, news_kind_count> loading_{};
     NotifySettings notify_{};
+    bool music_enabled_ = true;
     bool debug_timing_ = false;
     std::map<ConversationId, Conversation> conversations_;
     std::vector<Friend> friends_;

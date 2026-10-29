@@ -174,6 +174,18 @@ void test_config() {
     check(load.parsed && load.warnings.empty(), "the default document parses cleanly");
     check(load.config.notify == NotifySettings{} && !load.config.debug_timing && !load.config.debug_toast_slow_motion,
           "settings defaults");
+    check(load.config.music_enabled && parse_config("{}").config.music_enabled, "new and existing settings default music to on");
+    check(!parse_config(R"({"music":{"enabled":false}})").config.music_enabled, "music off loads independently of notifications");
+    const auto music_saved = with_settings(R"({"music":{"custom":42},"other":7})", {}, false);
+    check(music_saved && !parse_config(*music_saved).config.music_enabled &&
+          music_saved->find("\"custom\": 42") != std::string::npos && music_saved->find("\"other\": 7") != std::string::npos,
+          "music off survives saving and reopening while unknown settings remain");
+    const auto music_resaved = with_settings(*music_saved, load.config.notify, false);
+    check(music_resaved && !parse_config(*music_resaved).config.music_enabled, "saving another setting does not turn music back on");
+    check(parse_config(*with_settings(*music_saved, {}, true)).config.music_enabled, "music can be saved back on");
+    check(!with_settings("{broken", {}, false), "music saving also preserves malformed settings files");
+    const auto invalid_music = parse_config(R"({"music":{"enabled":"false"}})");
+    check(invalid_music.config.music_enabled && invalid_music.warnings.size() == 1, "invalid music values keep the default and report the field");
     check(default_config_text().find("debugLicenseKey") == std::string::npos, "the default file holds no key");
     check(default_config_text().find("serverUrl") == std::string::npos, "the connection destination is not saved to settings");
 
@@ -280,6 +292,8 @@ void test_store() {
     settings.dm = false;
     store.apply(SettingsLoaded{settings, true});
     check(!store.notify().dm && store.debug_timing(), "settings");
+    store.apply(SettingsLoaded{settings, false, false, false});
+    check(!store.music_enabled() && !store.notify().dm, "stored music off is applied without changing notification preferences");
 }
 
 void test_queues() {

@@ -45,6 +45,7 @@ struct SettingsLoaded {
     NotifySettings notify;
     bool debug_timing = false;
     bool debug_toast_slow_motion = false;
+    bool music_enabled = true;
 };
 // The answer to a Login command.
 struct LoginFinished {
@@ -155,6 +156,7 @@ struct Logout {};
 struct Reconnect {};
 struct SaveSettings {
     NotifySettings notify;
+    bool music_enabled = true;
 };
 // Requests answered by RequestFinished with the same nonce. While offline they
 // fail at once with "offline".

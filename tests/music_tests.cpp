@@ -2,13 +2,17 @@
 #include <medicon/gui/MusicWidget.hpp>
 #include <medicon/gui/SocialFonts.hpp>
 #include <medicon/gui/Textures.hpp>
+#include <medicon/gui/Shadow.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <iostream>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <thread>
+#include <unordered_set>
 
 using namespace medicon;
 using namespace medicon::gui;
@@ -17,6 +21,173 @@ int checks = 0;
 void check(bool condition, const char* message) {
     ++checks;
     if (!condition) throw std::runtime_error(message);
+}
+
+std::shared_ptr<music::MusicSnapshot> song(const char* title, int color) {
+    auto track = std::make_shared<music::MusicSnapshot>();
+    track->available = track->playing = true;
+    track->title = title;
+    track->artist = "Artist";
+    track->source_app = "Music.Test";
+    auto art = std::make_shared<music::AlbumArt>();
+    art->width = art->height = 2;
+    art->rgba.assign(16, static_cast<std::uint8_t>(color));
+    track->art = art;
+    return track;
+}
+
+void track_slides() {
+    MusicWidgetTracks tracks;
+    auto a = song("First", 10), b = song("Second", 20), c = song("Third", 30), d = song("Fourth", 40);
+    tracks.update(a, true);
+    check(tracks.current() == a && !tracks.previous() && tracks.progress() == 1, "first playback does not slide from nothing");
+    tracks.update(b, true);
+    check(tracks.current() == b && tracks.previous() == a && tracks.progress() == 0, "song change retains both songs at the starting position");
+    tracks.advance(0.016F);
+    check(tracks.progress() == 0, "first slide frame preserves the outgoing song's position");
+    tracks.advance(0.1F);
+    const float before = tracks.progress();
+    auto art_update = std::make_shared<music::MusicSnapshot>(*b);
+    art_update->art = c->art;
+    tracks.update(art_update, true);
+    check(tracks.current() == art_update && tracks.progress() == before && tracks.previous() == a,
+          "late art updates the incoming song without restarting its slide");
+    tracks.update(c, true);
+    tracks.update(d, true);
+    check(tracks.current() == art_update && tracks.progress() == before, "rapid skips do not snap the visible pair");
+    for (int i = 0; i < 4; ++i) tracks.advance(0.1F);
+    check(tracks.current() == d && tracks.previous() == art_update && tracks.progress() == 0,
+          "only the latest queued song follows the in-flight slide");
+    float previous = 0;
+    for (int i = 0; i < 30; ++i) {
+        tracks.advance(1.0F / 60);
+        check(tracks.progress() >= previous && tracks.progress() <= 1, "the slide moves continuously left without overshoot");
+        previous = tracks.progress();
+    }
+    check(!tracks.previous() && tracks.current() == d && tracks.progress() == 1, "finished slide drops only the outgoing song");
+    tracks.update(a, true);
+    tracks.advance(0.016F);
+    tracks.advance(std::numeric_limits<float>::quiet_NaN());
+    tracks.advance(-1);
+    check(tracks.progress() == 0, "invalid frame times cannot corrupt the slide");
+    tracks.update(c, false);
+    check(!tracks.previous() && tracks.current() == c && tracks.progress() == 1, "hidden songs do not queue a stale entrance slide");
+    tracks.clear();
+    check(!tracks.current() && !tracks.previous(), "hide completion releases all song snapshots");
+}
+
+void sliding_texture_lifecycle() {
+    struct Host : TextureHost {
+        ImTextureID next = 100;
+        std::unordered_set<ImTextureID> live, art;
+        int art_uploads = 0;
+        std::size_t max_art = 0;
+        ImTextureID create(const std::uint8_t*, int w, int h) override {
+            const auto id = ++next;
+            live.insert(id);
+            if (w == 2 && h == 2) { art.insert(id); ++art_uploads; max_art = std::max(max_art, art.size()); }
+            return id;
+        }
+        void release(ImTextureID id) override { check(live.erase(id) == 1, "textures are released once"); art.erase(id); }
+    } host;
+    ImGui::CreateContext();
+    auto& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = {1920, 1080};
+    unsigned char* pixels; int w, h;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+    io.Fonts->SetTexID(1);
+    {
+        SocialFonts fonts;
+        MusicWidget widget;
+        ToastManager toasts;
+        NullShadowRenderer shadows;
+        ToastFrame frame;
+        frame.display = io.DisplaySize;
+        frame.in_menu = true;
+        frame.dt = 1.0F / 60;
+        auto a = song("First", 10), b = song("Second", 20), c = song("Third", 30), d = song("Fourth", 40);
+        widget.set_texture_host(&host);
+        widget.set_preview(a);
+        widget.set_enabled(false);
+        widget.update(fonts);
+        check(!widget.available() && !widget.visible() && host.art_uploads == 0, "disabled startup does not display or upload media");
+        widget.set_enabled(true);
+        widget.update(fonts);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!fonts.ready() && std::chrono::steady_clock::now() < deadline) {
+            fonts.update(1080, &host);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        check(fonts.ready(), "music render fixture loads the real text atlas");
+        const auto tick = [&](int count) {
+            for (int i = 0; i < count; ++i) {
+                widget.update(fonts);
+                fonts.update(1080, &host);
+                io.DeltaTime = frame.dt;
+                ImGui::NewFrame();
+                auto* list = ImGui::GetBackgroundDrawList();
+                widget.render(list, fonts, shadows, toasts, frame);
+                ImGui::Render();
+                for (const auto& v : list->VtxBuffer)
+                    check(std::isfinite(v.pos.x) && std::isfinite(v.pos.y) && std::isfinite(v.uv.x) && std::isfinite(v.uv.y),
+                          "sliding circular meshes contain finite positions/UVs");
+                for (const auto& cmd : list->CmdBuffer) {
+                    if (!cmd.ElemCount) continue;
+                    check(cmd.TextureId == 1 || host.live.contains(cmd.TextureId), "draws never reference released song textures");
+                    for (unsigned index = 0; index < cmd.ElemCount; ++index)
+                        check(cmd.VtxOffset + list->IdxBuffer[cmd.IdxOffset + index] < static_cast<unsigned>(list->VtxBuffer.Size),
+                              "circular slide clipping leaves valid mesh indices");
+                }
+            }
+        };
+        tick(50);
+        const auto first_texture = *host.art.begin();
+        widget.set_preview(b);
+        tick(1);
+        check(widget.track_transitioning() && widget.track_progress() == 0 && host.art.size() == 2 && host.art.contains(first_texture),
+              "outgoing GPU art stays alive while the incoming art is uploaded");
+        tick(6);
+        const float progress = widget.track_progress();
+        widget.set_preview(c); tick(1);
+        widget.set_preview(d); tick(1);
+        check(widget.track_progress() > progress && host.art.size() == 2, "rapid skipping keeps two GPU images without resetting progress");
+        tick(60);
+        check(!widget.track_transitioning() && host.art.size() == 1 && !host.live.contains(first_texture),
+              "completed/queued slides retire outgoing textures");
+        auto same_album = std::make_shared<music::MusicSnapshot>(*d);
+        same_album->title = "Same album";
+        const int uploads = host.art_uploads;
+        widget.set_preview(same_album); tick(30);
+        check(host.art_uploads == uploads && host.art.size() == 1, "songs sharing album art reuse one GPU texture");
+        frame.pointer.valid = true;
+        const auto p = widget.pose();
+        frame.pointer.position = {p.x + p.width / 2, p.y + p.height / 2};
+        frame.pointer.buttons[0].pressed = frame.pointer.buttons[0].down = true;
+        tick(1);
+        frame.pointer.buttons[0] = {};
+        frame.pointer.buttons[0].released = true;
+        tick(1);
+        frame.pointer = {};
+        tick(25);
+        check(widget.state() == MusicWidgetState::Compact, "render fixture selects the circular mode");
+        widget.set_preview(b); tick(14);
+        check(widget.track_transitioning() && widget.track_progress() > 0 && widget.track_progress() < 1,
+              "circular art uses the same in-flight slide timeline");
+        widget.set_preview(std::make_shared<music::MusicSnapshot>()); tick(1);
+        check(widget.visible() && host.art.size() == 2, "stop during a slide retains both art layers for the exit");
+        tick(45);
+        check(!widget.visible() && host.art.empty() && host.max_art == 2, "exit retires all art and the cache never grows past two images");
+        widget.set_preview(b); tick(50);
+        widget.set_enabled(false); tick(1);
+        check(!widget.available() && widget.visible(), "turning music off uses the outgoing animation");
+        tick(45);
+        check(!widget.visible() && host.art.empty(), "music off remains hidden even while the player is still playing");
+        widget.set_enabled(true); tick(50);
+        check(widget.available() && widget.visible() && widget.state() == MusicWidgetState::Compact,
+              "music on restores playing media and the saved manual shape");
+    }
+    ImGui::DestroyContext();
 }
 music::AudioLevels tone(float hz, float amplitude = 0.4F, float rate = 48000) {
     music::AudioSpectrum fft;
@@ -248,7 +419,7 @@ void texture_lifecycle() {
 } // namespace
 int main() {
     try {
-        spectrum(); animation(); presentation(); visibility(); coordination(); texture_lifecycle();
+        spectrum(); animation(); presentation(); visibility(); coordination(); texture_lifecycle(); track_slides(); sliding_texture_lifecycle();
         std::cout << "music tests passed (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception& error) {

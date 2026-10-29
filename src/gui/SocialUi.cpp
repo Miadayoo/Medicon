@@ -134,6 +134,7 @@ void SocialUi::pump(FontManager& fonts, bool in_menu) {
 
 void SocialUi::render(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo& frame, const PointerInput& pointer,
                       bool in_menu, bool prefetch) {
+    music_.set_enabled(store_.music_enabled());
     music_.update(screen_fonts_);
     const bool timed = store_.debug_timing();
     const auto start = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -171,6 +172,7 @@ void SocialUi::draw(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo&
                                       backdrop_time_};
         screen_.render(context);
     }
+    music_.set_enabled(store_.music_enabled()); // Apply a Settings click in this same frame.
     // Toasts wait (timers included) until their face is in the atlas.
     ToastFrame toast_frame;
     toast_frame.display = size;

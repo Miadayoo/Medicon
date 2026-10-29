@@ -4,6 +4,7 @@
 #include <medicon/music/AudioSpectrum.hpp>
 #include <medicon/music/MusicSessionManager.hpp>
 
+#include <array>
 #include <memory>
 #include <optional>
 
@@ -64,6 +65,23 @@ private:
     bool shown_ = false;
 };
 
+// Keep both songs alive while their contents slide. Art-only updates do not
+// restart the slide; rapid skips queue only the latest song after this slide.
+class MusicWidgetTracks {
+public:
+    static constexpr float duration = 0.42F;
+    void update(std::shared_ptr<const music::MusicSnapshot> next, bool animate);
+    void advance(float dt);
+    void clear();
+    float progress() const noexcept;
+    const std::shared_ptr<const music::MusicSnapshot>& current() const noexcept { return current_; }
+    const std::shared_ptr<const music::MusicSnapshot>& previous() const noexcept { return previous_; }
+private:
+    std::shared_ptr<const music::MusicSnapshot> current_, previous_, pending_;
+    float elapsed_ = duration;
+    bool just_started_ = false;
+};
+
 // One instance lives with SocialUi, independently of network attachment. Native
 // providers are lazy, so headless UI tests and deterministic previews can inject
 // snapshots without starting COM/audio workers.
@@ -74,6 +92,7 @@ public:
     MusicWidget(const MusicWidget&) = delete;
     MusicWidget& operator=(const MusicWidget&) = delete;
     void set_texture_host(TextureHost* host) noexcept;
+    void set_enabled(bool enabled);
     void update(SocialFonts& fonts);
     void render(ImDrawList* list, const SocialFonts& fonts, IShadowRenderer& shadows,
                 const ToastManager& toasts, const ToastFrame& frame);
@@ -84,6 +103,8 @@ public:
     ToastManager::Morph appearance() const { return visibility_.morph(); }
     bool compact_preferred() const noexcept { return presentation_.compact(); }
     float art_rotation() const noexcept { return art_rotation_; }
+    float track_progress() const noexcept { return tracks_.progress(); }
+    bool track_transitioning() const noexcept { return tracks_.previous() != nullptr; }
     // Uses the last drawn rounded shape; captured presses keep their release
     // away from panels underneath even if the pointer leaves the widget.
     bool captures_pointer(const PointerInput& pointer) const noexcept;
@@ -93,22 +114,27 @@ public:
     void set_preview(std::shared_ptr<const music::MusicSnapshot> snapshot, music::AudioLevels levels = {});
 private:
     void upload_art();
+    struct ArtTexture {
+        std::shared_ptr<const music::AlbumArt> image;
+        ImTextureID texture = 0;
+    };
+    ImTextureID art_texture(const std::shared_ptr<const music::AlbumArt>& image) const noexcept;
     void finish_hide();
     bool covers(ImVec2 point) const noexcept;
     void handle_pointer(const PointerInput& pointer, bool notifications);
     std::unique_ptr<music::MusicSessionManager> sessions_;
     std::unique_ptr<music::AudioVisualizer> audio_;
     std::shared_ptr<const music::MusicSnapshot> snapshot_, preview_;
-    std::shared_ptr<const music::MusicSnapshot> displayed_;
-    std::shared_ptr<const music::AlbumArt> uploaded_;
+    MusicWidgetTracks tracks_;
+    std::array<ArtTexture, 2> art_textures_{};
     music::AudioLevels levels_{}, preview_levels_{};
     MusicWidgetAnimator animator_;
     MusicWidgetPresentation presentation_;
     MusicWidgetVisibility visibility_;
     std::optional<MusicWidgetPose> hit_pose_;
     bool pressed_ = false;
+    bool enabled_ = true;
     TextureHost* host_ = nullptr;
-    ImTextureID texture_ = 0;
     double hue_time_ = 0;
     float level_time_ = 0;
     float art_rotation_ = 0;

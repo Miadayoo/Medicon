@@ -1048,6 +1048,16 @@ void music_widget(ScenarioHost& host, bool capture) {
         art->rgba[i+3] = 255;
     }
     media->art = art;
+    auto next_track = std::make_shared<music::MusicSnapshot>(*media);
+    next_track->title = "Blue Hour - The Next Song";
+    next_track->artist = "Medicon Audio / Next";
+    auto next_art = std::make_shared<music::AlbumArt>(*art);
+    for (std::size_t i = 0; i < next_art->rgba.size(); i += 4) {
+        next_art->rgba[i] = static_cast<std::uint8_t>(255 - art->rgba[i]);
+        next_art->rgba[i + 1] = static_cast<std::uint8_t>(255 - art->rgba[i + 2]);
+        next_art->rgba[i + 2] = static_cast<std::uint8_t>(255 - art->rgba[i + 1]);
+    }
+    next_track->art = next_art;
     music::AudioSpectrum spectrum;
     std::array<float, 2048> pcm{};
     for (std::size_t i = 0; i < pcm.size(); ++i) {
@@ -1080,6 +1090,14 @@ void music_widget(ScenarioHost& host, bool capture) {
     if (rotation_delta < 0.29F || rotation_delta > 0.34F)
         throw std::runtime_error("album art does not rotate slowly at one turn per forty seconds");
     if (capture) host.capture("auto_rotated");
+    widget.set_preview(next_track, spectrum.levels());
+    host.frame();
+    if (!widget.track_transitioning() || widget.track_progress() != 0)
+        throw std::runtime_error("compact song change did not start from the outgoing artwork");
+    capture_at(host, capture, "track_compact", {0, 100, 210, 320, 450});
+    if (widget.track_transitioning() || widget.state() != gui::MusicWidgetState::Compact)
+        throw std::runtime_error("compact song slide did not finish or changed the preferred size");
+    media = next_track;
     auto auto_paused = std::make_shared<music::MusicSnapshot>(*media);
     auto_paused->playing = false;
     widget.set_preview(auto_paused);
@@ -1103,6 +1121,27 @@ void music_widget(ScenarioHost& host, bool capture) {
     run_music(5);
     if (widget.compact_preferred() || widget.state() != gui::MusicWidgetState::Expanded)
         throw std::runtime_error("manual expanded display was overridden by the four-second timer");
+    auto expanded_track = std::make_shared<music::MusicSnapshot>(*media);
+    expanded_track->title = "Sunrise - A New Melody";
+    expanded_track->artist = "Medicon Audio / Sunrise";
+    expanded_track->art = art;
+    widget.set_preview(expanded_track, spectrum.levels());
+    host.frame();
+    capture_at(host, capture, "track_expanded", {0, 100, 210, 320, 450});
+    if (widget.track_transitioning() || widget.state() != gui::MusicWidgetState::Expanded)
+        throw std::runtime_error("expanded song slide did not finish or lost the manual size");
+    widget.set_preview(next_track, spectrum.levels()); host.frame();
+    run_music(0.1F);
+    const float skip_progress = widget.track_progress();
+    auto latest_track = std::make_shared<music::MusicSnapshot>(*expanded_track);
+    latest_track->title = "Latest Song - Rapid Skip";
+    widget.set_preview(latest_track, spectrum.levels()); host.frame();
+    if (widget.track_progress() < skip_progress) throw std::runtime_error("rapid song skip reset the visible slide");
+    host.recreate_graphics(); host.frame();
+    run_music(1.0F);
+    if (widget.track_transitioning() || widget.state() != gui::MusicWidgetState::Expanded)
+        throw std::runtime_error("rapid song skip or renderer loss left a stale transition");
+    media = latest_track;
     host.overlay().gui().set_open(false);
     host.frame();
     social.toasts().push({gui::ToastKind::News, gui::ToastTarget::Home, "Medicon", "Now playing", 0});
@@ -1228,7 +1267,36 @@ void music_widget(ScenarioHost& host, bool capture) {
     if (widget.visible() || widget.state() != gui::MusicWidgetState::Hidden)
         throw std::runtime_error("music exit did not finish after session removal");
     if (capture) host.capture("hidden");
-    host.log("music: shared notification pop/stretch/content/reverse timeline/interrupted resume/automatic four-second collapse/rotating album art/manual size pinning/notifications/click/pause/end passed");
+    auto& settings_channel = social_mock(host, true, false);
+    social.open_screen(gui::SocialView::Settings);
+    widget.set_preview(media, spectrum.levels());
+    social_settle(host);
+    run_music(0.7F);
+    const auto music_toggle = social.screen().toggle_rect(5);
+    if (music_toggle.height() <= 0 || !widget.available()) throw std::runtime_error("Settings music toggle is missing");
+    if (capture) host.capture("settings_on");
+    while (settings_channel.commands.pop(std::chrono::steady_clock::now())) {}
+    social_click(host, (music_toggle.min.x + music_toggle.max.x) * 0.5F, (music_toggle.min.y + music_toggle.max.y) * 0.5F);
+    const auto off_command = settings_channel.commands.pop(std::chrono::steady_clock::now());
+    const auto* off = off_command ? std::get_if<social::SaveSettings>(&*off_command) : nullptr;
+    if (!off || off->music_enabled || social.store().music_enabled() || widget.available())
+        throw std::runtime_error("music toggle did not turn off immediately and queue its saved preference");
+    run_music(0.7F);
+    if (widget.visible()) throw std::runtime_error("disabled music did not finish its exit");
+    const auto saved = social::with_settings("{}", off->notify, off->music_enabled);
+    const auto reloaded = social::parse_config(*saved).config;
+    settings_channel.events.push(social::SettingsLoaded{reloaded.notify, reloaded.debug_timing, reloaded.debug_toast_slow_motion, reloaded.music_enabled});
+    host.frame();
+    if (social.store().music_enabled() || widget.visible()) throw std::runtime_error("reloaded preference enabled disabled music");
+    if (capture) host.capture("settings_off");
+    social_click(host, (music_toggle.min.x + music_toggle.max.x) * 0.5F, (music_toggle.min.y + music_toggle.max.y) * 0.5F);
+    const auto on_command = settings_channel.commands.pop(std::chrono::steady_clock::now());
+    const auto* on = on_command ? std::get_if<social::SaveSettings>(&*on_command) : nullptr;
+    run_music(0.7F);
+    if (!on || !on->music_enabled || !widget.available() || !widget.visible())
+        throw std::runtime_error("music toggle did not turn playing media back on");
+    if (capture) host.capture("settings_reenabled");
+    host.log("music: left-sliding expanded/circular tracks/rapid skips/renderer loss/Settings on-off persistence/notification animations/manual size/pause/end passed");
 }
 
 // The typing animation on the license key field, on a clock that follows the
