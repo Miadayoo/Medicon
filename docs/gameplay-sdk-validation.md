@@ -64,6 +64,29 @@ Rotations の有効状態や三人称描画には依存せず、描画の補間�
 メモリ fixture では両 packet の角度・head yaw、pitch 単独更新、正規化、不正入力拒否と他フィールドの保持を検査する。
 実サーバーでの受理・他プレイヤー視点での表示確認は未実施。
 
+### PlayerAuthInput の interact rotation と InputData 位置の修正（2026-10-30）
+
+上記の変更後も、KillAura・Derp などの rotation がサーバー側に反映されないという報告があった。
+PlayerAuthInput には `Player Rotation` とは別に、サーバーが攻撃・ブロック操作に使う `Interact Rotation`
+（[1.26.52 プロトコル定義](https://github.com/Mojang/bedrock-protocol-docs/tree/automated/1.26.52) の
+「The rotation the player is looking for interactions」）がある。従来はここを書き換えていなかった。
+pinned Solstice も送信 hook の最後に毎回 `mInteractRots = mRot` を設定している。
+
+メモリ配置は [LeviLamina 26.51 の `PlayerAuthInputPacketPayload`](https://github.com/LiteLDev/LeviLamina/blob/a0d87a55ea2593d28e63fa1eb6879d373ce95899/src/mc/network/packet/PlayerAuthInputPacketPayload.h)
+で確認した。Packet 基底 `0x30` の後に rot `+0x30`、pos `+0x38`、head yaw `+0x44`、pos delta `+0x48`、vehicle rot `+0x54`、
+analog move `+0x5C`、move `+0x64`、**interact rot `+0x6C`**、camera orientation `+0x74`、raw move `+0x80`、
+**InputData（EnumSet<66>、16 bytes）`+0x88`**、InputMode `+0x98` と並ぶ。同じ LeviLamina の `MovePlayerPacketPayload`
+（rot `+0x44`、head yaw `+0x4C`、mode/onGround `+0x50/+0x51`）と PlayerAuthInput の rot/pos/head yaw は、上記で照合済みの
+1.26.52.3 の値と一致する。1.26.52 のプロトコル定義のフィールド構成も 26.51 と同じ19個である。
+
+- rotation の書き換えで PlayerAuthInput の interact rotation `+0x6C` にも同じ pitch/yaw を設定する。
+  元の値が有限・範囲内でない packet は変更しない。camera orientation と vehicle rotation は変更しない。
+- Sprint の InputData は `+0x98` を読んでいたが、これは InputMode/PlayMode だった。上位 bit の検査は
+  NewInteractionModel（0..2）で通過してしまい、走行中は InputMode に bit 20 などを立てていた。`+0x88` に訂正した。
+
+メモリ fixture に interact rotation の更新と不正値の拒否を追加した。ゲーム実行ファイルでの interact rotation 位置の
+逆アセンブル照合と、実サーバーでの受理確認は未実施。
+
 ## 攻撃・設置
 
 | 対象 | 確認結果 |

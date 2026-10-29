@@ -49,3 +49,27 @@ it('matches both server actor id and name, rejects unknown models and hides dupl
   c.ws.close()
   expect(await b.next()).toEqual({ t: 'model.peers', peers: [{ ...player, model: 'neon', userId: 1 }] })
 })
+
+it('falls back to a unique name when a proxy changes the announced actor id', async () => {
+  server = await startServer()
+  const a = await connect(server.wsUrl, await server.signUp('alice'))
+  const b = await connect(server.wsUrl, await server.signUp('bobby'))
+  const c = await connect(server.wsUrl, await server.signUp('carol'))
+  await a.next(); await b.next(); await c.next()
+  // Alice sees her own id from the first server; Bob sees the downstream one.
+  b.send({ t: 'model.sync', self: null, watching: [{ actorId: '77', name: 'Alice' }] })
+  await b.next()
+  a.send({ t: 'model.sync', self: { actorId: '-4294967295', name: 'Alice', model: 'chocolat' }, watching: [] })
+  expect(await b.next()).toEqual({ t: 'model.peers', peers: [{ actorId: '77', name: 'Alice', model: 'chocolat', userId: 1 }] })
+  await a.next()
+  // A second claim of the same name is ambiguous and restores vanilla.
+  c.send({ t: 'model.sync', self: { actorId: '5', name: 'Alice', model: 'neon' }, watching: [] })
+  expect(await b.next()).toEqual({ t: 'model.peers', peers: [] })
+  await c.next()
+  c.ws.close()
+  expect(await b.next()).toEqual({ t: 'model.peers', peers: [{ actorId: '77', name: 'Alice', model: 'chocolat', userId: 1 }] })
+  // Two watched players with that name cannot both take one claim.
+  await new Promise((resolve) => setTimeout(resolve, 510))
+  b.send({ t: 'model.sync', self: null, watching: [{ actorId: '77', name: 'Alice' }, { actorId: '78', name: 'Alice' }] })
+  expect(await b.next()).toEqual({ t: 'model.peers', peers: [] })
+})

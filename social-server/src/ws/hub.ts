@@ -218,26 +218,55 @@ export class Hub {
 
   private refreshModels(requester?: Connection): void {
     const key = (player: ModelIdentity): string => JSON.stringify([player.actorId, player.name])
-    const models = new Map<string, (PlayerModel & { userId: number })[]>()
+    type Claim = PlayerModel & { userId: number }
+    const models = new Map<string, Claim[]>()
+    const names = new Map<string, Claim[]>()
+    const add = (map: Map<string, Claim[]>, id: string, claim: Claim): void => {
+      const claims = map.get(id) ?? []
+      claims.push(claim)
+      map.set(id, claims)
+    }
     for (const conn of this.connections.values()) {
       if (!conn.model) continue
-      const id = key(conn.model)
-      const claims = models.get(id) ?? []
-      claims.push({ ...conn.model, userId: conn.user.id })
-      models.set(id, claims)
+      const claim = { ...conn.model, userId: conn.user.id }
+      add(models, key(conn.model), claim)
+      add(names, conn.model.name, claim)
     }
     for (const conn of this.connections.values()) {
       // Older clients never receive model frames. Only subscribed nearby players are sent.
       if (conn.modelPeers === null && conn !== requester) continue
-      const peers: (PlayerModel & { userId: number })[] = []
+      const peers: Claim[] = []
       const seen = new Set<string>()
+      const shown = new Set<number>()
+      const unmatched: ModelIdentity[] = []
+      const watchedNames = new Map<string, number>()
       for (const player of conn.watching) {
         const id = key(player)
         if (seen.has(id)) continue
         seen.add(id)
+        watchedNames.set(player.name, (watchedNames.get(player.name) ?? 0) + 1)
         const claims = models.get(id)
+        if (!claims) {
+          unmatched.push(player)
+          continue
+        }
         // Ambiguous claims fail closed; a duplicate cannot choose somebody else's avatar.
-        if (claims?.length === 1 && claims[0]!.userId !== conn.user.id) peers.push(claims[0]!)
+        if (claims.length === 1 && claims[0]!.userId !== conn.user.id) {
+          peers.push(claims[0]!)
+          shown.add(claims[0]!.userId)
+        }
+      }
+      // A proxy (for example WaterdogPE after a transfer) can keep a player's
+      // own actor id while others see the downstream one. Fall back to the
+      // name when both the claim and this watcher's view of it are unique,
+      // and report the watcher's actor id so its client binds that actor.
+      for (const player of unmatched) {
+        const claims = names.get(player.name)
+        if (watchedNames.get(player.name) !== 1 || claims?.length !== 1) continue
+        const claim = claims[0]!
+        if (claim.userId === conn.user.id || shown.has(claim.userId)) continue
+        peers.push({ ...claim, actorId: player.actorId })
+        shown.add(claim.userId)
       }
       const signature = JSON.stringify(peers)
       if (conn.modelPeers === signature) continue

@@ -19,7 +19,8 @@ inline constexpr std::size_t actor_data_flags_size = 16;
 struct GameplayMoveInput { float strafe{}, forward{}; bool sneaking{}; };
 bool read_gameplay_move_input(std::uintptr_t component, GameplayMoveInput& input) noexcept;
 bool write_gameplay_sprint_input(std::uintptr_t component, bool sprinting) noexcept;
-// Validated 1.26.52.3 movement packet layouts; touches only pitch/yaw/head yaw.
+// Validated 1.26.52.3 movement packet layouts; touches only pitch/yaw/head yaw
+// (and PlayerAuthInput's interact rotation).
 bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch) noexcept;
 
 // A model-render callback borrows the render pitch only for its duration.

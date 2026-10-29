@@ -213,6 +213,9 @@ public:
     std::atomic<ULONGLONG> shared_models_until{};
     ULONGLONG model_sync_after{}; // Present thread, under render_mutex.
     bool model_sync_online{},model_sync_active{};
+    // Sharing needs the world snapshot even with every gameplay module OFF.
+    // Written by Present and read by baseTick, both under render_mutex.
+    bool model_sync_wanted{};
     sdk::custom_model::WorldRenderFn model_world_render{};
     sdk::custom_model::MeshImmediateFn model_mesh_immediate{};
     sdk::custom_model::MeshImmediateViewFn model_mesh_view{};
@@ -674,7 +677,7 @@ public:
             peer.box.set_options(false,0,1);peer.box.set_ready(false);
             peer.box.release_resources();peer.assets.stop();
         }
-        model_sync_after=0;model_sync_online=model_sync_active=false;
+        model_sync_after=0;model_sync_online=model_sync_active=model_sync_wanted=false;
         (void)model_box.take_frame();
         model_sample_seconds = {};
         model_sample_frames = {};
@@ -1729,8 +1732,10 @@ const char* model_status_name(medicon::custom_model::ModelRegistry::Status statu
 
 void Runtime::sync_shared_models(bool local_enabled,bool show_users,medicon::custom_model::BuiltinModel selected) {
     const bool online=social && client->overlay().social().store().state()==social::ConnectionState::Online;
-    const auto* frame=client->gameplay_view();
-    const bool active=online && (local_enabled||show_users) && frame && frame->ready;
+    model_sync_wanted=online && (local_enabled||show_users);
+    // Sharing reads actors only; it does not need ESP's camera projection.
+    const auto* frame=client->gameplay_snapshot();
+    const bool active=model_sync_wanted && frame;
     const auto now=GetTickCount64();
     if (online!=model_sync_online || active!=model_sync_active) model_sync_after=0;
     if (!active) {
@@ -2271,7 +2276,7 @@ void hook_send_packet(void* sender, void* packet) {
             const auto result = state.gameplay.rewrite_rotation_input(packet);
             if (result == sdk::RotationInputRewrite::rewritten &&
                 !state.rotation_packet_route_reported.exchange(true, std::memory_order_acq_rel))
-                state.report("Server rotation movement-packet rewrite active (pitch/yaw/head yaw).");
+                state.report("Server rotation movement-packet rewrite active (pitch/yaw/head yaw/interact rotation).");
             else if (result == sdk::RotationInputRewrite::layout_rejected &&
                 !state.rotation_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
                 state.report("Server rotation movement-packet layout check failed; angles left unchanged.", true);
@@ -2281,7 +2286,7 @@ void hook_send_packet(void* sender, void* packet) {
             state.sprint_packet_requested.load(std::memory_order_acquire));
         if (sprint_result == sdk::SprintInputRewrite::rewritten &&
             !state.sprint_packet_route_reported.exchange(true, std::memory_order_acq_rel))
-            state.report("Sprint PlayerAuthInput rewrite active (packet id 144, input flags at +0x98).");
+            state.report("Sprint PlayerAuthInput rewrite active (packet id 144, input flags at +0x88).");
         else if (sprint_result == sdk::SprintInputRewrite::layout_rejected &&
             !state.sprint_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
             state.report("Sprint PlayerAuthInput layout check failed; packet left unchanged.", true);
@@ -2324,7 +2329,9 @@ void hook_base_tick(void* actor) {
     (void)render.try_lock_for(std::chrono::milliseconds(4));
     if (!render.owns_lock() || !state.client || !state.bedrock_chat.is_local_player(actor)) return;
     const auto* sprint = dynamic_cast<const SprintModule*>(state.client->modules().find(SprintModule::module_id));
-    bool wanted = sprint && sprint->needs_restore();
+    // CustomModel sharing selects nearby players from this snapshot. Without
+    // it, nobody was announced or watched unless another module was ON.
+    bool wanted = (sprint && sprint->needs_restore()) || state.model_sync_wanted;
     for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "sprint"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
