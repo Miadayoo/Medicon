@@ -25,6 +25,7 @@ struct NotifySettings {
 // %APPDATA%\Medicon\social.json.
 struct SocialConfig {
     NotifySettings notify;
+    bool music_enabled = true;
     // Logs the per-frame cost of Social drawing (spec 4.9).
     bool debug_timing = false;
     // Plays notification animations at 0.25x to inspect each stage.
@@ -48,6 +49,8 @@ std::string default_config_text();
 // `existing` starts from the defaults. nullopt when it is not a JSON object:
 // like config.json, a broken file is never overwritten.
 std::optional<std::string> with_notify(std::string_view existing, const NotifySettings& notify);
+// Saves the Social settings screen, preserving other music/unknown fields.
+std::optional<std::string> with_settings(std::string_view existing, const NotifySettings& notify, bool music_enabled);
 // Remove the obsolete server URL and plaintext credential while preserving other
 // settings. nullopt means the document cannot safely be migrated.
 std::optional<std::string> without_legacy_settings(std::string_view existing);

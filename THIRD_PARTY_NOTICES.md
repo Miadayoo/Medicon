@@ -5,6 +5,7 @@
 | [Dear ImGui](https://github.com/ocornut/imgui) 1.91.9b | `f5befd2d29e66809cd1110a152e375a7f1981f06` | MIT; see fetched `imgui-src/LICENSE.txt` |
 | [nlohmann/json](https://github.com/nlohmann/json) 3.11.3 | `9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03` | MIT; see fetched `json-src/LICENSE.MIT` |
 | [MinHook](https://github.com/TsudaKageyu/minhook) 1.3.4 | `c3fcafdc10146beb5919319d0683e44e3c30d537` | BSD 2-Clause and bundled HDE notices; see fetched `minhook-src/LICENSE.txt` |
+| [Microsoft C++/WinRT](https://github.com/microsoft/cppwinrt) | NuGet `2.0.240405.15` (SDK fallback generator) | MIT; see bundled `third_party/cppwinrt/LICENSE` |
 | [Geist SemiBold 600 and Geist Mono Medium 500](https://github.com/vercel/geist-font) | `be21666703155b45d8bfb1e7fe5652fe48c842cb` | SIL Open Font License 1.1; see bundled `assets/fonts/OFL.txt` |
 | [Solstice signature data](https://github.com/surukotonai/solstice/blob/1d7808f52ef4ba6e34a7fbcc65294907a7761611/src/SDK/SigManager.hpp) | `1d7808f52ef4ba6e34a7fbcc65294907a7761611` | No root license found at this revision; no license grant is asserted |
 

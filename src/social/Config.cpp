@@ -34,6 +34,10 @@ ConfigLoad parse_config(std::string_view text) {
     auto& config = load.config;
     read_bool(root, "debugTiming", config.debug_timing, load.warnings, {});
     read_bool(root, "debugToastSlowMotion", config.debug_toast_slow_motion, load.warnings, {});
+    if (const auto music = root.find("music"); music != root.end()) {
+        if (!music->is_object()) load.warnings.emplace_back("music: expected an object");
+        else read_bool(*music, "enabled", config.music_enabled, load.warnings, "music.");
+    }
     // The obsolete field is ignored; its value must never enter warnings.
     if (root.contains("debugLicenseKey"))
         load.warnings.emplace_back("debugLicenseKey: no longer used; sign in on the login screen and remove it");
@@ -74,7 +78,7 @@ nlohmann::ordered_json notify_json(const NotifySettings& notify) {
 std::string default_config_text() {
     const SocialConfig defaults;
     // Insertion order keeps the file readable in the order of spec 4.10.
-    nlohmann::ordered_json root{{"notify", notify_json(defaults.notify)}};
+    nlohmann::ordered_json root{{"notify", notify_json(defaults.notify)}, {"music", {{"enabled", defaults.music_enabled}}}};
     return root.dump(2) + "\n";
 }
 
@@ -95,6 +99,16 @@ std::optional<std::string> without_legacy_settings(std::string_view existing) {
     const auto removed_key = root.erase("debugLicenseKey");
     const auto removed_url = root.erase("serverUrl");
     if (removed_key == 0 && removed_url == 0) return std::string(existing);
+    return root.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
+}
+
+std::optional<std::string> with_settings(std::string_view existing, const NotifySettings& notify, bool music_enabled) {
+    const auto saved = with_notify(existing, notify);
+    if (!saved) return std::nullopt;
+    auto root = nlohmann::ordered_json::parse(*saved);
+    auto& music = root["music"];
+    if (!music.is_object()) music = nlohmann::ordered_json::object();
+    music["enabled"] = music_enabled;
     return root.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
 }
 

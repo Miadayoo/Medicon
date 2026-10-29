@@ -5,6 +5,7 @@
 #include <medicon/platform/RawMouseWheel.hpp>
 #include <medicon/platform/RelativeMousePointer.hpp>
 #include <medicon/platform/MenuInputValidation.hpp>
+#include <medicon/platform/OverlayInput.hpp>
 #include <medicon/client/Client.hpp>
 #include <medicon/gui/Ime.hpp>
 #include <medicon/gui/Log.hpp>
@@ -15,6 +16,7 @@
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockInput.hpp>
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/BedrockMenu.hpp>
 #include <medicon/sdk/VanillaNavigation.hpp>
@@ -68,6 +70,9 @@ using WarpFn = BOOL(WINAPI*)(int, int);
 using GetCursorFn = BOOL(WINAPI*)(LPPOINT);
 using ShowCursorFn = int(WINAPI*)(BOOL);
 using ForegroundFn = HWND(WINAPI*)();
+using RawInputFn = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
+using RawBufferFn = UINT(WINAPI*)(PRAWINPUT, PUINT, UINT);
+using KeyStateFn = SHORT(WINAPI*)(int);
 using SendPacketFn = void(*)(void*, void*);
 using BaseTickFn = void(*)(void*);
 using GrabMouseFn = void(*)(void*);
@@ -98,8 +103,8 @@ struct FlagScope {
     explicit FlagScope(bool& value) : flag(value), previous(value) { flag = true; }
     ~FlagScope() { flag = previous; }
 };
-struct InputMessage { HWND window; UINT message; WPARAM wparam; LPARAM lparam; std::uint64_t menu_epoch; };
-struct InputCapture { std::uint64_t epoch; bool menu; bool open; };
+struct InputMessage { HWND window; UINT message; WPARAM wparam; LPARAM lparam; std::uint64_t menu_epoch; std::uint64_t opening_request{}; };
+struct InputCapture { std::uint64_t epoch; bool menu; bool open; bool movement; };
 struct WindowBinding { HWND window; WNDPROC original; bool restored{}; };
 struct QueueCandidate { ComPtr<ID3D12CommandQueue> queue; ComPtr<IUnknown> device; DWORD thread; ULONGLONG last_seen; };
 
@@ -144,13 +149,23 @@ public:
     std::atomic_uint status{};
     std::atomic_bool stopping{true};
     std::atomic_bool gui_open{};
+    std::atomic_bool modal_open{}, movement_enabled{};
+    std::atomic_bool social_available{};
+    // Reserve input on the window thread as soon as an opening key arrives,
+    // before Present can draw the screen. Low bits: 1 ClickGUI, 2 Social.
+    std::atomic<std::uint64_t> opening_input{};
+    std::uint64_t next_opening_request{}; // Window thread only
+    // Keep the cursor hooks engaged until the window thread restores the
+    // game's physical cursor baseline, even after Present closes the GUI.
+    std::atomic_bool cursor_owned{};
+    std::atomic_uint owned_mouse_buttons{};
     std::atomic_bool menu_visible{};
     std::atomic<std::uint64_t> menu_action_pending{0}; // The owning request's epoch, or no request.
     std::atomic<std::uint64_t> menu_epoch{0};
     std::uint64_t applied_menu_epoch = 0; // Present thread, under render_mutex
-    std::array<bool, 256> menu_owned_keys{}; // Window thread only
-    std::array<bool, 256> menu_owned_raw_keys{};
-    std::array<bool, 5> menu_owned_raw_buttons{};
+    InputPressOwnership<256> owned_keys; // Window thread only
+    InputPressOwnership<256> owned_raw_keys;
+    InputPressOwnership<5> owned_raw_buttons;
     std::array<bool, 5> raw_buttons_down{}; // Window thread. Hardware capture only.
     std::atomic_int open_key{VK_INSERT};
     std::atomic_uint callbacks{};
@@ -171,6 +186,11 @@ public:
     HookManager chat_hooks;
     HookManager tick_hooks;
     HookManager mouse_hooks;
+    HookManager native_input_hooks;
+    sdk::input::MouseFeedFn mouse_feed{};
+    sdk::input::LookInputFn look_input{};
+    bool native_input_registered{};
+    std::atomic_bool native_input_ready{};
     HookManager navigation_hooks;
     HookManager rotation_hooks;
     HookManager model_hooks;
@@ -313,6 +333,9 @@ public:
     GetCursorFn get_cursor{};
     ShowCursorFn show_cursor{};
     ForegroundFn get_foreground{};
+    RawInputFn get_raw_input{};
+    RawBufferFn get_raw_buffer{};
+    KeyStateFn get_async_key_state{}, get_key_state{};
 
     std::atomic<std::uint64_t> client_cursor{0};
     std::atomic_bool client_cursor_valid{false};
@@ -393,11 +416,38 @@ public:
     // cache: GetForegroundWindow from inside ClipCursor/SetCursorPos stalls the
     // render thread against the window thread and drops FPS while the GUI is open.
     bool cursor_captured_by_gui() const noexcept {
-        return !stopping.load(std::memory_order_acquire) && input_open() &&
+        return !stopping.load(std::memory_order_acquire) &&
+               (input_open() || cursor_owned.load(std::memory_order_acquire)) &&
                window_focused_cached.load(std::memory_order_acquire);
     }
     bool input_open() const noexcept {
-        return gui_open.load(std::memory_order_acquire) || menu_visible.load(std::memory_order_acquire);
+        return gui_open.load(std::memory_order_acquire) || menu_visible.load(std::memory_order_acquire) ||
+            opening_input.load(std::memory_order_acquire) != 0;
+    }
+    bool modal_input() const noexcept {
+        return modal_open.load(std::memory_order_acquire) || menu_visible.load(std::memory_order_acquire) ||
+            (opening_input.load(std::memory_order_acquire) & 3U) == 2;
+    }
+    bool blocks_native_mouse() const noexcept {
+        // Game callbacks can precede the window's focus notifications. Their
+        // input must not depend on a cached foreground-window observation.
+        return !stopping.load(std::memory_order_acquire) &&
+            (input_open() || cursor_owned.load(std::memory_order_acquire));
+    }
+    bool blocks_key(int key, const InputCapture& capture) const noexcept {
+        return key == open_key.load(std::memory_order_acquire) ||
+            (key == gui::Overlay::social_key && social_available.load(std::memory_order_acquire)) ||
+            (capture.open && !(capture.movement && clickgui_movement_key(key)));
+    }
+    void publish_client_input() {
+        const auto& overlay = client->overlay();
+        social_available.store(overlay.social().attached(), std::memory_order_release);
+        // The closing Social panel still covers the game and owns its clicks.
+        const bool modal = overlay.social().screen_open() || overlay.social().screen_visible();
+        const bool modal_changed = modal_open.exchange(modal, std::memory_order_acq_rel) != modal;
+        movement_enabled.store(overlay.allows_game_movement(), std::memory_order_release);
+        set_open(client->gui().open() || modal);
+        if (modal_changed) request_mouse_sync();
     }
     // Resolved by the bootstrap worker before Present is hooked, so the first
     // frame already knows whether the replacement menu can navigate.
@@ -406,12 +456,17 @@ public:
     }
     InputCapture input_capture() const noexcept {
         const auto epoch = menu_epoch.load(std::memory_order_acquire);
+        const auto opening = opening_input.load(std::memory_order_acquire) & 3U;
         const bool menu = menu_visible.load(std::memory_order_acquire);
-        const bool open = menu || gui_open.load(std::memory_order_acquire);
+        const bool open = menu || gui_open.load(std::memory_order_acquire) || opening || cursor_owned.load(std::memory_order_acquire);
         // A concurrent transition consumes this boundary message and leaves it
         // stamped with the earlier epoch, so Present will discard it.
-        if (epoch != menu_epoch.load(std::memory_order_acquire)) return {epoch, true, true};
-        return {epoch, menu, open};
+        if (epoch != menu_epoch.load(std::memory_order_acquire)) return {epoch, true, true, false};
+        return {epoch, menu, open, !menu && opening != 2 && !modal_open.load(std::memory_order_acquire) &&
+            (opening == 1 || movement_enabled.load(std::memory_order_acquire))};
+    }
+    void release_opening_input(std::uint64_t request) noexcept {
+        if (request) opening_input.compare_exchange_strong(request, 0, std::memory_order_acq_rel);
     }
 
     void report(std::string_view message, bool failure = false) {
@@ -477,10 +532,6 @@ public:
 
     void set_open(bool open) {
         gui_open = open;
-        if (!input_open()) {
-            spoof_valid.store(false, std::memory_order_release);
-            clear_client_cursor();
-        }
         // Discovery validates foreign objects and native code. Keep it off the
         // per-Present path while still detecting session changes/retrying failed
         // transitions. The native grab hook prevents recapture between polls;
@@ -536,7 +587,6 @@ public:
         if (menu_visible.exchange(visible, std::memory_order_acq_rel) == visible) return;
         advance_menu_epoch();
         if (!visible) {
-            spoof_valid.store(false, std::memory_order_release);
             clear_client_cursor();
         }
         request_mouse_sync();
@@ -636,6 +686,7 @@ public:
     void connect_chat();
     void connect_chat_feedback();
     void connect_mouse();
+    void connect_native_input();
     void connect_navigation();
     void connect_rotation();
     void connect_model_probe();
@@ -710,6 +761,7 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
         mouse_capture.reset(false, {});
         mouse_identity.store(0, std::memory_order_release);
         spoof_valid.store(false, std::memory_order_release);
+        cursor_owned.store(false, std::memory_order_release);
         conceal_os_cursor(*this, false);
         reset_relative_cursor(*this);
         win32_mouse_open = clip_saved = false;
@@ -718,6 +770,16 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
     const bool focused = window_focused(target);
     window_focused_cached.store(focused, std::memory_order_release);
     const bool open = !reset && !stopping && input_open();
+    if (open && focused && !win32_mouse_open) {
+        // Save the game's baseline before any native release or UI warp.
+        POINT frozen{};
+        if (get_cursor && get_cursor(&frozen)) {
+            spoof_x.store(frozen.x, std::memory_order_relaxed);
+            spoof_y.store(frozen.y, std::memory_order_relaxed);
+            spoof_valid.store(true, std::memory_order_release);
+        }
+        cursor_owned.store(true, std::memory_order_release);
+    }
     const auto cursor_epoch = menu_epoch.load(std::memory_order_acquire);
     if (reset || !open || !focused || relative_pointer_epoch != cursor_epoch) {
         reset_relative_cursor(*this);
@@ -748,7 +810,11 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
         if (reset) success = mouse_capture.reset(focused && identity, grab);
         else if (identity) {
             const auto grabbed = bedrock_chat.mouse_grabbed(diagnostic);
-            success = mouse_capture.update(open, focused, grabbed, release, grab);
+            // Releasing the native mouse also disables player movement. Only
+            // modal screens need that transition; ClickGUI owns the OS cursor
+            // through our Win32/raw-input hooks while the game stays grabbed.
+            success = mouse_capture.update(open && (modal_input() || !native_input_ready.load(std::memory_order_acquire)),
+                                           focused, grabbed, release, grab);
         }
         mouse_active = mouse_capture.active();
         if (!success && !diagnostic.empty() && diagnostic != mouse_error) {
@@ -775,24 +841,21 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
                 y = height / 2;
                 publish_client_cursor(x, y);
             }
-            // Freeze the game's GetCursorPos on the pre-warp location so hardware
-            // cursor motion cannot steer in-game look while the overlay is open.
-            if (!spoof_valid.load(std::memory_order_acquire) && get_cursor) {
-                POINT frozen{};
-                if (get_cursor(&frozen)) {
-                    spoof_x.store(frozen.x, std::memory_order_relaxed);
-                    spoof_y.store(frozen.y, std::memory_order_relaxed);
-                    spoof_valid.store(true, std::memory_order_release);
-                }
-            }
             // Confine to the client once. Later game ClipCursor calls are swallowed.
             clip_cursor_to_client(*this, target);
             reveal_os_cursor(*this);
             if (raw_mouse_nolegacy == 1 || outside)
                 warp_os_cursor(*this, target, static_cast<int>(x), static_cast<int>(y));
         }
-    } else if (!open) {
+    } else {
+        // GetCursorPos must stay frozen until the real OS cursor matches the
+        // last position the game requested. Otherwise the first game frame
+        // after close interprets the entire GUI drag as relative camera input.
+        if (focused && warp && spoof_valid.load(std::memory_order_acquire))
+            warp(spoof_x.load(std::memory_order_relaxed), spoof_y.load(std::memory_order_relaxed));
+        cursor_owned.store(false, std::memory_order_release);
         spoof_valid.store(false, std::memory_order_release);
+        clear_client_cursor();
     }
     return success;
 }
@@ -880,10 +943,19 @@ bool artifact_wheel(UINT message, WPARAM parameters) noexcept {
         !genuine_legacy_wheel_delta(static_cast<short>(GET_WHEEL_DELTA_WPARAM(parameters)));
 }
 
-void queue_input(Runtime& state, HWND window, UINT message, WPARAM wparam, LPARAM lparam, std::uint64_t epoch) {
+void queue_input(Runtime& state, HWND window, UINT message, WPARAM wparam, LPARAM lparam, std::uint64_t epoch,
+                 unsigned opening_mode = 0) {
     std::lock_guard lock(state.input_mutex);
-    if (state.messages.size() >= 4096) state.messages.clear();
-    state.messages.push_back({window, message, wparam, lparam, epoch});
+    if (state.messages.size() >= 4096) {
+        for (const auto& event : state.messages) state.release_opening_input(event.opening_request);
+        state.messages.clear();
+    }
+    const auto request = opening_mode ? (++state.next_opening_request << 2) | opening_mode : 0;
+    state.messages.push_back({window, message, wparam, lparam, epoch, request});
+    if (request) {
+        state.opening_input.store(request, std::memory_order_release);
+        state.request_mouse_sync();
+    }
 }
 
 void reset_relative_cursor(Runtime& state) noexcept {
@@ -1009,7 +1081,10 @@ void queue_raw_wheel(Runtime& state, HWND window, UINT message, short delta, std
 
 bool decode_raw_input(LPARAM lparam, RAWINPUT& raw) noexcept {
     UINT size = sizeof(raw);
-    const UINT read = GetRawInputData(reinterpret_cast<HRAWINPUT>(lparam), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER));
+    // The overlay needs the original packet; the public API hook neutralizes
+    // mouse input for game-side readers, including readers before WndProc.
+    const auto query = runtime().get_raw_input ? runtime().get_raw_input : &GetRawInputData;
+    const UINT read = query(reinterpret_cast<HRAWINPUT>(lparam), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER));
     return read != static_cast<UINT>(-1) && read >= sizeof(RAWINPUTHEADER);
 }
 
@@ -1026,14 +1101,8 @@ bool consume_raw_input(Runtime& state, HWND window, LPARAM lparam, const InputCa
         if (key == VK_SHIFT) key = MapVirtualKeyW(keyboard.MakeCode, MAPVK_VSC_TO_VK_EX);
         if (key == VK_CONTROL) key = (keyboard.Flags & RI_KEY_E0) ? VK_RCONTROL : VK_LCONTROL;
         if (key == VK_MENU) key = (keyboard.Flags & RI_KEY_E0) ? VK_RMENU : VK_LMENU;
-        bool owned = false;
-        if (key > 0 && key < state.menu_owned_raw_keys.size()) {
-            owned = state.menu_owned_raw_keys[key];
-            const bool up = (keyboard.Flags & RI_KEY_BREAK) != 0;
-            if (!up && capture.menu) state.menu_owned_raw_keys[key] = true;
-            if (up) state.menu_owned_raw_keys[key] = false;
-        }
-        return capture.open || owned;
+        const bool down = (keyboard.Flags & RI_KEY_BREAK) == 0;
+        return state.owned_raw_keys.consume(key, down, state.blocks_key(static_cast<int>(key), capture));
     }
     if (raw.header.dwType != RIM_TYPEMOUSE) return false;
     bool owned_tail = false;
@@ -1042,9 +1111,10 @@ bool consume_raw_input(Runtime& state, HWND window, LPARAM lparam, const InputCa
     constexpr std::array<USHORT, 5> up_flags{RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_UP,
         RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_UP};
     for (std::size_t i = 0; i < down_flags.size(); ++i) {
-        owned_tail = owned_tail || state.menu_owned_raw_buttons[i];
-        if (capture.menu && (raw.data.mouse.usButtonFlags & down_flags[i])) state.menu_owned_raw_buttons[i] = true;
-        if (raw.data.mouse.usButtonFlags & up_flags[i]) state.menu_owned_raw_buttons[i] = false;
+        if (raw.data.mouse.usButtonFlags & down_flags[i])
+            owned_tail = state.owned_raw_buttons.consume(i, true, capture.open) || owned_tail;
+        if (raw.data.mouse.usButtonFlags & up_flags[i])
+            owned_tail = state.owned_raw_buttons.consume(i, false, capture.open) || owned_tail;
     }
     if (!capture.open) {
         state.raw_buttons_down.fill(false);
@@ -1211,9 +1281,9 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
     if (state.mouse_message && message == state.mouse_message) {
         state.mouse_message_pending = false;
         if (wparam != 0) {
-            state.menu_owned_keys.fill(false);
-            state.menu_owned_raw_keys.fill(false);
-            state.menu_owned_raw_buttons.fill(false);
+            state.owned_keys.reset();
+            state.owned_raw_keys.reset();
+            state.owned_raw_buttons.reset();
         }
         try { return state.sync_mouse(window, wparam != 0) ? 1 : 0; }
         catch (...) { return 0; }
@@ -1227,25 +1297,33 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
     if (message == WM_KILLFOCUS) {
         state.ime_escape_owned = false;
         reset_relative_cursor(state);
-        state.menu_owned_keys.fill(false);
-        state.menu_owned_raw_keys.fill(false);
-        state.menu_owned_raw_buttons.fill(false);
+        state.owned_keys.reset();
+        state.owned_raw_keys.reset();
+        state.owned_raw_buttons.reset();
+        state.owned_mouse_buttons.store(0, std::memory_order_release);
         state.raw_buttons_down.fill(false);
     }
+    bool consume_key = false;
+    unsigned opening_mode = 0;
     if (!state.stopping) {
         const bool keyboard = keyboard_message(message);
         const int key = keyboard ? normalized_key(wparam, lparam) : mouse_key(message, wparam);
-        if (key > 0 && key < static_cast<int>(state.menu_owned_keys.size())) {
+        if (key > 0 && key < 256) {
             const bool up = keyboard ? (message == WM_KEYUP || message == WM_SYSKEYUP) :
                 (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP || message == WM_XBUTTONUP);
-            const bool owned_tail = state.menu_owned_keys[static_cast<std::size_t>(key)];
-            if (!up && capture.menu) state.menu_owned_keys[static_cast<std::size_t>(key)] = true;
-            if (up) state.menu_owned_keys[static_cast<std::size_t>(key)] = false;
-            if (!capture.menu && owned_tail) return 0;
+            if (!up && !capture.open && !(keyboard && (lparam & (1LL << 30)))) {
+                if (key == gui::Overlay::social_key && state.social_available.load(std::memory_order_acquire)) opening_mode = 2;
+                else if (key == state.open_key.load(std::memory_order_acquire)) opening_mode = 1;
+            }
+            consume_key = state.owned_keys.consume(static_cast<std::size_t>(key), !up,
+                state.blocks_key(key, capture));
+            const auto button = mouse_button_mask(key);
+            if (button && !up && capture.open) state.owned_mouse_buttons.fetch_or(button, std::memory_order_acq_rel);
+            if (button && up) state.owned_mouse_buttons.fetch_and(~button, std::memory_order_acq_rel);
+            if (!capture.open && consume_key && !opening_mode) return 0;
         }
         if (!capture.open && message == WM_INPUT &&
-            (std::ranges::any_of(state.menu_owned_raw_buttons, [](bool owned) { return owned; }) ||
-             std::ranges::any_of(state.menu_owned_raw_keys, [](bool owned) { return owned; })) &&
+            (state.owned_raw_buttons.active() || state.owned_raw_keys.active()) &&
             consume_raw_input(state, window, lparam, capture, decoded_raw ? &raw : nullptr))
             return DefWindowProcW(window, message, wparam, lparam);
     }
@@ -1256,7 +1334,7 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
         // walk a backlog and call into Win32 on the click frame.
         const bool pointer_move = message == WM_MOUSEMOVE || message == WM_NCMOUSEMOVE;
         if (!pointer_move && !(open_now && artifact_wheel(message, wparam)))
-            queue_input(state, window, message, wparam, lparam, capture.epoch);
+            queue_input(state, window, message, wparam, lparam, capture.epoch, opening_mode);
     }
     const bool open = !state.stopping && capture.open;
     if (message == WM_SETFOCUS || message == WM_KILLFOCUS || message == WM_ACTIVATE || message == WM_ACTIVATEAPP) {
@@ -1270,9 +1348,6 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
         if (message == WM_KILLFOCUS && GetCapture() == window) ReleaseCapture();
         state.request_mouse_sync();
     }
-    if (!state.stopping && keyboard_message(message) &&
-            (static_cast<int>(wparam) == state.open_key || normalized_key(wparam, lparam) == state.open_key)) return 0;
-    if (!state.stopping && mouse_key(message, wparam) != 0 && mouse_key(message, wparam) == state.open_key) return 0;
     if (open && message == WM_MOUSEMOVE && !state.relative_menu_pointer.active())
         state.publish_client_cursor(static_cast<long>(static_cast<short>(LOWORD(lparam))),
                                     static_cast<long>(static_cast<short>(HIWORD(lparam))));
@@ -1293,13 +1368,12 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
             return TRUE;
         }
         if (message == WM_INPUT) {
-            consume_raw_input(state, window, lparam, capture, decoded_raw ? &raw : nullptr);
-            // Foreground raw input requires the system cleanup. Neither raw
-            // keyboard nor mouse packets are forwarded to the game's WndProc.
-            return DefWindowProcW(window, message, wparam, lparam);
+            if (consume_raw_input(state, window, lparam, capture, decoded_raw ? &raw : nullptr))
+                return DefWindowProcW(window, message, wparam, lparam);
         }
-        if (keyboard_message(message) || mouse_message(message) || character_message(message)) return 0;
+        if (mouse_message(message) || character_message(message)) return 0;
     }
+    if (consume_key) return 0;
     const auto original_start = perf_now();
     const auto result = CallWindowProcW(original, window, message, wparam, lparam);
     wndproc_excluded += perf_now() - original_start;
@@ -1534,7 +1608,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         "MainMenu inactive: replacement hidden; native input restored.");
     client->overlay().set_main_menu_active(main_menu);
     if (main_menu) client->clear_gameplay();
-    set_open(client->gui().open() || client->overlay().social().screen_open());
+    publish_client_input();
     publish_menu_visible(main_menu);
     const auto current_menu_epoch = menu_epoch.load(std::memory_order_acquire);
     if (menu_changed || applied_menu_epoch != current_menu_epoch) {
@@ -1551,7 +1625,10 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         pending.swap(messages);
     }
     for (const auto& event : pending) {
-        if (event.window != window || event.menu_epoch != menu_epoch.load(std::memory_order_acquire)) continue;
+        if (event.window != window || event.menu_epoch != menu_epoch.load(std::memory_order_acquire)) {
+            release_opening_input(event.opening_request);
+            continue;
+        }
         // key_event above this message may already have opened the GUI. ImGui
         // applies wheel events in NewFrame, so drop artifacts before forwarding.
         if (client->capturing_input() && artifact_wheel(event.message, event.wparam)) continue;
@@ -1578,9 +1655,13 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
             ImGui::GetIO().ClearInputKeys();
             ImGui::GetIO().ClearInputMouse();
         }
+        if (event.opening_request) {
+            publish_client_input();
+            release_opening_input(event.opening_request);
+        }
     }
     if (auto* module = client->modules().find(ClickGuiModule::module_id)) open_key = module->keybind() ? module->keybind() : VK_INSERT;
-    set_open(client->gui().open() || client->overlay().social().screen_open());
+    publish_client_input();
     const bool cursor_visible = input_open() && window_focused_cached.load(std::memory_order_acquire);
     ImGui::GetIO().MouseDrawCursor = false;
     present_safe_imgui_new_frame(swap);
@@ -1628,7 +1709,7 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         if (auto* view = client->gameplay_view()) gameplay.refresh_view(*view);
     client->render();
     draw_model_probe();
-    set_open(client->gui().open() || client->overlay().social().screen_open());
+    publish_client_input();
     ImGui::Render();
     const auto submit_start = perf_now();
     perf.build.add(submit_start - build_start);
@@ -2405,13 +2486,49 @@ void hook_grab_mouse(void* client) {
     CallbackScope callback;
     auto& state = callback.state;
     if (!state.stopping.load(std::memory_order_acquire) && state.mouse_ready.load(std::memory_order_acquire) &&
-        state.input_open()) {
+        state.input_open() && (state.modal_input() || !state.native_input_ready.load(std::memory_order_acquire))) {
         const auto identity = state.mouse_identity.load(std::memory_order_acquire);
         // Pointer compare only. Revalidating vtables here runs on the game's
         // grab path and hitches every frame while the ClickGUI is open.
         if (!identity || client == reinterpret_cast<void*>(identity)) return;
     }
     state.grab_mouse(client);
+}
+
+void hook_mouse_feed(void* device, std::uint8_t button, int data, std::int16_t x, std::int16_t y,
+                     std::int16_t dx, std::int16_t dy, std::uint8_t motionless) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    sdk::input::forward_mouse_feed(state.blocks_native_mouse(), state.mouse_feed,
+                                   device, button, data, x, y, dx, dy, motionless);
+}
+
+void hook_look_input(void* entity, const void* camera, void* direct_look, const sdk::input::LookDelta* delta) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    sdk::input::forward_look_input(state.blocks_native_mouse(), state.look_input, entity, camera, direct_look, delta);
+}
+
+void Runtime::connect_native_input() {
+    if (stopping) return;
+    std::string error;
+    if (!native_input_registered) {
+        const auto targets = sdk::input::locate_targets(error);
+        if (!targets) { report(error); return; }
+        if (!native_input_hooks.create("Native GUI mouse feed gate", reinterpret_cast<void*>(targets.mouse_feed),
+                reinterpret_cast<void*>(&hook_mouse_feed), reinterpret_cast<void**>(&mouse_feed), error) ||
+            !native_input_hooks.create("Native GUI camera look gate", reinterpret_cast<void*>(targets.look_input),
+                reinterpret_cast<void*>(&hook_look_input), reinterpret_cast<void**>(&look_input), error)) {
+            report("Native input gate: " + error, true);
+            std::string ignored;
+            native_input_hooks.clear(ignored);
+            return;
+        }
+        native_input_registered = true;
+    }
+    if (!native_input_hooks.enable_all(error)) { report("Native input gate: " + error, true); return; }
+    native_input_ready.store(true, std::memory_order_release);
+    report("Native GUI input gate ready: MouseDevice::feed and camera look deltas blocked while GUI owns input.");
 }
 
 std::uint32_t hook_main_menu_update(void* controller) {
@@ -2728,6 +2845,84 @@ HWND WINAPI hook_get_foreground() {
     return state.get_foreground ? state.get_foreground() : GetForegroundWindow();
 }
 
+void filter_game_raw_mouse(Runtime& state, RAWINPUT& raw) noexcept {
+    if (raw.header.dwType != RIM_TYPEMOUSE || state.stopping.load(std::memory_order_acquire)) return;
+    const bool captured = state.cursor_captured_by_gui();
+    const auto flags = raw.data.mouse.usButtonFlags;
+    constexpr std::array<USHORT, 5> down{RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_DOWN,
+        RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_5_DOWN};
+    constexpr std::array<USHORT, 5> up{RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_UP,
+        RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_UP};
+    auto owned = state.owned_mouse_buttons.load(std::memory_order_acquire);
+    for (std::size_t i = 0; i < down.size(); ++i) {
+        const unsigned bit = 1U << i;
+        if (captured && (flags & down[i])) {
+            state.owned_mouse_buttons.fetch_or(bit, std::memory_order_acq_rel);
+            owned |= bit;
+        }
+        if (owned & bit) raw.data.mouse.usButtonFlags &= static_cast<USHORT>(~(down[i] | up[i]));
+        if (flags & up[i]) state.owned_mouse_buttons.fetch_and(~bit, std::memory_order_acq_rel);
+    }
+    if (captured) suppress_raw_mouse(raw);
+}
+
+UINT WINAPI hook_get_raw_input(HRAWINPUT input, UINT command, LPVOID data, PUINT size, UINT header_size) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const UINT read = state.get_raw_input(input, command, data, size, header_size);
+    if (command == RID_INPUT && data && read != static_cast<UINT>(-1) &&
+        read >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE))
+        filter_game_raw_mouse(state, *static_cast<RAWINPUT*>(data));
+    return read;
+}
+
+UINT WINAPI hook_get_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const UINT capacity = size ? *size : 0;
+    const UINT count = state.get_raw_buffer(data, size, header_size);
+    if (!data || count == static_cast<UINT>(-1)) return count;
+    auto* packet = reinterpret_cast<std::byte*>(data);
+    const auto* end = packet + capacity;
+    for (UINT i = 0; i < count && static_cast<std::size_t>(end - packet) >= sizeof(RAWINPUTHEADER); ++i) {
+        auto& raw = *reinterpret_cast<RAWINPUT*>(packet);
+        const auto bytes = raw.header.dwSize;
+        if (bytes < sizeof(RAWINPUTHEADER) || bytes > static_cast<std::size_t>(end - packet)) break;
+        if (bytes >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE)) filter_game_raw_mouse(state, raw);
+        const auto next_address = (reinterpret_cast<std::uintptr_t>(packet) + bytes + 7U) & ~std::uintptr_t{7};
+        auto* next = reinterpret_cast<std::byte*>(next_address);
+        if (next > end) break;
+        packet = next;
+    }
+    return count;
+}
+
+SHORT filter_game_mouse_button(Runtime& state, int key, SHORT value, bool physical) noexcept {
+    const unsigned button = mouse_button_mask(key);
+    if (!button || state.stopping.load(std::memory_order_acquire)) return value;
+    if (state.cursor_captured_by_gui()) {
+        if (value & 0x8000) state.owned_mouse_buttons.fetch_or(button, std::memory_order_acq_rel);
+        return 0;
+    }
+    if (state.owned_mouse_buttons.load(std::memory_order_acquire) & button) {
+        if (physical && !(value & 0x8000)) state.owned_mouse_buttons.fetch_and(~button, std::memory_order_acq_rel);
+        return 0;
+    }
+    return value;
+}
+
+SHORT WINAPI hook_get_async_key_state(int key) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    return filter_game_mouse_button(state, key, state.get_async_key_state(key), true);
+}
+
+SHORT WINAPI hook_get_key_state(int key) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    return filter_game_mouse_button(state, key, state.get_key_state(key), false);
+}
+
 template<typename T> void* method(T* object, unsigned index) { return (*reinterpret_cast<void***>(object))[index]; }
 template<typename Fn> bool add_hook(Runtime& state, const char* name, void* address, Fn detour, Fn& original, std::string& error) {
     return state.hooks.create(name, address, reinterpret_cast<void*>(detour), reinterpret_cast<void**>(&original), error);
@@ -2796,6 +2991,14 @@ bool Runtime::install(std::string& error) {
         !add_hook(*this, "SetCursorPos", reinterpret_cast<void*>(GetProcAddress(user32, "SetCursorPos")), hook_warp, warp, error) ||
         !add_hook(*this, "GetCursorPos", reinterpret_cast<void*>(GetProcAddress(user32, "GetCursorPos")), hook_get_cursor, get_cursor, error) ||
         !add_hook(*this, "ShowCursor", reinterpret_cast<void*>(GetProcAddress(user32, "ShowCursor")), hook_show_cursor, show_cursor, error) ||
+        !add_hook(*this, "GetRawInputData", reinterpret_cast<void*>(GetProcAddress(user32, "GetRawInputData")),
+                  hook_get_raw_input, get_raw_input, error) ||
+        !add_hook(*this, "GetRawInputBuffer", reinterpret_cast<void*>(GetProcAddress(user32, "GetRawInputBuffer")),
+                  hook_get_raw_buffer, get_raw_buffer, error) ||
+        !add_hook(*this, "GetAsyncKeyState", reinterpret_cast<void*>(GetProcAddress(user32, "GetAsyncKeyState")),
+                  hook_get_async_key_state, get_async_key_state, error) ||
+        !add_hook(*this, "GetKeyState", reinterpret_cast<void*>(GetProcAddress(user32, "GetKeyState")),
+                  hook_get_key_state, get_key_state, error) ||
         !add_hook(*this, "GetForegroundWindow", reinterpret_cast<void*>(GetProcAddress(user32, "GetForegroundWindow")),
                   hook_get_foreground, get_foreground, error)) return false;
     if (!hooks.enable_all(error)) return false;
@@ -2850,6 +3053,7 @@ DWORD WINAPI start_worker(void*) {
         } catch (const std::exception& error) { state.report(std::string("Gameplay profile unavailable: ") + error.what(), true); }
         state.report("Native profiles prepared in " + std::to_string(GetTickCount64() - profile_start) + " ms.");
         if (state.stopping) return 0;
+        state.connect_native_input();
         // Created before Present is hooked so the first frame can attach Social
         // to the overlay; its threads start only once initialization is done.
         try {
@@ -3070,6 +3274,8 @@ int MediconStopOverlay() {
     if (!state.navigation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.mouse_hooks.disable_all(error)) { state.report(error, true); return 0; }
     state.mouse_ready = false;
+    if (!state.native_input_hooks.disable_all(error)) { state.report(error, true); return 0; }
+    state.native_input_ready.store(false, std::memory_order_release);
     if (!state.rotation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.tick_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.chat_hooks.disable_all(error)) { state.report(error, true); return 0; }
@@ -3099,6 +3305,12 @@ int MediconStopOverlay() {
         state.mouse_capture.reset(false, {});
         state.mouse_identity.store(0, std::memory_order_release);
         state.spoof_valid.store(false, std::memory_order_release);
+        state.cursor_owned.store(false, std::memory_order_release);
+        state.owned_mouse_buttons.store(0, std::memory_order_release);
+        state.modal_open.store(false, std::memory_order_release);
+        state.movement_enabled.store(false, std::memory_order_release);
+        state.social_available.store(false, std::memory_order_release);
+        state.opening_input.store(0, std::memory_order_release);
         state.window_focused_cached.store(false, std::memory_order_release);
         state.mouse_owner = nullptr;
         state.mouse_active = false;

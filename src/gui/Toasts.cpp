@@ -165,6 +165,7 @@ void ToastManager::layout(Entry& entry, const SocialFonts& fonts, float scale, f
 
 void ToastManager::render(ImDrawList* list, const SocialFonts& fonts, IShadowRenderer& shadows, const ToastFrame& frame) {
     hit_areas_.clear();
+    music_anchor_.reset();
     if (empty() || !list || !(frame.display.x > 0.0F) || !(frame.display.y > 0.0F)) return;
     namespace metrics = style::metrics;
     // Spec 4.6: Social sizes scale with the window height alone.
@@ -172,9 +173,12 @@ void ToastManager::render(ImDrawList* list, const SocialFonts& fonts, IShadowRen
     const float height = metrics::toast_height * scale;
     const float gap = metrics::toast_gap * scale;
     const float top = (metrics::toast_top + (frame.in_menu ? 0.0F : frame.offset_y)) * scale;
-    const float min_width = std::min(metrics::toast_min_width * scale, frame.display.x - gap * 2.0F);
+    const float reserve = frame.music_companion ? 80.0F * scale : 0.0F;
+    const float available = std::max(1.0F, (frame.display.x - gap * 2.0F - reserve * 2.0F) /
+                                                   (frame.music_companion ? 1.05F : 1.0F));
+    const float min_width = std::min(metrics::toast_min_width * scale, available);
     const float max_width = std::max(min_width, std::min(frame.display.x * metrics::toast_max_width_ratio,
-                                                         frame.display.x - gap * 2.0F));
+                                                         available));
     // The first frame after none were shown starts every animation at its beginning.
     const float dt = std::exchange(idle_, false) ? 0.0F : frame.dt;
 
@@ -198,6 +202,7 @@ void ToastManager::render(ImDrawList* list, const SocialFonts& fonts, IShadowRen
         const float half_w = (height + (final_width(entry) - height) * m.stretch) * m.scale * 0.5F;
         const float half_h = height * m.scale * 0.5F;
         const float center_y = top + entry.slot_y + height * 0.5F;
+        if (i == 0) music_anchor_ = ImVec2{center_x - std::max(final_width(entry) * 0.5F, half_w), center_y};
         layouts[i] = {{center_x - half_w, center_y - half_h}, {center_x + half_w, center_y + half_h}, m};
         if (m.scale < 0.001F) continue;
         const ImVec2 min = layouts[i].min, max = layouts[i].max;

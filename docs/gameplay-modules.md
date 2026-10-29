@@ -60,8 +60,11 @@ Auto-selection keeps the chosen block slot selected, like Solstice's default
 reported the slot to the server on its own tick. Switching and restoring inside
 one call meant the server saw a placement from a slot it never selected. The
 original slot is selected again one second after the last placement from the
-switched slot, also when Scaffold is turned off, unless the user picked another
-slot meanwhile.
+switched slot while Scaffold runs, and on the next game tick once Scaffold is
+turned off, unless the user picked another slot meanwhile. Restoration runs
+after client/player validation, before the world snapshot's component checks.
+An unavailable inventory or failed write keeps the original slot pending for
+the next tick instead of losing it; a confirmed inventory change cancels it.
 
 ESP and ChinaHat reread the camera (view matrix, render origin, FOV) every
 Present from the fields the last tick validated: plain copies, no native call.

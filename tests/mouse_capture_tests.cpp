@@ -1,6 +1,7 @@
 #include <medicon/platform/MouseCaptureController.hpp>
 #include <medicon/platform/RawMouseWheel.hpp>
 #include <medicon/platform/RelativeMousePointer.hpp>
+#include <medicon/platform/OverlayInput.hpp>
 #ifdef _WIN32
 #include <medicon/platform/MenuInputValidation.hpp>
 #endif
@@ -61,6 +62,30 @@ void opening_and_reassertion() {
           "Closing did not restore the original native grab");
     check(!controller.active(), "Completed restoration did not return to an idle state");
     check(backend.update(controller, false) && backend.grabs == 1, "Stable closed state grabbed again");
+}
+
+void overlay_press_keeps_its_owner_until_release() {
+    medicon::platform::InputPressOwnership<256> input;
+    check(input.consume(1, true, true), "Social mouse down leaked to the game");
+    check(input.consume(1, true, false), "Closing Social leaked a held mouse repeat");
+    check(input.consume(1, false, false), "Closing Social leaked the matching mouse up");
+    check(!input.active(), "Released overlay press retained its ownership");
+    check(!input.consume(1, true, false) && !input.consume(1, false, false),
+          "A new game click was swallowed after the overlay press ended");
+
+    check(!input.consume('W', true, false), "ClickGUI swallowed a movement press");
+    check(input.consume('W', true, true), "A modal screen leaked a held movement repeat");
+    check(!input.consume('W', false, true), "Opening a modal screen left a game movement key stuck");
+    check(input.consume('W', true, true), "Modal text input leaked a new movement press");
+    check(input.consume('W', false, false), "Closing text input leaked a key release");
+    check(!input.consume('W', true, false), "Movement did not resume on a new press");
+    input.reset();
+    check(!input.active() && !input.consume('W', false, false), "Focus reset retained press ownership");
+
+    for (const int key : std::array<int, 11>{'W', 'A', 'S', 'D', 0x20, 0x10, 0xA0, 0xA1, 0x11, 0xA2, 0xA3})
+        check(medicon::platform::clickgui_movement_key(key), "A default movement key was not allowed in ClickGUI");
+    for (const int key : std::array<int, 10>{1, 2, 4, 5, 6, 'E', 'T', 0x1B, 0x24, 0x2D})
+        check(!medicon::platform::clickgui_movement_key(key), "A mouse/menu/chat key was allowed as movement");
 }
 
 void preserve_already_free_inventory() {
@@ -281,6 +306,27 @@ void relative_mouse_pointer_tracks_no_legacy_motion() {
 }
 
 #ifdef _WIN32
+void direct_raw_mouse_reads_are_stationary_for_the_game() {
+    RAWINPUT raw{};
+    raw.header.dwType = RIM_TYPEMOUSE;
+    raw.header.dwSize = sizeof(raw);
+    raw.data.mouse.usFlags = MOUSE_MOVE_ABSOLUTE | MOUSE_VIRTUAL_DESKTOP;
+    raw.data.mouse.lLastX = 24000;
+    raw.data.mouse.lLastY = 12000;
+    raw.data.mouse.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_WHEEL;
+    raw.data.mouse.usButtonData = 120;
+    medicon::platform::suppress_raw_mouse(raw);
+    check(raw.header.dwType == RIM_TYPEMOUSE && raw.header.dwSize == sizeof(raw),
+          "Mouse suppression invalidated the raw packet header");
+    check(raw.data.mouse.usFlags == 0 && raw.data.mouse.lLastX == 0 && raw.data.mouse.lLastY == 0 &&
+          raw.data.mouse.usButtonFlags == 0 && raw.data.mouse.usButtonData == 0,
+          "A direct mouse read retained camera, attack or wheel input");
+    raw.header.dwType = RIM_TYPEKEYBOARD;
+    raw.data.keyboard.VKey = 'W';
+    medicon::platform::suppress_raw_mouse(raw);
+    check(raw.data.keyboard.VKey == 'W', "Mouse suppression modified a movement keyboard packet");
+}
+
 void only_pointer_motion_reuses_published_menu_state() {
     using medicon::platform::menu_input_requires_screen_validation;
     for (const UINT message : {WM_MOUSEMOVE, WM_NCMOUSEMOVE, WM_SETCURSOR})
@@ -354,6 +400,7 @@ void polling_keeps_transitions_and_retries_responsive() {
 int main() {
     try {
         opening_and_reassertion();
+        overlay_press_keeps_its_owner_until_release();
         preserve_already_free_inventory();
         unknown_state_is_conservative();
         focus_defers_restoration();
@@ -366,6 +413,7 @@ int main() {
         relative_pointer_owns_overlay_motion();
         relative_mouse_pointer_tracks_no_legacy_motion();
 #ifdef _WIN32
+        direct_raw_mouse_reads_are_stationary_for_the_game();
         only_pointer_motion_reuses_published_menu_state();
 #endif
         std::cout << "Mouse capture transition tests passed.\n";

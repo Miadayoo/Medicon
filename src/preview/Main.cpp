@@ -404,6 +404,10 @@ public:
         if (options_.demo || options_.input_test || !options_.scenario.empty() || options_.gpu_timing) {
             medicon::preview::register_demo_modules(modules_);
         }
+        if (options_.hidden()) {
+            // Deterministic captures never depend on desktop media sessions.
+            overlay_.social().music().set_preview(std::make_shared<medicon::music::MusicSnapshot>());
+        }
         overlay_.set_owns_font_atlas(true);
         overlay_.set_save_handler([this] { if (uses_config()) save_config(); });
         if (options_.dpi > 0.0F) overlay_.set_dpi_override(options_.dpi);

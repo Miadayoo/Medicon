@@ -37,7 +37,7 @@ public:
     // Execute on the same thread as tick/render/key_event. Saves changed binds
     // immediately and reports a persistence failure without overwriting bad JSON.
     CommandResult execute_command(std::string_view input);
-    [[nodiscard]] bool capturing_input() const noexcept { return overlay_.gui().open() || overlay_.main_menu().active() || overlay_.social().screen_open(); }
+    [[nodiscard]] bool capturing_input() const noexcept { return overlay_.gui().open() || overlay_.main_menu().active() || overlay_.social().screen_visible(); }
     bool scan_signatures(); // Explicit, potentially expensive; never calls a game function.
     [[nodiscard]] bool running() const noexcept { return running_; }
     [[nodiscard]] ModuleManager& modules() noexcept { return modules_; }

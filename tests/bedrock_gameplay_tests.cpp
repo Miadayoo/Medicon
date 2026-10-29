@@ -1,6 +1,8 @@
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
 
+#include <Windows.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -108,6 +110,7 @@ void native_boundary() {
 } // namespace
 
 int main() {
+    try { components(); pools(); native_boundary(); slot_restore_rules(); slot_restore_inventory(); }
     try { components(); pools(); native_boundary(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Bedrock gameplay ABI tests passed\n";

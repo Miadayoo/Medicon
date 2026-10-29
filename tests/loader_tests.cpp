@@ -167,6 +167,39 @@ void test_offline_runs_verified_local() {
     check(launcher.launched.size() == 1 && launcher.launched[0].second == State::Offline, "told it is offline");
 }
 
+void test_nested_revision_update_and_fallback() {
+    FakeVerifier v;
+    Server server;
+    server.publish(v, "1.0.3", "CORE0003");
+    FakeFetcher fetcher(server);
+    FakeStore store(v);
+    store.seed("1.0.27", "CORE0027");
+    store.state.good = {"1.0.27"};
+    store.state.last_run = "1.0.27";
+    FakeLauncher launcher;
+    const auto outcome = run_update(fetcher, v, store, launcher, config(), nullptr);
+    check(outcome.state == State::Updated && outcome.started_version == "1.0.3" && fetcher.downloads == 1,
+          "1.0.27 updates to 1.0.3 instead of continuing to run 1.0.27");
+    check(launcher.launched.size() == 1 && launcher.launched.front().first == "1.0.3",
+          "the downloaded nested successor is launched first");
+    FakeFetcher again(server);
+    FakeLauncher cached;
+    check(run_update(again, v, store, cached, config(), nullptr).started_version == "1.0.3" && again.downloads == 0,
+          "next startup reuses 1.0.3 instead of selecting 1.0.27");
+    server.reachable = false;
+    FakeFetcher offline(server);
+    FakeLauncher offline_launcher;
+    check(run_update(offline, v, store, offline_launcher, config(), nullptr).started_version == "1.0.3",
+          "offline startup also prefers 1.0.3");
+    FakeFetcher fallback_fetcher(server);
+    FakeLauncher fallback_launcher;
+    fallback_launcher.fail = {"1.0.3"};
+    const auto fallback = run_update(fallback_fetcher, v, store, fallback_launcher, config(), nullptr);
+    check(fallback.started_version == "1.0.27" && fallback_launcher.launched.size() == 2 &&
+          fallback_launcher.launched[0].first == "1.0.3" && fallback_launcher.launched[1].first == "1.0.27",
+          "failed 1.0.3 falls back to the last revision in the 1.0.2 line");
+}
+
 void test_bad_signature_is_not_run() {
     FakeVerifier v;
     Server server;
@@ -332,6 +365,7 @@ int main() {
         test_first_run_downloads_and_runs();
         test_up_to_date_does_not_download();
         test_offline_runs_verified_local();
+        test_nested_revision_update_and_fallback();
         test_bad_signature_is_not_run();
         test_sha_mismatch_is_discarded();
         test_interrupted_download_keeps_old();

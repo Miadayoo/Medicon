@@ -40,6 +40,7 @@ Medicon Social のクライアント側です。ログイン、ホームのお�
 | `notify.inGame` | `true` | ゲーム中にも通知を出すか |
 | `notify.sound` | `true` | 通知音 |
 | `notify.inGameOffsetY` | `0` | ゲーム中の通知の Y 位置オフセット（1080p 基準の px、±1080 まで） |
+| `music.enabled` | `true` | 音楽ウィジェットの ON/OFF。Social → Settings → MUSIC → Show music で変更し、再起動後も保持 |
 | `debugTiming` | `false` | `inject.log` の Perf 行（2秒ごと）に、Social の処理時間 `social n=… avg=…us max=…us` を追加します |
 | `debugToastSlowMotion` | `false` | 通知の変形アニメーション（出入り、幅の変化、繰り上がり）を 0.25 倍速で再生します。表示時間は変わりません |
 

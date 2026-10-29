@@ -20,13 +20,17 @@ const MAX_CHANGELOG_LINES = 50
 export const VERSION_PATTERN = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/
 
 export function compareVersions(a: string, b: string): number {
-  const left = a.split('.').map(Number)
-  const right = b.split('.').map(Number)
-  for (let i = 0; i < 3; i++) {
-    const difference = (left[i] ?? 0) - (right[i] ?? 0)
+  const left = a.split('.')
+  const right = b.split('.')
+  for (let i = 0; i < 2; i++) {
+    const difference = Number(left[i] ?? 0) - Number(right[i] ?? 0)
     if (difference !== 0) return Math.sign(difference)
   }
-  return 0
+  // Final digits are nested revisions, matching MediconLoader:
+  // 1.0.2 < 1.0.25 < 1.0.28 < 1.0.3 (28 means revision 8 inside 2).
+  const leftRevision = left[2] ?? '0'
+  const rightRevision = right[2] ?? '0'
+  return leftRevision === rightRevision ? 0 : leftRevision < rightRevision ? -1 : 1
 }
 
 export interface Manifest {

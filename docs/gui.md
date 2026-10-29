@@ -78,6 +78,10 @@ edge_lit.render(device, immediate_context, back_buffer, render_target, error);
 
 キーは Win32 virtual-key で `overlay.key_event(vk, down, repeat)` に渡します（GUI → Module ホットキーの順にルーティング）。戻り値が `true` のキーはゲームに渡さないでください。Mouse4/5 は `VK_XBUTTON1/2` として渡すと Module のキーに使えます。フォーカス喪失時は `modules.reset_keys()`。DLL では同じ順序を C API（`MediconPrepareFrame` → `MediconFrame` → `MediconRenderEdgeLitD3D11`、入力は `MediconKeyEvent`）で行います。
 
+ClickGUI 表示中も `W/A/S/D`、Space、Shift、Ctrl で移動できます。文字入力欄・キー割り当て中、Social 画面、Medicon のメインメニューでは移動入力を遮断します。GUI 内のマウス操作は通常メッセージ・Raw Input・ボタン状態の直接取得を通じてゲームへ漏れないよう処理し、閉じる際は実カーソルをゲーム側の基準位置へ戻してから視点入力を再開します。GUI で押したボタンは、閉じた後も離すまで GUI 側が所有します。
+
+ゲーム内部にもマウス入力のキューと視点更新があるため、対応する1.26.52.3では両方の入口でも遮断します。根拠とテストは [native-gui-input.md](native-gui-input.md) を参照してください。
+
 ## ClickGUI の描画負荷
 
 この節の比較値は外観の刷新前に行った描画負荷改善の記録です。

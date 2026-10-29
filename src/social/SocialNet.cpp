@@ -180,7 +180,7 @@ void SocialNet::handle(const SaveSettings& command) {
     // File I/O stays here, never on the render thread (spec 4.9).
     const auto path = directory_ / L"social.json";
     std::string error;
-    const auto text = with_notify(read_file(path), command.notify);
+    const auto text = with_settings(read_file(path), command.notify, command.music_enabled);
     if (!text) {
         core_->report("Social: social.json is not a JSON object; settings were not saved.");
         core_->channel().events.push(SettingsSaveFailed{});
@@ -353,7 +353,7 @@ SocialNet::Ending SocialNet::receive_loop(net::WebSocket& socket, Backoff& backo
 void SocialNet::run_connection() {
     // File I/O and DPAPI happen here, never on the render thread (spec 4.9).
     const auto config = load_config(directory_ / L"social.json", *core_);
-    core_->channel().events.push(SettingsLoaded{config.notify, config.debug_timing, config.debug_toast_slow_motion});
+    core_->channel().events.push(SettingsLoaded{config.notify, config.debug_timing, config.debug_toast_slow_motion, config.music_enabled});
     const auto endpoint = parse_server_url(server_url);
     if (!endpoint) {
         core_->report("Social: the server URL embedded in this client is invalid.");

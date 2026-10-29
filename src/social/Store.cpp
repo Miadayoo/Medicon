@@ -161,6 +161,7 @@ bool SocialStore::apply(const Event& event) {
             return changed;
         } else if constexpr (std::is_same_v<T, SettingsLoaded>) {
             notify_ = value.notify;
+            music_enabled_ = value.music_enabled;
             debug_timing_ = value.debug_timing;
             return true;
         } else if constexpr (std::is_same_v<T, MessageReceived>) {

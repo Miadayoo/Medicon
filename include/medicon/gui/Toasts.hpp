@@ -38,6 +38,8 @@ struct ToastFrame {
     float offset_y = 0.0F;
     // Valid only while the client draws a cursor. Otherwise toasts have no hit area.
     PointerInput pointer{};
+    // A music companion needs room left of the stack on narrow windows.
+    bool music_companion = false;
 };
 
 // Notification popups at the top centre (spec 4.7). At most three are visible;
@@ -91,6 +93,9 @@ public:
     std::optional<Toast> consume_click();
     // A visible toast was drawn at `point` in the last render.
     bool covers(ImVec2 point) const noexcept;
+    // First card's reserved left edge and actual animated centre Y. Valid
+    // after render(), including the entry/exit animation, not just Holding.
+    std::optional<ImVec2> music_anchor() const noexcept { return music_anchor_; }
     // Debug: multiplies animation time (not the shown timer), e.g. 0.25 to inspect each stage.
     void set_animation_speed(float speed) noexcept { animation_speed_ = speed; }
 
@@ -103,6 +108,7 @@ public:
 
 private:
     void promote();
+    std::optional<ImVec2> music_anchor_;
     void layout(Entry& entry, const SocialFonts& fonts, float scale, float min_width, float max_width);
 
     std::vector<Entry> visible_;

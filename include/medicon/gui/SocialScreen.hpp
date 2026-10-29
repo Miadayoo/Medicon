@@ -58,7 +58,7 @@ public:
     social::NewsKind news_tab() const noexcept { return news_kind_; }
     // Where the last frame drew a Home tab (empty before it was drawn).
     SocialRect tab_rect(social::NewsKind kind) const noexcept { return tab_rects_[static_cast<std::size_t>(kind)]; }
-    // Settings rows as last drawn: DM, friend requests, news, while playing, sound.
+    // Settings rows: DM, friend requests, news, while playing, sound, music.
     SocialRect toggle_rect(std::size_t index) const noexcept {
         return index < toggle_rects_.size() ? toggle_rects_[index] : SocialRect{};
     }
@@ -179,7 +179,7 @@ private:
     std::array<CardCache, social::news_kind_count> cards_{};
     std::array<bool, social::news_kind_count> news_failed_{};
     std::array<SocialRect, social::news_kind_count> tab_rects_{};
-    std::array<SocialRect, 5> toggle_rects_{};
+    std::array<SocialRect, 6> toggle_rects_{};
     SocialRect sign_out_rect_{};
     SocialRect sign_in_rect_{};
     SocialScroll friends_scroll_;

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -61,7 +62,14 @@ private:
     T* pointer_ = nullptr;
 };
 
+std::atomic_uint game_movement_down{}, game_movement_up{}, game_mouse_down{}, game_mouse_up{}, game_chat_down{};
+
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_KEYDOWN && wparam == 'W') ++game_movement_down;
+    if (message == WM_KEYUP && wparam == 'W') ++game_movement_up;
+    if (message == WM_KEYDOWN && wparam == 'T') ++game_chat_down;
+    if (message == WM_LBUTTONDOWN) ++game_mouse_down;
+    if (message == WM_LBUTTONUP) ++game_mouse_up;
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
@@ -657,8 +665,29 @@ int main(int argc, char** argv) {
         require(visible > 3000 && visible > startup_closed + 2000,
                 "The bound Insert key did not open ClickGUI after injection (" + std::to_string(visible) + ")");
 
+        const auto movement_down = game_movement_down.load();
+        const auto movement_up = game_movement_up.load();
+        const auto chat_down = game_chat_down.load();
+        const auto mouse_down = game_mouse_down.load();
+        const auto mouse_up = game_mouse_up.load();
+        SendMessageW(window->get(), WM_KEYDOWN, 'W', 1);
+        SendMessageW(window->get(), WM_KEYUP, 'W', (1LL << 31) | (1LL << 30) | 1);
+        SendMessageW(window->get(), WM_KEYDOWN, 'T', 1);
+        SendMessageW(window->get(), WM_KEYUP, 'T', (1LL << 31) | (1LL << 30) | 1);
+        require(game_movement_down == movement_down + 1 && game_movement_up == movement_up + 1,
+                "ClickGUI did not forward movement down/up through the actual game WndProc");
+        require(game_chat_down == chat_down, "ClickGUI leaked the game chat key");
+        SendMessageW(window->get(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(1, 1));
+        require(game_mouse_down == mouse_down, "ClickGUI click reached the game WndProc");
+
         insert(window->get());
         frames(*host);
+        SendMessageW(window->get(), WM_LBUTTONUP, 0, MAKELPARAM(1, 1));
+        require(game_mouse_up == mouse_up, "Closing ClickGUI leaked a GUI-owned mouse release");
+        SendMessageW(window->get(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(1, 1));
+        SendMessageW(window->get(), WM_LBUTTONUP, 0, MAKELPARAM(1, 1));
+        require(game_mouse_down == mouse_down + 1 && game_mouse_up == mouse_up + 1,
+                "A fresh game click remained blocked after ClickGUI closed");
         const auto closed_image = host->read_last_presented();
         const auto closed = overlay_pixels(closed_image);
         require(closed + 2000 < visible, "Insert did not close the rendered GUI (visible=" +
@@ -666,8 +695,32 @@ int main(int argc, char** argv) {
         require(edge_lit_tube_rows(closed_image) == 20,
                 "GUI closed but Edge-lit tube/core was absent or discontinuous; effects path did not render");
         insert(window->get());
+        // The opening key and following clicks can reach the message pump
+        // together, before the next Present has opened the actual GUI.
+        PostMessageW(window->get(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(1, 1));
+        PostMessageW(window->get(), WM_LBUTTONUP, 0, MAKELPARAM(1, 1));
         frames(*host);
+        require(game_mouse_down == mouse_down + 1 && game_mouse_up == mouse_up + 1,
+                "A click immediately after the GUI opening key leaked before Present");
         require(overlay_pixels(host->read_last_presented()) > closed + 2000, "Insert did not reopen the rendered GUI");
+
+        const auto before_social_movement = game_movement_down.load();
+        SendMessageW(window->get(), WM_KEYDOWN, VK_HOME, 1);
+        SendMessageW(window->get(), WM_KEYUP, VK_HOME, (1LL << 31) | (1LL << 30) | 1);
+        SendMessageW(window->get(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(1, 1));
+        SendMessageW(window->get(), WM_LBUTTONUP, 0, MAKELPARAM(1, 1));
+        frames(*host);
+        SendMessageW(window->get(), WM_KEYDOWN, 'W', 1);
+        SendMessageW(window->get(), WM_KEYUP, 'W', (1LL << 31) | (1LL << 30) | 1);
+        require(game_movement_down == before_social_movement && game_mouse_down == mouse_down + 1 && game_mouse_up == mouse_up + 1,
+                "Social leaked attack or movement input through the actual game WndProc");
+        SendMessageW(window->get(), WM_KEYDOWN, VK_ESCAPE, 1);
+        SendMessageW(window->get(), WM_KEYUP, VK_ESCAPE, (1LL << 31) | (1LL << 30) | 1);
+        frames(*host);
+        SendMessageW(window->get(), WM_KEYDOWN, 'W', 1);
+        SendMessageW(window->get(), WM_KEYUP, 'W', (1LL << 31) | (1LL << 30) | 1);
+        require(game_movement_down == before_social_movement + 1,
+                "ClickGUI movement did not resume after Social closed");
 
         window->resize(1024, 720);
         pump_messages();

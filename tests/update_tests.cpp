@@ -26,7 +26,18 @@ void test_versions() {
     check(parse_version("10.20.9999").has_value(), "four digit parts");
     for (const char* bad : {"", "1", "1.2", "1.2.3.4", "01.2.3", "1.2.3 ", "-1.2.3", "1..3", "../1.2", "1.2.a", "12345.0.0"})
         check(!parse_version(bad), std::string("refused version '") + bad + "'");
-    check(*parse_version("1.0.10") > *parse_version("1.0.9"), "numeric, not text, comparison");
+    const std::vector<std::string> revisions{
+        "1.0.1", "1.0.10", "1.0.2", "1.0.20", "1.0.25", "1.0.27", "1.0.28", "1.0.29", "1.0.3", "1.0.9"};
+    for (std::size_t i = 0; i < revisions.size(); ++i) {
+        for (std::size_t j = 0; j < revisions.size(); ++j) {
+            const auto left = *parse_version(revisions[i]), right = *parse_version(revisions[j]);
+            check((left < right) == (i < j) && (left == right) == (i == j) && (left > right) == (i > j),
+                  "nested revision order: " + revisions[i] + " versus " + revisions[j]);
+        }
+    }
+    check(*parse_version("1.2.0") < *parse_version("1.10.0") &&
+          *parse_version("1.0.9999") < *parse_version("1.1.0") &&
+          *parse_version("9.9.9") < *parse_version("10.0.0"), "major/minor versions keep numeric precedence");
     check(to_string({2, 0, 1}) == "2.0.1", "round trip");
 }
 
@@ -71,7 +82,14 @@ void test_state_and_order() {
     check(state.good.size() == 2 && state.bad.size() == 1 && state.last_run == "1.0.4", "state parses valid versions only");
     check(parse_state("garbage").good.empty() && parse_state("[]").last_run.empty(), "broken state is empty");
     const auto order = start_order({"1.0.3", "1.0.10", "1.0.6", "1.0.4", "1.0.4", "x"}, state);
-    check((order == std::vector<std::string>{"1.0.10", "1.0.4", "1.0.3"}), "newest first, without failed versions");
+    check((order == std::vector<std::string>{"1.0.4", "1.0.3", "1.0.10"}), "newest first, without failed versions");
+    const auto nested = start_order({"1.0.27", "1.0.3", "1.0.25", "1.0.2", "1.0.28"}, {});
+    check((nested == std::vector<std::string>{"1.0.3", "1.0.28", "1.0.27", "1.0.25", "1.0.2"}),
+          "loader starts 1.0.3 before revisions inside 1.0.2");
+    LoaderState nested_state;
+    nested_state.good = {"1.0.2", "1.0.25", "1.0.27", "1.0.28", "1.0.3"};
+    const auto stale = prune({"1.0.2", "1.0.25", "1.0.27", "1.0.28", "1.0.3"}, nested_state, "1.0.3");
+    check((stale == std::vector<std::string>{"1.0.27", "1.0.25", "1.0.2"}), "pruning keeps the two newest good revisions, 1.0.3 and 1.0.28");
     mark_good(state, "1.0.6");
     check(state.bad.empty() && state.good.back() == "1.0.6", "a version that starts is no longer bad");
     mark_bad(state, "1.0.4");
