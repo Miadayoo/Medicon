@@ -190,10 +190,12 @@ struct BedrockGameplay::Impl {
     // Auto Select keeps the block slot selected while placing (like Solstice's
     // default Full switch) so the game reports it to the server on its own
     // tick before a placement uses it. The original slot comes back once
-    // nothing has placed from the switched slot for a second. Survives clear().
+    // nothing has placed from the switched slot for a second, or on the first
+    // capture after Scaffold was turned off. Survives clear().
     std::uintptr_t switch_supplies = 0;
     int switch_from = -1, switch_to = -1;
     ULONGLONG switch_used = 0;
+    bool switch_active = true;
     bool switched_this_tick = false;
     std::uint32_t local_entity = 0;
     memory::AddressRange image;
@@ -299,10 +301,11 @@ struct BedrockGameplay::Impl {
         std::uintptr_t supplies = 0;
         int selected = -1;
         // Another player or world, or a slot the user picked: nothing to undo.
-        if (!read_at(player, 0x5B8, supplies) || supplies != switch_supplies ||
-            !read_at(supplies, 0x10, selected) || selected != switch_to) { forget_switch(); return; }
-        if (GetTickCount64() - switch_used < 1000) return;
-        write_at(supplies, 0x10, switch_from);
+        const bool held = read_at(player, 0x5B8, supplies) && supplies == switch_supplies &&
+            read_at(supplies, 0x10, selected) && selected == switch_to;
+        const auto action = slot_restore(held, switch_active, GetTickCount64() - switch_used);
+        if (action == SlotRestore::wait) return;
+        if (action == SlotRestore::restore) write_at(supplies, 0x10, switch_from);
         forget_switch();
     }
 
@@ -445,6 +448,8 @@ void BedrockGameplay::clear() noexcept {
 void BedrockGameplay::end_tick() noexcept { impl_->active = false; }
 
 bool BedrockGameplay::slot_restore_pending() const noexcept { return impl_->switch_from >= 0; }
+
+void BedrockGameplay::set_auto_select_active(bool active) noexcept { impl_->switch_active = active; }
 
 bool BedrockGameplay::refresh_view(GameplayFrame& frame) const noexcept {
     const auto& state = *impl_;
