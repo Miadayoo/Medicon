@@ -33,7 +33,7 @@
 
 使用する hash は古い `Components/ComponentHashes.hpp` の一覧ではなく、現在の `EnttHashs.hpp` の override と実ファイルで一致する値。StateVector `1B5D5238`、AABBShape `BAC1B3CF`、Rotation `75DF36B7`、ActorType `4F6BA419`、ActorOwner `85B93800`。
 
-head/body componentはbaseTickで更新し、描画時に呼ばれるMobBodyRotation補間getter（RVA `0x20874B0`）とActorHeadRotation補間getter（RVA `0x2087610`）をフックする。最後のYawと現在のYawをgetterのrender alphaで最短角度補間して返し、20 Hzのtick更新間も描画を滑らかにする。これは三人称表示にのみ適用し、一人称ではnative yawを返す。縦向きはRotationComponentだけではモデル表示に反映されないため、同版で確認したRenderRotationComponent（hash `D15944E2`）のpitchを三人称描画時だけ更新する。モデル描画callbackが戻る前にRenderRotationComponentの元の値を復元し、RotationComponentは書き換えない。視点モードが判定できない場合も描画yaw/pitch overrideを適用しない。両yaw getterはMinecraft 1.26.52.3の実行ファイルでcomponent hashと補間処理を確認し、先頭バイトとlocal actorのvtable内にある関数ポインターが一致した場合だけoverrideを有効にする。vtable slotは派生Actorで異なる可能性があるため固定しない。SprintはMoveInputComponentのSprintDownを更新し、PlayerAuthInputPacket（ID 144）のInputDataにSprinting／StartSprinting／StopSprintingを反映する。Strikeは任意方向、Legitは前方への移動入力を条件にする（詳細は下記の修正記録）。パケットのIDとInputData上位bitを検証し、未対応レイアウトは変更せず送る。
+Head/body yaw is applied through the verified interpolation getters at RVAs `0x20874B0` and `0x2087610`, with shortest-angle interpolation for smooth rendering and native yaw retained in first person. Third-person pitch is applied only during the verified local-player DataDriven render callback, by temporarily replacing RotationComponent's current and previous pitch and restoring both after native rendering.
 
 コピーした sparse slot を packed ID と完全一致で照合するため、entity の version が変わった古いハンドルは使わない。Actor を列挙するためにゲームの `std::vector` を構築・解放せず、ActorOwner の既存 storage だけを読む。
 
@@ -41,7 +41,9 @@ head/body componentはbaseTickで更新し、描画時に呼ばれるMobBodyRota
 
 RotationsModule が `server_yaw` / `server_pitch` の共通要求を保持し、`update_render` で両軸を補間する。pitch だけの変化にも対応し、ON/OFF・world/actor の切り替えで補間状態を破棄する。KillAura 等は角度を要求するだけで、描画処理を持たない。Always では要求元モジュールがなくても実際の視点角度を描画する。
 
-native の `0x1D54950` は `0x1D54BAC` で補間した視点角度を RenderRotation に設定する。既存の検証済み DataDriven callback（`0x558D300`、actor は renderData `+0`）でローカル三人称描画を判定し、Rotations の描画 pitch を callback の間だけ設定する。`RenderPitchScope` が元の pitch を復元する。RotationComponent と隣接する render yaw は変更しない。RenderRotation setter 自体への追加フックは使用しない。CustomModel のアニメーション入力は native の読み取りに戻し、三人称モデルの描画アダプターで同じ Rotations の pitch を受け取る。一人称の腕には実際の視点 pitch を使う。
+Third-person model pitch is borrowed only while the validated world-render callback runs. It obtains the current local player through the native render-time getter, temporarily sets that actor's `RotationComponent` current and previous pitch, calls native rendering, then restores both values. Yaw and first-person camera state are left untouched. The generic pose-builder and local DataDriven callback did not provide a confirmed local-player render path and are not used for pitch.
+
+Regen targets legacy redstone ore ids `73`, `74`, `658`, `-403`, and `-404` in Minecraft 1.26.52.3 within configured range, without a conservative voxel-ray visibility gate. It uses validated base/survival GameMode vtables. Destroy Speed scales the validated native progress helper (`0x259BA80`) before `continueDestroyBlock` accumulates progress, when that GameMode's active position and face match Regen's target. Item names, numeric IDs, and max durability are read from the Item layout and checked before use; no Item virtual functions are called.
 
 CustomModel P1 と Rotations は body-yaw 関数 `0x20874B0` を共有する。起動時は CustomModel の P0/P1/P2 接続後に Rotations のフックを有効にする。逆順では MinHook の JMP が P1 の先頭バイトを使う signature を消し、P1 接続とモデル worker の起動が止まる。元の PE では signature が一意に一致し、実行中のフック済み関数では先頭が `E9` に変わって一致しないことを読み取りで確認した。解決済みの元の関数アドレスはフック後も有効で、CustomModel は Rotations の yaw 描画を共有する。
 

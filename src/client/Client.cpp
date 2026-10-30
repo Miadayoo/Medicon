@@ -6,6 +6,8 @@
 #include <medicon/modules/DerpModule.hpp>
 #include <medicon/modules/AimbotModule.hpp>
 #include <medicon/modules/KillauraModule.hpp>
+#include <medicon/modules/ScaffoldModule.hpp>
+#include <medicon/modules/RegenModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/gui/GameplayVisuals.hpp>
 #include <medicon/memory/module_view.hpp>
@@ -56,6 +58,33 @@ public:
         return applied;
     }
 
+    bool rotate_head_and_body_instant(float yaw, float pitch) override {
+        rotations_.set_server_rotation(yaw, pitch);
+        rotations_.snap_render_once();
+        const bool applied = game_.rotate_head_and_body(server_yaw(), server_pitch());
+        rotation_requested_ = rotation_requested_ || applied;
+        return applied;
+    }
+
+    bool block_id(sdk::BlockPos position, std::uint16_t& id) const override {
+        return game_.block_id(position, id);
+    }
+    bool can_see_block(sdk::BlockPos position) const override { return game_.can_see_block(position); }
+    bool advance_destroy_block(sdk::BlockPos position, std::uint8_t face, float scale,
+                               float& progress, bool& destroyed) override {
+        return game_.advance_destroy_block(position, face, scale, progress, destroyed);
+    }
+    bool should_switch_before_destroy(float scale) const override {
+        return game_.should_switch_before_destroy(scale);
+    }
+    bool prepare_durability_safe_finish() override { return game_.prepare_durability_safe_finish(); }
+    void stop_destroy_block() noexcept override { game_.stop_destroy_block(); }
+    int selected_hotbar_slot() const noexcept override { return game_.selected_hotbar_slot(); }
+    bool hotbar_item(int slot, sdk::BlockPos target, sdk::HotbarItemInfo& info) const override {
+        return game_.hotbar_item(slot, target, info);
+    }
+    bool select_hotbar_slot(int slot) override { return game_.select_hotbar_slot(slot); }
+
     [[nodiscard]] bool has_rotation_request() const noexcept { return rotation_requested_; }
 
     bool restore_view() {
@@ -67,6 +96,7 @@ public:
     bool attack(std::uintptr_t actor_id) override { return game_.attack(actor_id); }
     bool set_sprinting(bool sprinting) override { return game_.set_sprinting(sprinting); }
     bool swing() override { return game_.swing(); }
+    bool mining_swing() override { return game_.mining_swing(); }
     bool place_block(sdk::BlockPos position, bool auto_select) override {
         return game_.place_block(position, auto_select);
     }
@@ -147,10 +177,15 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     const auto* derp = dynamic_cast<DerpModule*>(modules_.find(DerpModule::module_id));
     const auto* aimbot = dynamic_cast<AimbotModule*>(modules_.find(AimbotModule::module_id));
     const auto* killaura = dynamic_cast<KillauraModule*>(modules_.find(KillauraModule::module_id));
+    const auto* scaffold = dynamic_cast<ScaffoldModule*>(modules_.find(ScaffoldModule::module_id));
+    auto* regen = dynamic_cast<RegenModule*>(modules_.find(RegenModule::module_id));
     auto* sprint = dynamic_cast<SprintModule*>(modules_.find(SprintModule::module_id));
     const auto* killaura_rotate = killaura ? std::get_if<Choice>(&killaura->rotate.value) : nullptr;
+    const auto* scaffold_rotate = scaffold ? std::get_if<Choice>(&scaffold->rotate.value) : nullptr;
     const bool has_rotation_requester = (derp && derp->enabled()) || (aimbot && aimbot->enabled()) ||
-        (killaura && killaura->enabled() && killaura_rotate && killaura_rotate->index == 1);
+        (killaura && killaura->enabled() && killaura_rotate && killaura_rotate->index == 1) ||
+        (scaffold && scaffold->enabled() && scaffold_rotate && scaffold_rotate->index != 0) ||
+        (regen && regen->enabled());
     // Feature rotation modes (for example Killaura's Simple) own their angle
     // requests independently. Third-person interpolation remains an explicit
     // Rotations-module feature.
@@ -160,6 +195,7 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     game.begin_rotation_control(rotation_control_enabled, rotation_render_enabled);
     RotationVariableRoute rotation_route(game, *rotations);
     const bool gameplay_actions_allowed = allow_actions && !capturing_input();
+    if (regen && (!regen->enabled() || !gameplay_actions_allowed)) regen->release(rotation_route);
     if (gameplay_actions_allowed) {
         for (const auto& module : modules_.all()) {
             if (!module->enabled()) continue;

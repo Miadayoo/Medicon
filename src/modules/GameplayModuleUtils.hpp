@@ -45,6 +45,18 @@ inline float wrap_yaw(float yaw) noexcept {
     return yaw - 180.0F;
 }
 
+inline bool look_angles(const sdk::GameplayFrame& frame, sdk::Vec3 point, float& yaw, float& pitch) noexcept {
+    if (!finite(frame.eye) || !finite(point) || !std::isfinite(frame.yaw)) return false;
+    const float dx = point.x - frame.eye.x;
+    const float dy = point.y - frame.eye.y;
+    const float dz = point.z - frame.eye.z;
+    const float horizontal = std::hypot(dx, dz);
+    if (!std::isfinite(horizontal) || (horizontal < 0.0001F && std::abs(dy) < 0.0001F)) return false;
+    yaw = horizontal < 0.0001F ? frame.yaw : wrap_yaw(std::atan2(-dx, dz) * radians_to_degrees);
+    pitch = std::clamp(-std::atan2(dy, horizontal) * radians_to_degrees, -90.0F, 90.0F);
+    return std::isfinite(yaw) && std::isfinite(pitch);
+}
+
 struct Target {
     const sdk::ActorSnapshot* actor = nullptr;
     float yaw = 0.0F;

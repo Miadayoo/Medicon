@@ -9,10 +9,11 @@ and use the existing ClickGUI, keybind commands, ArrayList and ConfigStore.
 | `derp` / Derp | Player | Spins the local head and body yaw. Speed in degrees per second; view and movement direction are unchanged. |
 | `aimbot` / Aimbot | Player | Smoothly requests head/body yaw and model pitch toward an eligible target within range and the configured view FOV; camera yaw is unchanged. Smoothing, player filter, visibility filter, and require-click (on by default). |
 | `killaura` / Killaura | Player | Attacks the nearest eligible actor at the configured CPS, at most once per game tick. Rotate offers `None` and `Simple`; `Simple` turns toward the target and retains it while eligible. Swing sends the native Attack swing after successful attacks. Range, requested yaw/pitch, player and visibility filters. Rotations owns third-person angle rendering. |
-| `scaffold` / Scaffold | Movement | Finds replaceable cells one level below the feet (the highest cell whose top is at or under them, as Solstice's `y - 2.62`), then along horizontal movement. When the target has no face to click, a cell beside it is placed first as support. Extension, hotbar auto-selection and placement delay. |
+| `scaffold` / Scaffold | Movement | Finds replaceable cells one level below the feet (the highest cell whose top is at or under them, as Solstice's `y - 2.62`), then along horizontal movement. When the target has no face to click, a cell beside it is placed first as support. Rotate offers `None`, `Flick` (the previous Simple behavior), and `Simple` (instantly turns to a new target and holds that angle for one second). Extension, hotbar auto-selection and placement delay. |
+| `regen` / Regen | Player | Finds the nearest redstone ore within Range and selects the best-tier available hotbar pickaxe. Switch `Reactive` waits for the target to stop being redstone; `Fastchange` advances at full progress without waiting for its block update. Destroy Speed `1.00` is vanilla, `0.50` halves break time, and `0.00` is nearly instant. Rotation Percentage controls how long Regen aims at the target while mining. Swing offers `None`, `Always`, and `Breaked`, using the native Mine swing source separate from Killaura's Attack swing. Infinity Durability swaps to a non-damageable hotbar item for the final hit and restores the prior slot afterward. |
 | `sprint` / Sprint | Movement | Strike requests sprint for movement input in any direction; Legit requires forward input. It updates the native processed/raw SprintDown input and server-facing PlayerAuthInput sprint state. The game applies sprint acceleration and eligibility checks. Sneaking, locked movement, menus and module disable release the request. |
 | `esp` / ESP | Visual | Projects actor bounds as a screen box. Range, player filter, color, optional fill, line width and glow toggle. Glow combines a tight core and a long exponential tail in one continuous exterior mesh, with a smooth fade at its outer limit. Spread increases smoothly by up to 40% for large, nearby boxes. Width/intensity are source-only constants in `src/gui/GameplayVisuals.cpp`; old config values are ignored. |
-| `rotations` / Rotations | Misc | Owns the shared requested server yaw/pitch and their third-person render interpolation, including pitch-only requests from any source. Speed sets the maximum angular speed, reached at a fixed 180-degree distance. Always keeps rendering aligned to the current view whenever no gameplay module requests a target angle. |
+| `rotations` / Rotations | Misc | Owns the shared requested server yaw/pitch and their third-person render interpolation, including pitch-only requests from any source. Speed sets the maximum angular speed, reached at a fixed 180-degree distance. Sprint Fix gates Legit sprinting to within 45 degrees of the server direction. Vector Fix rotates PlayerAuthInput movement vectors with the silent yaw to preserve the intended world-space direction; it is off by default. Always keeps rendering aligned to the current view whenever no gameplay module requests a target angle. |
 
 Each built-in feature has its own header and implementation in
 `include/medicon/modules/<Feature>Module.hpp` and `src/modules/<Feature>Module.cpp`
@@ -44,9 +45,9 @@ reapplies the held head/body yaw and view pitch before closing the native
 mutation window with `end_tick`. The renderer's validated body-yaw interpolation
 getter uses the held yaw on every render frame, while the held visual yaw and
 pitch advance once per Present using elapsed time and the Rotations speed
-settings. Rotations computes both rendered angles. The existing validated
-DataDriven model callback temporarily applies its pitch to RenderRotation only
-for the local third-person draw, then restores the native render value.
+settings. Rotations computes both rendered angles. The validated world-render
+callback temporarily applies its pitch to the local actor's RotationComponent
+while the world is rendered, then restores both original pitch values.
 CustomModel receives the same Rotations pitch through its render adapter;
 first-person arms continue to use the camera pitch. Successful gameplay angle
 requests also update outgoing PlayerAuthInput and MovePlayer pitch, yaw and head

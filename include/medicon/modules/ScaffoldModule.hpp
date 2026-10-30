@@ -15,6 +15,7 @@ public:
     Setting& extend;
     Setting& auto_select;
     Setting& delay;
+    Setting& rotate;
 
 protected:
     void on_enable() noexcept override;
@@ -23,6 +24,14 @@ protected:
 private:
     std::uintptr_t local_id_ = 0;
     float cooldown_ = 0.0F;
+    float rotation_hold_remaining_ = 0.0F;
+    float rotation_hold_yaw_ = 0.0F;
+    float rotation_hold_pitch_ = 0.0F;
+    int rotation_hold_block_x_ = 0;
+    int rotation_hold_block_y_ = 0;
+    int rotation_hold_block_z_ = 0;
+    bool rotation_hold_active_ = false;
+    bool rotation_hold_block_valid_ = false;
 };
 
 } // namespace medicon
