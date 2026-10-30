@@ -24,6 +24,9 @@
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/sdk/CustomModelBox.hpp>
 #include <medicon/sdk/CustomModelAnimation.hpp>
+#include <medicon/memory/module_view.hpp>
+#include <medicon/memory/signature_catalog.hpp>
+#include <medicon/memory/signature_registry.hpp>
 #include <medicon/custom_model/SharedPlayers.hpp>
 #include <medicon/sdk/CustomModelView.hpp>
 #include <medicon/update/HostApi.h>
@@ -80,6 +83,7 @@ using BaseTickFn = void(*)(void*);
 using GrabMouseFn = void(*)(void*);
 using MainMenuUpdateFn = std::uint32_t(*)(void*);
 using YawInterpolationFn = float(__fastcall*)(void*, float);
+using SprintSpeedFn = int(__fastcall*)(void*, void*, void*, void*);
 namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
 
 constexpr GUID queue_guid{0xf6fe7dea, 0x438b, 0x49d6, {0x95, 0xb8, 0xe3, 0x67, 0x45, 0xd4, 0xea, 0xa2}};
@@ -195,6 +199,7 @@ public:
     std::atomic_bool native_input_ready{};
     HookManager navigation_hooks;
     HookManager rotation_hooks;
+    HookManager sprint_speed_hooks;
     HookManager model_hooks;
     HookManager model_box_hooks;
     HookManager model_static_hooks;
@@ -248,6 +253,7 @@ public:
     std::atomic<sdk::custom_model::ViewMode> rotation_view_mode{sdk::custom_model::ViewMode::unknown};
     std::atomic_bool sprint_packet_override_enabled{};
     std::atomic_bool sprint_packet_requested{};
+    SprintSpeedFn sprint_speed_original{};
     std::atomic_bool sprint_packet_route_reported{};
     std::atomic_bool sprint_packet_layout_error_reported{};
     std::atomic_bool rotation_packet_route_reported{};
@@ -709,6 +715,7 @@ public:
     void connect_native_input();
     void connect_navigation();
     void connect_rotation();
+    void connect_sprint_speed();
     void connect_model_probe();
     void connect_model_box();
     void connect_model_static();
@@ -2083,6 +2090,54 @@ void Runtime::connect_rotation() {
     report("Rotations head/body render interpolation hooks ready (Minecraft 1.26.52.3).");
 }
 
+int __fastcall hook_sprint_speed(void* first, void* flags, void* speed_component, void* fourth) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto result = state.sprint_speed_original(first, flags, speed_component, fourth);
+    // Keep the cached movement speed synchronized in both directions:
+    // sprint=0.026, released=0.020.
+    if (!state.stopping.load(std::memory_order_acquire)) {
+        (void)sdk::detail::write_gameplay_sprint_speed(
+            reinterpret_cast<std::uintptr_t>(speed_component),
+            state.sprint_packet_requested.load(std::memory_order_acquire));
+    }
+    return result;
+}
+
+void Runtime::connect_sprint_speed() {
+    if (stopping || !gameplay_ready.load(std::memory_order_acquire)) return;
+    if (sprint_speed_hooks.size()) {
+        std::string error;
+        if (!sprint_speed_hooks.enable_all(error))
+            report("Sprint speed hook unavailable: " + error, true);
+        return;
+    }
+    std::string diagnostic;
+    const auto module = memory::current_process_module(&diagnostic);
+    if (!module) {
+        report("Sprint speed signature unavailable: " + diagnostic, true);
+        return;
+    }
+    memory::SignatureRegistry signatures;
+    signatures.scan(memory::solstice_signatures(), module->executable_regions, module->image);
+    const auto target = signatures.address("GetSpeedInAirWithSprint");
+    if (!target) {
+        report("Sprint speed signature unavailable: GetSpeedInAirWithSprint.", true);
+        return;
+    }
+    std::string error;
+    if (!sprint_speed_hooks.create("Strike sprint speed", reinterpret_cast<void*>(*target),
+            reinterpret_cast<void*>(&hook_sprint_speed), reinterpret_cast<void**>(&sprint_speed_original), error)) {
+        report("Sprint speed hook unavailable: " + error, true);
+        return;
+    }
+    if (!sprint_speed_hooks.enable_all(error)) {
+        report("Sprint speed hook unavailable: " + error, true);
+        return;
+    }
+    report("Strike sprint speed hook active (GetSpeedInAirWithSprint -> 0.026).");
+}
+
 void Runtime::connect_model_probe() {
     if (stopping) return;
     // connect_chat has finished publishing its immutable, validated current-
@@ -2317,6 +2372,10 @@ void hook_base_tick(void* actor) {
         } catch (const std::exception& error) { state.report(std::string("Native chat feedback: ") + error.what(), true); }
         catch (...) { /* Never interrupt the game's actor update. */ }
     }
+    const auto* sprint_before_tick = state.client
+        ? dynamic_cast<const SprintModule*>(state.client->modules().find(SprintModule::module_id)) : nullptr;
+    if (sprint_before_tick && state.bedrock_chat.is_local_player(actor))
+        (void)state.gameplay.prepare_sprinting(sprint_before_tick->requested_sprinting());
     state.base_tick(actor);
     // The original actor update must finish before reading the current world.
     // Native mutations stay on this thread; Present only receives copied data.
@@ -2340,6 +2399,7 @@ void hook_base_tick(void* actor) {
     // also after every gameplay module was turned off.
     if (!wanted && !state.gameplay.slot_restore_pending()) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        state.sprint_packet_requested.store(false, std::memory_order_release);
         state.rotation_override_render_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
@@ -2358,6 +2418,7 @@ void hook_base_tick(void* actor) {
             (aura && aura->enabled() && aura->visible_only.get<bool>());
         if (!state.gameplay.capture(state.bedrock_chat.mouse_client(), actor, visibility)) {
             state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+            state.sprint_packet_requested.store(false, std::memory_order_release);
             state.rotation_override_render_component.store(0, std::memory_order_release);
             state.rotation_override_enabled.store(false, std::memory_order_release);
             state.client->clear_gameplay();
@@ -2490,12 +2551,14 @@ void hook_base_tick(void* actor) {
         }
     } catch (const std::exception& error) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        state.sprint_packet_requested.store(false, std::memory_order_release);
         state.rotation_override_render_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.report(std::string("Gameplay update: ") + error.what(), true);
     } catch (...) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        state.sprint_packet_requested.store(false, std::memory_order_release);
         state.rotation_override_render_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
@@ -3112,6 +3175,10 @@ DWORD WINAPI start_worker(void*) {
         catch (const std::exception& error) {
             state.report(std::string("Rotations hook unavailable: ") + error.what(), true);
         }
+        try { state.connect_sprint_speed(); }
+        catch (const std::exception& error) {
+            state.report(std::string("Sprint speed hook unavailable: ") + error.what(), true);
+        }
         return 0;
     } catch (const std::exception& error) { state.report(error.what(), true); }
     catch (...) { state.report("Overlay bootstrap failed.", true); }
@@ -3144,9 +3211,10 @@ extern "C" int MediconAutoUnloadReady() {
         }
         return -1;
     }
-    const std::array<medicon::HookManager*, 9> managers{
+    const std::array<medicon::HookManager*, 10> managers{
         &state.model_static_hooks, &state.model_box_hooks, &state.model_hooks, &state.navigation_hooks,
-        &state.rotation_hooks, &state.mouse_hooks, &state.tick_hooks, &state.chat_hooks, &state.hooks};
+        &state.rotation_hooks, &state.sprint_speed_hooks, &state.mouse_hooks, &state.tick_hooks,
+        &state.chat_hooks, &state.hooks};
     try {
         for (auto* manager : managers) {
             std::string error;

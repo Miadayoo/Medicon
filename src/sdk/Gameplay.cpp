@@ -241,6 +241,21 @@ bool write_gameplay_sprint_input(std::uintptr_t component, bool sprinting) noexc
     return false;
 }
 
+bool write_gameplay_sprinting_flag(std::uintptr_t component, bool sprinting) noexcept {
+    std::uint64_t flags{};
+    if (!read_at(component, 0, flags)) return false;
+    constexpr std::uint64_t sprinting_flag = std::uint64_t{1} << 3;
+    flags = sprinting ? flags | sprinting_flag : flags & ~sprinting_flag;
+    return write_at(component, 0, flags);
+}
+
+bool write_gameplay_sprint_speed(std::uintptr_t component, bool sprinting) noexcept {
+    // 1.26.52.3 GetSpeedInAirWithSprint writes the selected speed at +0x0C.
+    constexpr float walking_speed = 0.020F;
+    constexpr float sprint_speed = 0.026F;
+    return write_at(component, 0x0C, sprinting ? sprint_speed : walking_speed);
+}
+
 bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch) noexcept {
     if (!std::isfinite(yaw) || !std::isfinite(pitch)) return false;
     const bool auth_input = packet_id == player_auth_input_packet_id;
@@ -1031,10 +1046,27 @@ bool BedrockGameplay::attack(std::uintptr_t actor_id) {
 bool BedrockGameplay::set_sprinting(bool sprinting) {
     auto& state = *impl_;
     if (!state.on_tick()) return false;
-    // Let the native movement update perform the sprint transition and change
-    // acceleration. Writing ActorDataFlag alone skips that transition.
-    return detail::write_gameplay_sprint_input(
+    const bool input_written = detail::write_gameplay_sprint_input(
         state.component(state.local_entity, move_input_hash, detail::move_input_size), sprinting);
+    if (!sprinting) {
+        const bool flag_cleared = detail::write_gameplay_sprinting_flag(
+            state.component(state.local_entity, actor_data_flag_hash, detail::actor_data_flags_size), false);
+        return input_written || flag_cleared;
+    }
+    return input_written;
+}
+
+bool BedrockGameplay::prepare_sprinting(bool sprinting) noexcept {
+    auto& state = *impl_;
+    if (!state.supported || !state.player || GetCurrentThreadId() != state.thread) return false;
+    const auto move_input = state.component(state.local_entity, move_input_hash, detail::move_input_size);
+    const bool input_written = detail::write_gameplay_sprint_input(move_input, sprinting);
+    if (!sprinting) {
+        const bool flag_cleared = detail::write_gameplay_sprinting_flag(
+            state.component(state.local_entity, actor_data_flag_hash, detail::actor_data_flags_size), false);
+        return input_written || flag_cleared;
+    }
+    return input_written;
 }
 
 SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
@@ -1062,8 +1094,10 @@ SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
     const bool previous = was_overriding
         ? state.sprint_packet_last_state.load(std::memory_order_acquire)
         : packet_was_sprinting;
-    // Resume current native input rather than a state saved on module enable.
-    const bool desired = override_enabled ? sprinting : packet_was_sprinting;
+    // While Sprint is enabled, its desired state is authoritative. When it is
+    // disabled after controlling sprint, send one explicit stop transition,
+    // then let subsequent packets pass through unchanged.
+    const bool desired = override_enabled ? sprinting : (was_overriding ? false : packet_was_sprinting);
     if (desired) input_flags[0] |= bit(sprinting_input_bit);
     else input_flags[0] &= ~bit(sprinting_input_bit);
     if (override_enabled || was_overriding) {

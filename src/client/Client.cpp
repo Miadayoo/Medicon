@@ -160,13 +160,21 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     game.begin_rotation_control(rotation_control_enabled, rotation_render_enabled);
     RotationVariableRoute rotation_route(game, *rotations);
     const bool gameplay_actions_allowed = allow_actions && !capturing_input();
-    if (sprint) sprint->update(rotation_route, gameplay_actions_allowed);
     if (gameplay_actions_allowed) {
         for (const auto& module : modules_.all()) {
             if (!module->enabled()) continue;
             if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()); gameplay && gameplay != sprint)
                 gameplay->game_tick(rotation_route, seconds);
         }
+    }
+    // Rotation requesters must publish their final server yaw before Legit's
+    // Sprint Fix checks the allowed 45-degree movement cone.
+    if (sprint) {
+        const bool sprint_fix = rotations && rotations->enabled() && rotations->sprint_fix.get<bool>() &&
+            rotations->server_rotation_valid.load(std::memory_order_acquire);
+        const float rotation_yaw = rotations
+            ? rotations->server_yaw.load(std::memory_order_relaxed) : game.frame().yaw;
+        sprint->update(rotation_route, gameplay_actions_allowed, sprint_fix, rotation_yaw);
     }
     if (rotation_control_enabled && !rotation_route.has_rotation_request())
         (void)rotation_route.restore_view();

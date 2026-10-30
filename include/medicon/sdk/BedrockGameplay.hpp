@@ -61,6 +61,7 @@ public:
     bool rotate_head_and_body(float yaw, float pitch) override;
     bool attack(std::uintptr_t actor_id) override;
     bool set_sprinting(bool sprinting) override;
+    bool prepare_sprinting(bool sprinting) noexcept;
     // Updates the sprint state bits in a validated PlayerAuthInputPacket before
     // it is sent. Non-matching packets and unknown input layouts are untouched.
     SprintInputRewrite rewrite_sprint_input(void* packet, bool override_enabled, bool sprinting) noexcept;

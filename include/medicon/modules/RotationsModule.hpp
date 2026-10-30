@@ -14,6 +14,7 @@ public:
 
     Setting& always;
     Setting& speed;
+    Setting& sprint_fix;
 
     // Authoritative requested angles passed from gameplay modules to the
     // native gameplay bridge; render interpolation keeps its own state.
