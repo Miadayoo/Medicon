@@ -42,6 +42,8 @@ Release ビルドと core・gameplay_modules・bedrock_gameplay・gui・runtime�
 テストで設定保存、範囲検証、軸ごとの倍率、他 actor の ID 拒否、隣接フィールド保持を確認する。
 実ゲーム内のノックバックとサーバー側の挙動は別途確認が必要。
 
+Head/body yaw is applied through the verified interpolation getters at RVAs `0x20874B0` and `0x2087610`, with shortest-angle interpolation for smooth rendering and native yaw retained in first person. Third-person pitch is applied only during the verified local-player DataDriven render callback, by temporarily replacing RotationComponent's current and previous pitch and restoring both after native rendering.
+
 ### Delay の試作（2026-10-30）
 
 Mode に Delay を追加した。`Delay (ms)` は0–10,000、初期値8,000、slider step 50。
@@ -308,7 +310,9 @@ module側のcleanup判定を通す。opaqueなIDの全bit保持、KB未受信時
 
 RotationsModule が `server_yaw` / `server_pitch` の共通要求を保持し、`update_render` で両軸を補間する。pitch だけの変化にも対応し、ON/OFF・world/actor の切り替えで補間状態を破棄する。KillAura 等は角度を要求するだけで、描画処理を持たない。Always では要求元モジュールがなくても実際の視点角度を描画する。
 
-native の `0x1D54950` は `0x1D54BAC` で補間した視点角度を RenderRotation に設定する。既存の検証済み DataDriven callback（`0x558D300`、actor は renderData `+0`）でローカル三人称描画を判定し、Rotations の描画 pitch を callback の間だけ設定する。`RenderPitchScope` が元の pitch を復元する。RotationComponent と隣接する render yaw は変更しない。RenderRotation setter 自体への追加フックは使用しない。CustomModel のアニメーション入力は native の読み取りに戻し、三人称モデルの描画アダプターで同じ Rotations の pitch を受け取る。一人称の腕には実際の視点 pitch を使う。
+Third-person model pitch is borrowed only while the validated world-render callback runs. It obtains the current local player through the native render-time getter, temporarily sets that actor's `RotationComponent` current and previous pitch, calls native rendering, then restores both values. Yaw and first-person camera state are left untouched. The generic pose-builder and local DataDriven callback did not provide a confirmed local-player render path and are not used for pitch.
+
+Regen targets legacy redstone ore ids `73`, `74`, `658`, `-403`, and `-404` in Minecraft 1.26.52.3 within configured range, without a conservative voxel-ray visibility gate. It uses validated base/survival GameMode vtables. Destroy Speed scales the validated native progress helper (`0x259BA80`) before `continueDestroyBlock` accumulates progress, when that GameMode's active position and face match Regen's target. Item names, numeric IDs, and max durability are read from the Item layout and checked before use; no Item virtual functions are called.
 
 CustomModel P1 と Rotations は body-yaw 関数 `0x20874B0` を共有する。起動時は CustomModel の P0/P1/P2 接続後に Rotations のフックを有効にする。逆順では MinHook の JMP が P1 の先頭バイトを使う signature を消し、P1 接続とモデル worker の起動が止まる。元の PE では signature が一意に一致し、実行中のフック済み関数では先頭が `E9` に変わって一致しないことを読み取りで確認した。解決済みの元の関数アドレスはフック後も有効で、CustomModel は Rotations の yaw 描画を共有する。
 

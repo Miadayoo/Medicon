@@ -3,17 +3,24 @@
 #include "medicon/sdk/Gameplay.hpp"
 
 namespace medicon {
-namespace {
 
-bool wants_sprint(const sdk::GameplayFrame& frame, bool forward_only) noexcept {
+bool should_sprint(const sdk::GameplayFrame& frame, const Choice& selection,
+                   bool sprint_fix, float rotation_yaw) noexcept {
     if (!frame.move_input_ready || frame.sneaking || !frame.local.alive ||
         !std::isfinite(frame.move_input.x) || !std::isfinite(frame.move_input.y)) return false;
     constexpr float minimum_input = 0.001F;
-    return forward_only ? frame.move_input.y > minimum_input
-        : std::hypot(frame.move_input.x, frame.move_input.y) > minimum_input;
+    if (std::hypot(frame.move_input.x, frame.move_input.y) <= minimum_input) return false;
+    if (selection.index == 0) return true;
+    if (!sprint_fix) return frame.move_input.y > minimum_input;
+    if (!std::isfinite(rotation_yaw)) return false;
+    const float movement_yaw = frame.yaw +
+        std::atan2(frame.move_input.x, frame.move_input.y) * 180.0F / 3.14159265358979323846F;
+    return std::abs(std::remainder(movement_yaw - rotation_yaw, 360.0F)) <= 45.0F;
 }
 
-} // namespace
+bool apply_sprint(sdk::GameplayAccess& game, bool sprinting) noexcept {
+    return game.set_sprinting(sprinting);
+}
 
 SprintModule::SprintModule()
     : GameplayModule(module_id, "Sprint", "Automatically sprints while movement input is held.", Category::Movement),
@@ -25,7 +32,8 @@ void SprintModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noe
     update(game, true);
 }
 
-void SprintModule::update(sdk::GameplayAccess& game, bool allow_actions) noexcept {
+void SprintModule::update(sdk::GameplayAccess& game, bool allow_actions,
+                          bool sprint_fix, float rotation_yaw) noexcept {
     try {
         const auto& frame = game.frame();
         if (!frame.ready) {
@@ -40,17 +48,17 @@ void SprintModule::update(sdk::GameplayAccess& game, bool allow_actions) noexcep
         }
 
         if (!enabled() || !allow_actions) {
-            if (controlling_sprint_ && game.set_sprinting(false))
+            if (controlling_sprint_ && apply_sprint(game, false))
                 controlling_sprint_ = false;
             requested_sprinting_ = false;
             return;
         }
 
         const auto& selection = mode.get<Choice>();
-        const bool should_sprint = wants_sprint(frame, selection.index == 1);
+        const bool should_sprint_now = should_sprint(frame, selection, sprint_fix, rotation_yaw);
         requested_sprinting_ = false;
-        if (!game.set_sprinting(should_sprint)) return;
-        requested_sprinting_ = should_sprint;
+        if (!apply_sprint(game, should_sprint_now)) return;
+        requested_sprinting_ = should_sprint_now;
         controlling_sprint_ = true;
     } catch (...) { requested_sprinting_ = false; }
 }

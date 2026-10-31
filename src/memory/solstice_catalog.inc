@@ -54,6 +54,7 @@ constexpr SignatureDefinition definitions[]{
     {"Unknown_renderNametag", "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4C 89 8D ? ? ? ? 4D 89 C7", SignatureResolution::direct, 0, 122, "", false},
     {"Reach", "0F 2E 3D ? ? ? ? 76 ? F3 0F 10 3D ? ? ? ? 31 F6", SignatureResolution::direct, 0, 123, "", false},
     {"BlockReach", "F3 0F 10 05 ? ? ? ? EB ? 48 8B 79", SignatureResolution::direct, 0, 124, "", false},
+    // Writes MoveSpeedComponent +0x0C: 0.02 while walking, 0.026 while sprinting.
     {"GetSpeedInAirWithSprint", "41 C7 40 ? ? ? ? ? 31 C0", SignatureResolution::direct, 0, 125, "", false},
     {"ConnectionRequest_create_DeviceModel", "? ? ? 48 83 C2 ? 48 8D 8D ? ? ? ? E8 ? ? ? ? 48 8D 15", SignatureResolution::direct, 0, 126, "", false},
     {"ConnectionRequest_create_DeviceOS", "FF 15 ? ? ? ? 89 C2 48 8D 8D ? ? ? ? E8 ? ? ? ? 48 8D 15 ? ? ? ? 48 8D 8D ? ? ? ? E8 ? ? ? ? 48 89 C1", SignatureResolution::direct, 0, 127, "", true},

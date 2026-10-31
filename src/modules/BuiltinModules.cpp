@@ -8,6 +8,7 @@
 #include "medicon/modules/AimbotModule.hpp"
 #include "medicon/modules/KillauraModule.hpp"
 #include "medicon/modules/ScaffoldModule.hpp"
+#include "medicon/modules/RegenModule.hpp"
 #include "medicon/modules/EspModule.hpp"
 #include "medicon/modules/RotationsModule.hpp"
 #include "medicon/modules/SprintModule.hpp"
@@ -27,6 +28,7 @@ void register_builtin_modules(ModuleManager& modules) {
     modules.add<AimbotModule>();
     modules.add<KillauraModule>();
     modules.add<ScaffoldModule>();
+    modules.add<RegenModule>();
     modules.add<EspModule>();
     modules.add<RotationsModule>();
     modules.add<SprintModule>();

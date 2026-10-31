@@ -5,5 +5,6 @@
 #include "medicon/modules/DerpModule.hpp"
 #include "medicon/modules/KillauraModule.hpp"
 #include "medicon/modules/ScaffoldModule.hpp"
+#include "medicon/modules/RegenModule.hpp"
 #include "medicon/modules/SprintModule.hpp"
 #include "medicon/modules/VelocityModule.hpp"

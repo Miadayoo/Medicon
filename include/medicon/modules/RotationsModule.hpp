@@ -14,6 +14,8 @@ public:
 
     Setting& always;
     Setting& speed;
+    Setting& sprint_fix;
+    Setting& vector_fix;
 
     // Authoritative requested angles passed from gameplay modules to the
     // native gameplay bridge; render interpolation keeps its own state.
@@ -28,6 +30,7 @@ public:
     // both axes here; no gameplay module writes a model's render pitch.
     bool update_render(std::uintptr_t actor, float view_yaw, float view_pitch,
                        float delta_seconds, RenderAngles& result) noexcept;
+    void snap_render_once() noexcept { snap_render_.store(true, std::memory_order_release); }
     void reset_render() noexcept;
     [[nodiscard]] bool render_enabled() const noexcept { return render_enabled_.load(std::memory_order_acquire); }
 
@@ -38,6 +41,7 @@ protected:
 private:
     std::uintptr_t render_actor_{};
     RenderAngles rendered_;
+    std::atomic_bool snap_render_{};
     std::atomic_bool render_enabled_{};
 };
 

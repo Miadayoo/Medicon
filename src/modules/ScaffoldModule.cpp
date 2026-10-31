@@ -12,9 +12,16 @@ ScaffoldModule::ScaffoldModule()
     : GameplayModule(module_id, "Scaffold", "Place blocks below your feet and extend in your movement direction.", Category::Movement),
       extend(add_setting({"extend", "Extend", "Look ahead along horizontal movement, in blocks.", 1.0F, 0.0F, 4.0F, 0.25F})),
       auto_select(add_setting({"autoSelect", "Auto Select", "Temporarily select a placeable hotbar block, then restore your slot.", true})),
-      delay(add_setting({"delay", "Delay", "Minimum milliseconds between placement attempts.", 100.0F, 0.0F, 500.0F, 10.0F})) {}
+      delay(add_setting({"delay", "Delay", "Minimum milliseconds between placement attempts.", 100.0F, 0.0F, 500.0F, 10.0F})),
+      rotate(add_setting({"rotate", "Rotate", "None keeps the current view; Flick uses the existing placement rotation; Simple snaps to a new target and holds it for one second.", Choice{0, {"None", "Flick", "Simple"}}})) {}
 
-void ScaffoldModule::on_enable() noexcept { local_id_ = 0; cooldown_ = 0.0F; }
+void ScaffoldModule::on_enable() noexcept {
+    local_id_ = 0;
+    cooldown_ = 0.0F;
+    rotation_hold_remaining_ = 0.0F;
+    rotation_hold_active_ = false;
+    rotation_hold_block_valid_ = false;
+}
 void ScaffoldModule::on_disable() noexcept { on_enable(); }
 
 void ScaffoldModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noexcept {
@@ -22,10 +29,28 @@ void ScaffoldModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) n
     try {
         const auto& frame = game.frame();
         if (!gameplay_detail::ready(frame)) { on_enable(); return; }
-        if (local_id_ != frame.local.id) { local_id_ = frame.local.id; cooldown_ = 0.0F; }
+        if (local_id_ != frame.local.id) {
+            local_id_ = frame.local.id;
+            cooldown_ = 0.0F;
+            rotation_hold_remaining_ = 0.0F;
+            rotation_hold_active_ = false;
+            rotation_hold_block_valid_ = false;
+        }
         const float delta = gameplay_detail::tick_delta(delta_seconds);
         if (delta <= 0.0F || !gameplay_detail::valid_bounds(frame.local.bounds) ||
             !gameplay_detail::finite(frame.local.position)) return;
+        const unsigned rotation_mode = rotate.get<Choice>().index;
+        if (rotation_mode != 2) {
+            rotation_hold_remaining_ = 0.0F;
+            rotation_hold_active_ = false;
+            rotation_hold_block_valid_ = false;
+        } else if (rotation_hold_active_) {
+            rotation_hold_remaining_ = std::max(0.0F, rotation_hold_remaining_ - delta);
+            if (rotation_hold_remaining_ > 0.0F)
+                (void)game.rotate_head_and_body_instant(rotation_hold_yaw_, rotation_hold_pitch_);
+            else
+                rotation_hold_active_ = false;
+        }
         cooldown_ = std::max(0.0F, cooldown_ - delta);
         if (cooldown_ > 0.00001F) return;
 
@@ -52,6 +77,33 @@ void ScaffoldModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) n
             have_previous = true;
             if (!game.replaceable(block)) continue;
             cooldown_ = gameplay_detail::number(delay) / 1000.0F;
+            if (rotation_mode == 1 || rotation_mode == 2) {
+                const sdk::Vec3 center{static_cast<float>(block.x) + 0.5F,
+                                       static_cast<float>(block.y) + 0.5F,
+                                       static_cast<float>(block.z) + 0.5F};
+                float yaw = 0.0F;
+                float pitch = 0.0F;
+                if (gameplay_detail::look_angles(frame, center, yaw, pitch)) {
+                    if (rotation_mode == 1) {
+                        (void)game.rotate_head_and_body(yaw, pitch);
+                    } else {
+                        const bool same_block = rotation_hold_block_valid_ &&
+                            rotation_hold_block_x_ == block.x && rotation_hold_block_y_ == block.y &&
+                            rotation_hold_block_z_ == block.z;
+                        if (!same_block) {
+                            rotation_hold_block_x_ = block.x;
+                            rotation_hold_block_y_ = block.y;
+                            rotation_hold_block_z_ = block.z;
+                            rotation_hold_block_valid_ = true;
+                            rotation_hold_yaw_ = yaw;
+                            rotation_hold_pitch_ = pitch;
+                            rotation_hold_remaining_ = 1.0F;
+                            rotation_hold_active_ = true;
+                            (void)game.rotate_head_and_body_instant(yaw, pitch);
+                        }
+                    }
+                }
+            }
             // The bridge validates a real supporting face, item and reach;
             // placement cannot create blocks in unsupported air.
             gameplay_detail::place_or_support(

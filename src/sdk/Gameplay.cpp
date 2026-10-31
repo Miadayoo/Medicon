@@ -20,6 +20,7 @@
 #include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace medicon::sdk {
 namespace {
@@ -43,9 +44,13 @@ constexpr std::uint32_t predicted_movement_hash = 0x18513471;
 // https://mojang.github.io/bedrock-protocol-docs/1.26.50/types/player-auth-input-data/
 constexpr int player_auth_input_packet_id = 144;
 constexpr int move_player_packet_id = 19;
+constexpr float degrees_to_radians = 0.01745329251994329577F;
 // Confirmed against 1.26.52.3 packet validation/serialization routines.
 constexpr std::size_t player_auth_input_rotation_offset = 0x30;
 constexpr std::size_t player_auth_input_head_yaw_offset = 0x44;
+constexpr std::size_t player_auth_input_analog_move_offset = 0x5C;
+constexpr std::size_t player_auth_input_move_offset = 0x64;
+constexpr std::size_t player_auth_input_raw_move_offset = 0x80;
 constexpr std::size_t move_player_rotation_offset = 0x44;
 constexpr std::size_t move_player_head_yaw_offset = 0x4C;
 constexpr std::uint64_t no_server_rotation = 0x7FC000007FC00000ULL;
@@ -153,6 +158,26 @@ bool supported_version(std::string& diagnostic) {
         return false;
     }
     return true;
+}
+
+bool try_item_description_getter(std::uintptr_t target, std::uintptr_t item,
+                                 std::uintptr_t& string_object) noexcept {
+    if (!target || !item) return false;
+    using GetDescription = const std::string*(__fastcall*)(void*);
+#if defined(_MSC_VER)
+    __try {
+        const auto* result = reinterpret_cast<GetDescription>(target)(reinterpret_cast<void*>(item));
+        string_object = reinterpret_cast<std::uintptr_t>(result);
+        return string_object != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        string_object = 0;
+        return false;
+    }
+#else
+    const auto* result = reinterpret_cast<GetDescription>(target)(reinterpret_cast<void*>(item));
+    string_object = reinterpret_cast<std::uintptr_t>(result);
+    return string_object != 0;
+#endif
 }
 
 } // namespace
@@ -306,45 +331,118 @@ bool write_gameplay_sprint_input(std::uintptr_t component, bool sprinting) noexc
     return false;
 }
 
-bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch) noexcept {
+bool write_gameplay_sprinting_flag(std::uintptr_t component, bool sprinting) noexcept {
+    std::uint64_t flags{};
+    if (!read_at(component, 0, flags)) return false;
+    constexpr std::uint64_t sprinting_flag = std::uint64_t{1} << 3;
+    flags = sprinting ? flags | sprinting_flag : flags & ~sprinting_flag;
+    return write_at(component, 0, flags);
+}
+
+bool write_gameplay_sprint_speed(std::uintptr_t component, bool sprinting) noexcept {
+    // 1.26.52.3 GetSpeedInAirWithSprint writes the selected speed at +0x0C.
+    constexpr float walking_speed = 0.020F;
+    constexpr float sprint_speed = 0.026F;
+    return write_at(component, 0x0C, sprinting ? sprint_speed : walking_speed);
+}
+
+bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch,
+                                  bool vector_fix) noexcept {
     if (!std::isfinite(yaw) || !std::isfinite(pitch)) return false;
     const bool auth_input = packet_id == player_auth_input_packet_id;
     if (!auth_input && packet_id != move_player_packet_id) return false;
     const auto rotation_offset = auth_input ? player_auth_input_rotation_offset : move_player_rotation_offset;
     const auto head_offset = auth_input ? player_auth_input_head_yaw_offset : move_player_head_yaw_offset;
     Vec2 original_rotation{}, original_interact{};
+    Vec2 original_analog_move{}, original_move{}, original_raw_move{};
     float original_head{};
     Vec3 position{};
     const auto valid_angle = [](float value) { return std::isfinite(value) && std::abs(value) <= 360000; };
     if (!read_at(packet, rotation_offset, original_rotation) || !read_at(packet, head_offset, original_head) ||
         !valid_angle(original_rotation.x) || !valid_angle(original_rotation.y) || !valid_angle(original_head) ||
         !read_at(packet, 0x38, position) || !valid_position(position)) return false;
-    if (auth_input) {
+    if (auth_input && vector_fix) {
         if (!read_at(packet, player_auth_input_interact_rotation_offset, original_interact) ||
             !valid_angle(original_interact.x) || !valid_angle(original_interact.y)) return false;
-    } else {
+        if (!read_at(packet, player_auth_input_analog_move_offset, original_analog_move) ||
+            !read_at(packet, player_auth_input_move_offset, original_move) ||
+            !read_at(packet, player_auth_input_raw_move_offset, original_raw_move)) return false;
+        const auto valid_move = [](Vec2 value) {
+            return std::isfinite(value.x) && std::isfinite(value.y) &&
+                std::abs(value.x) <= 1.01F && std::abs(value.y) <= 1.01F;
+        };
+        if (!valid_move(original_analog_move) || !valid_move(original_move) || !valid_move(original_raw_move))
+            return false;
+    } else if (!auth_input) {
         std::array<std::uint8_t, 2> mode_and_ground{};
         if (!read_at(packet, 0x50, mode_and_ground) || mode_and_ground[0] > 3 || mode_and_ground[1] > 1)
             return false;
     }
     yaw = std::remainder(yaw, 360.0F);
     const Vec2 rotation{std::clamp(pitch, -90.0F, 90.0F), yaw};
+    Vec2 analog_move = original_analog_move;
+    Vec2 move = original_move;
+    Vec2 raw_move = original_raw_move;
+    if (auth_input && vector_fix) {
+        // Move vectors are local to the packet's player yaw. Rotate them by
+        // viewYaw - serverYaw so changing silent server rotation does not
+        // redirect the player's world-space movement.
+        const float delta = std::remainder(original_rotation.y - yaw, 360.0F) * degrees_to_radians;
+        const float cosine = std::cos(delta), sine = std::sin(delta);
+        const auto rotate_move = [cosine, sine](Vec2 value) {
+            return Vec2{value.x * cosine - value.y * sine,
+                        value.x * sine + value.y * cosine};
+        };
+        analog_move = rotate_move(original_analog_move);
+        move = rotate_move(original_move);
+        raw_move = rotate_move(original_raw_move);
+    }
+
+    const auto restore = [&] {
+        (void)write_at(packet, rotation_offset, original_rotation);
+        (void)write_at(packet, head_offset, original_head);
+        if (auth_input && vector_fix) {
+            (void)write_at(packet, player_auth_input_interact_rotation_offset, original_interact);
+            (void)write_at(packet, player_auth_input_analog_move_offset, original_analog_move);
+            (void)write_at(packet, player_auth_input_move_offset, original_move);
+            (void)write_at(packet, player_auth_input_raw_move_offset, original_raw_move);
+        }
+    };
     if (!write_at(packet, rotation_offset, rotation)) return false;
-    if (write_at(packet, head_offset, yaw) &&
-        (!auth_input || write_at(packet, player_auth_input_interact_rotation_offset, rotation))) return true;
-    (void)write_at(packet, head_offset, original_head);
-    (void)write_at(packet, rotation_offset, original_rotation);
-    return false;
+    if (!write_at(packet, head_offset, yaw)) { restore(); return false; }
+    if (auth_input && vector_fix &&
+        !write_at(packet, player_auth_input_interact_rotation_offset, rotation)) {
+        restore();
+        return false;
+    }
+    if (auth_input && vector_fix && (!write_at(packet, player_auth_input_analog_move_offset, analog_move) ||
+        !write_at(packet, player_auth_input_move_offset, move) ||
+        !write_at(packet, player_auth_input_raw_move_offset, raw_move))) {
+        restore();
+        return false;
+    }
+    return true;
 }
 
-RenderPitchScope::RenderPitchScope(std::uintptr_t render_component, float pitch) noexcept {
-    if (!std::isfinite(pitch) || !read_at(render_component, 0, original_) ||
-        !std::isfinite(original_)) return;
-    if (write_at(render_component, 0, std::clamp(pitch, -90.0F, 90.0F))) component_ = render_component;
+RenderPitchScope::RenderPitchScope(std::uintptr_t rotation_component, float pitch) noexcept {
+    if (!rotation_component || !std::isfinite(pitch) ||
+        !read_at(rotation_component, 0, original_pitch_) ||
+        !read_at(rotation_component, 8, original_previous_pitch_) ||
+        !std::isfinite(original_pitch_) || !std::isfinite(original_previous_pitch_)) return;
+    const float requested = std::clamp(pitch, -90.0F, 90.0F);
+    if (!write_at(rotation_component, 0, requested)) return;
+    if (!write_at(rotation_component, 8, requested)) {
+        (void)write_at(rotation_component, 0, original_pitch_);
+        return;
+    }
+    component_ = rotation_component;
 }
 
 RenderPitchScope::~RenderPitchScope() {
-    if (component_) (void)write_at(component_, 0, original_);
+    if (component_) {
+        (void)write_at(component_, 0, original_pitch_);
+        (void)write_at(component_, 8, original_previous_pitch_);
+    }
 }
 
 } // namespace detail
@@ -354,6 +452,7 @@ struct BedrockGameplay::Impl {
     bool located = false, supported = false, active = false;
     DWORD thread = 0;
     std::uintptr_t client = 0, player = 0, registry = 0, block_source = 0;
+    std::atomic<std::uintptr_t> diagnostic_local_game_mode{};
     // The LevelRenderer child whose camera fields the last capture validated.
     std::uintptr_t view_player = 0;
     // The local player's RenderPositionComponent, which the game moves every
@@ -376,6 +475,27 @@ struct BedrockGameplay::Impl {
     int switch_from = -1, switch_to = -1;
     ULONGLONG switch_used = 0;
     bool switched_this_tick = false;
+    bool destroy_active = false;
+    std::uintptr_t destroy_mode = 0;
+    BlockPos destroy_position{};
+    std::uint8_t destroy_face = 0;
+    std::uint8_t destroy_diagnostic_stage = 0;
+    std::uint8_t destroy_diagnostic_profile_stage = 0;
+    bool destroy_diagnostic_continue_return = false;
+    bool destroy_diagnostic_native_destroyed = false;
+    float destroy_diagnostic_progress = 0.0F;
+    std::uintptr_t destroy_diagnostic_requested_mode = 0;
+    std::uintptr_t destroy_diagnostic_requested_owner = 0;
+    std::uintptr_t destroy_diagnostic_requested_vtable_rva = 0;
+    bool destroy_diagnostic_requested_owner_matches = false;
+    BlockPos destroy_diagnostic_requested_position{};
+    std::uint8_t destroy_diagnostic_requested_face = 0;
+    std::atomic_bool destroy_speed_active{};
+    std::atomic<std::uint64_t> destroy_speed_target_xz{};
+    std::atomic<std::int32_t> destroy_speed_target_y{};
+    std::atomic<std::uint8_t> destroy_speed_target_face{};
+    std::atomic<float> destroy_speed_scale{1.0F};
+    mutable std::atomic<float> destroy_speed_server_progress{};
     std::uint32_t local_entity = 0;
     std::uint64_t capture_serial = 0, head_body_rotation_serial = 0;
     std::uintptr_t head_body_rotation_player = 0, head_body_rotation_registry = 0;
@@ -411,6 +531,26 @@ struct BedrockGameplay::Impl {
         (void)read_at(vector, 0, event.position);
         (void)read_at(vector, 24, event.velocity);
         velocity_observer(velocity_observer_context, event);
+    }
+
+    static std::uint64_t block_xz_key(BlockPos position) noexcept {
+        return static_cast<std::uint64_t>(static_cast<std::uint32_t>(position.x)) |
+            (static_cast<std::uint64_t>(static_cast<std::uint32_t>(position.z)) << 32);
+    }
+
+    void publish_destroy_speed_target(BlockPos position, std::uint8_t face, float scale) noexcept {
+        destroy_speed_target_xz.store(block_xz_key(position), std::memory_order_relaxed);
+        destroy_speed_target_y.store(position.y, std::memory_order_relaxed);
+        destroy_speed_target_face.store(face, std::memory_order_relaxed);
+        destroy_speed_scale.store(scale, std::memory_order_relaxed);
+        destroy_speed_server_progress.store(0.0F, std::memory_order_relaxed);
+        destroy_speed_active.store(true, std::memory_order_release);
+    }
+
+    void clear_destroy_speed_target() noexcept {
+        destroy_speed_active.store(false, std::memory_order_release);
+        destroy_speed_scale.store(1.0F, std::memory_order_relaxed);
+        destroy_speed_server_progress.store(0.0F, std::memory_order_relaxed);
     }
 
     bool executable(std::uintptr_t address) const noexcept {
@@ -505,23 +645,12 @@ struct BedrockGameplay::Impl {
         std::uintptr_t mode = 0, owner = 0, table = 0;
         if (!read_at(player, 0xAA0, mode) || !method(mode, 0) ||
             !read_at(mode, 8, owner) || owner != player || !read_at(mode, 0, table)) return 0;
-        // RVAs identify the two observed 1.26.52.3 implementations only. They
-        // are never cast to functions or used to bypass validated vtable calls.
+        // RVAs identify the two observed 1.26.52.3 implementations. Validate
+        // the actual methods at each call site; unrelated attack/build slots
+        // can differ across otherwise compatible GameMode instances.
         const bool base = table == image.address + 0xE827560;
         const bool survival = table == image.address + 0xE827600;
         if (!base && !survival) return 0;
-        const auto attack = method(mode, 15), build = method(mode, 6);
-        if (base) {
-            if (!native_identity(attack, 0x2599CA0,
-                    {0x4D,0x89,0xC1,0x41,0xB0,0x01,0xE9,0x05,0,0,0,0xCC,0xCC,0xCC,0xCC,0xCC}) ||
-                !native_identity(build, 0x259BC60,
-                    {0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x58})) return 0;
-        } else {
-            if (!native_identity(attack, 0x25A0570,
-                    {0x4D,0x89,0xC1,0x80,0xB9,0xC8,0,0,0,0x01,0x75,0x0C,0x80,0x3D,0xF1,0x85}) ||
-                !native_identity(build, 0x25A0810,
-                    {0x80,0xB9,0xC8,0,0,0,0x01,0x0F,0x85,0x43,0xB4,0xFF,0xFF,0x80,0x3D,0x50})) return 0;
-        }
         return mode;
     }
 
@@ -566,6 +695,43 @@ struct BedrockGameplay::Impl {
         return Block{id, (flags & 2) != 0};
     }
 
+    bool destroy_methods(std::uintptr_t mode, std::uintptr_t& start, std::uintptr_t& destroy,
+                        std::uintptr_t& proceed, std::uintptr_t& stop) const noexcept {
+        std::uintptr_t table{};
+        if (!mode || !read_at(mode, 0, table)) return false;
+        const auto base_table = image.address + 0xE827560;
+        const auto survival_table = image.address + 0xE827600;
+        constexpr std::array<unsigned char, 16> base_start_prefix{
+            0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x83,0xEC,0x78};
+        constexpr std::array<unsigned char, 16> base_destroy_prefix{
+            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x83,0xEC,0x78};
+        constexpr std::array<unsigned char, 16> continue_prefix{
+            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0xD8};
+        constexpr std::array<unsigned char, 16> survival_start_prefix{
+            0x48,0x83,0xEC,0x28,0x80,0xB9,0xC8,0x00,0x00,0x00,0x01,0x75,0x17,0x80,0x3D,0x90};
+        constexpr std::array<unsigned char, 16> survival_destroy_prefix{
+            0x80,0xB9,0xC8,0x00,0x00,0x00,0x01,0x0F,0x85,0xF3,0xA5,0xFF,0xFF,0x80,0x3D,0xB0};
+        if (table != base_table && table != survival_table) return false;
+        start = method(mode, 1);
+        destroy = method(mode, 2);
+        proceed = method(mode, 3);
+        stop = method(mode, 4);
+        // stopDestroyBlock is detoured by Regen before the module starts. Its
+        // original signature was checked by destroy_stop_target() before the
+        // hook was installed, so here validate the vtable slot's exact pinned
+        // address instead of comparing the now-detoured function prologue.
+        constexpr std::uintptr_t stop_rva = 0x259BBF0;
+        const bool stop_matches = stop == image.address + stop_rva && executable(stop);
+        if (table == base_table) {
+            return native_identity(start, 0x259A320, base_start_prefix) &&
+                native_identity(destroy, 0x259ABB0, base_destroy_prefix) &&
+                native_identity(proceed, 0x259AFD0, continue_prefix) && stop_matches;
+        }
+        return native_identity(start, 0x25A05D0, survival_start_prefix) &&
+            native_identity(destroy, 0x25A05B0, survival_destroy_prefix) &&
+            native_identity(proceed, 0x259AFD0, continue_prefix) && stop_matches;
+    }
+
     bool clear_ray(Vec3 destination) const noexcept {
         // Conservative voxel traversal: collision/solid blocks occlude aim;
         // missing chunks and failed reads withhold visibility. Limits protect
@@ -581,6 +747,30 @@ struct BedrockGameplay::Impl {
                              frame.eye.z + (destination.z - frame.eye.z) * t};
             const BlockPos voxel{static_cast<int>(std::floor(point.x)), static_cast<int>(std::floor(point.y)),
                                  static_cast<int>(std::floor(point.z))};
+            if (voxel.x == previous.x && voxel.y == previous.y && voxel.z == previous.z) continue;
+            previous = voxel;
+            const auto value = block(voxel);
+            if (!value || value->solid) return false;
+        }
+        return true;
+    }
+
+    bool clear_ray_to_block(BlockPos target) const noexcept {
+        const Vec3 destination{static_cast<float>(target.x) + 0.5F,
+                               static_cast<float>(target.y) + 0.5F,
+                               static_cast<float>(target.z) + 0.5F};
+        const auto length = std::sqrt(distance_squared(frame.eye, destination));
+        if (!std::isfinite(length) || length > 128) return false;
+        const auto steps = std::max(1, static_cast<int>(std::ceil(length * 4)));
+        BlockPos previous{INT_MAX, INT_MAX, INT_MAX};
+        for (int i = 1; i < steps; ++i) {
+            const auto t = static_cast<float>(i) / static_cast<float>(steps);
+            const Vec3 point{frame.eye.x + (destination.x - frame.eye.x) * t,
+                             frame.eye.y + (destination.y - frame.eye.y) * t,
+                             frame.eye.z + (destination.z - frame.eye.z) * t};
+            const BlockPos voxel{static_cast<int>(std::floor(point.x)), static_cast<int>(std::floor(point.y)),
+                                 static_cast<int>(std::floor(point.z))};
+            if (voxel.x == target.x && voxel.y == target.y && voxel.z == target.z) continue;
             if (voxel.x == previous.x && voxel.y == previous.y && voxel.z == previous.z) continue;
             previous = voxel;
             const auto value = block(voxel);
@@ -677,12 +867,16 @@ const std::string& BedrockGameplay::diagnostic() const noexcept { return impl_->
 
 void BedrockGameplay::clear() noexcept {
     impl_->server_rotation.store(no_server_rotation, std::memory_order_release);
+    impl_->diagnostic_local_game_mode.store(0, std::memory_order_release);
     impl_->active = false;
     impl_->switched_this_tick = false;
     impl_->frame = {};
     impl_->client = impl_->player = impl_->registry = impl_->block_source = impl_->view_player = 0;
     impl_->render_position = 0;
     impl_->local_entity = 0;
+    impl_->destroy_active = false;
+    impl_->destroy_mode = 0;
+    impl_->clear_destroy_speed_target();
     impl_->pools.clear();
     impl_->rotation_control_enabled = false;
     impl_->rotation_render_enabled = false;
@@ -998,6 +1192,170 @@ std::uintptr_t BedrockGameplay::head_yaw_interpolator_target() const noexcept {
     return target;
 }
 
+std::uintptr_t BedrockGameplay::destroy_progress_target() const noexcept {
+    constexpr std::uintptr_t destroy_progress_rva = 0x259BA80;
+    constexpr std::array<unsigned char, 16> progress_prefix{
+        0x56,0x57,0x48,0x83,0xEC,0x38,0x0F,0x29,0x74,0x24,0x20,0x48,0x89,0xCE,0x48,0x8B
+    };
+    const auto& state = *impl_;
+    if (!state.supported || destroy_progress_rva > UINTPTR_MAX - state.image.address) return 0;
+    const auto target = state.image.address + destroy_progress_rva;
+    return state.native_identity(target, destroy_progress_rva, progress_prefix) ? target : 0;
+}
+
+std::uintptr_t BedrockGameplay::destroy_stop_target() const noexcept {
+    constexpr std::uintptr_t destroy_stop_rva = 0x259BBF0;
+    constexpr std::array<unsigned char, 16> stop_prefix{
+        0x56,0x48,0x83,0xEC,0x20,0x48,0x89,0xCE,0x48,0x8B,0x89,0xC0,0x00,0x00,0x00,0xF3
+    };
+    const auto& state = *impl_;
+    if (!state.supported || destroy_stop_rva > UINTPTR_MAX - state.image.address) return 0;
+    const auto target = state.image.address + destroy_stop_rva;
+    return state.native_identity(target, destroy_stop_rva, stop_prefix) ? target : 0;
+}
+
+float BedrockGameplay::scale_destroy_progress(std::uintptr_t game_mode, float progress) const noexcept {
+    const auto& state = *impl_;
+    if (!state.destroy_speed_active.load(std::memory_order_acquire) ||
+        !std::isfinite(progress) || progress <= 0.0F) return progress;
+    BlockPos target{};
+    std::uint8_t face{};
+    if (!read_at(game_mode, 0x10, target) || !read_at(game_mode, 0x1C, face) ||
+        Impl::block_xz_key(target) != state.destroy_speed_target_xz.load(std::memory_order_relaxed) ||
+        target.y != state.destroy_speed_target_y.load(std::memory_order_relaxed) ||
+        face != state.destroy_speed_target_face.load(std::memory_order_relaxed)) return progress;
+    // In an integrated world the authoritative GameMode belongs to the local
+    // server player, while BedrockGameplay::advance_destroy_block drives the
+    // client GameMode. Capture the authoritative accumulator so Regen's UI and
+    // rotation threshold follow the same progress that causes the block update.
+    const auto local_mode = state.diagnostic_local_game_mode.load(std::memory_order_acquire);
+    if (game_mode != local_mode) {
+        float accumulated{};
+        if (read_at(game_mode, 0x24, accumulated) && std::isfinite(accumulated)) {
+            accumulated = std::clamp(accumulated, 0.0F, 1.0F);
+            auto previous = state.destroy_speed_server_progress.load(std::memory_order_relaxed);
+            while (accumulated > previous && !state.destroy_speed_server_progress.compare_exchange_weak(
+                previous, accumulated, std::memory_order_release, std::memory_order_relaxed)) {}
+        }
+    }
+    const float scale = std::clamp(state.destroy_speed_scale.load(std::memory_order_relaxed), 0.01F, 1.0F);
+    return progress / scale;
+}
+
+bool BedrockGameplay::should_defer_destroy_stop(std::uintptr_t game_mode, const BlockPos* position) const noexcept {
+    const auto& state = *impl_;
+    if (!position || !state.destroy_speed_active.load(std::memory_order_acquire)) return false;
+    BlockPos current{};
+    if (!read_at(game_mode, 0x10, current)) return false;
+    const auto target_xz = state.destroy_speed_target_xz.load(std::memory_order_relaxed);
+    return Impl::block_xz_key(*position) == target_xz && position->y == state.destroy_speed_target_y.load(std::memory_order_relaxed) &&
+        Impl::block_xz_key(current) == target_xz && current.y == position->y;
+}
+
+bool BedrockGameplay::read_outgoing_block_actions(void* packet, OutgoingBlockActionSample& sample) const noexcept {
+    sample = {};
+    const auto& state = *impl_;
+    if (!state.supported || !packet) return false;
+    constexpr std::uintptr_t packet_vtable_rva = 0xE83A360;
+    constexpr std::size_t packet_tick_offset = 0xA8;
+    constexpr std::size_t input_data_offset = 0x88;
+    constexpr std::size_t block_actions_offset = 0xC0;
+    constexpr std::uint32_t perform_block_actions_bit = 35;
+    const auto address = reinterpret_cast<std::uintptr_t>(packet);
+    const auto get_id = state.method(address, 1);
+    std::uintptr_t vtable{};
+    if (!get_id || !read_at(address, 0, vtable)) return false;
+    using GetId = int(__fastcall*)(void*);
+    if (reinterpret_cast<GetId>(get_id)(packet) != 144) return false;
+    sample.recognized = true;
+    sample.vtable_rva = state.image.contains(vtable) ? vtable - state.image.address : 0;
+    sample.validation_stage = 1; // packet ID recognized
+    if (sample.vtable_rva != packet_vtable_rva) {
+        sample.validation_stage = 2; // packet vtable profile mismatch
+        return false;
+    }
+    sample.validation_stage = 3; // packet profile validated
+    if (!read_at(address, packet_tick_offset, sample.client_tick)) return false;
+
+    std::array<std::uint64_t, 2> input_flags{};
+    if (!read_at(address, input_data_offset, input_flags) ||
+        (input_flags[1] & ~std::uint64_t{0x3}) != 0) {
+        sample.validation_stage = 4; // InputData layout rejected
+        return false;
+    }
+    sample.perform_block_actions =
+        (input_flags[perform_block_actions_bit / 64] & (std::uint64_t{1} << (perform_block_actions_bit % 64))) != 0;
+
+    ForeignVector actions{};
+    constexpr std::size_t action_stride = 20; // type(4), BlockPos(12), face(4)
+    if (!vector_at(address, block_actions_offset, actions, action_stride, 32)) {
+        sample.validation_stage = 5; // block-action vector layout rejected
+        return false;
+    }
+    const auto total = (actions.end - actions.begin) / action_stride;
+    sample.count = static_cast<std::uint32_t>(total);
+    const auto captured = std::min(total, sample.actions.size());
+    for (std::size_t i = 0; i < captured; ++i) {
+        auto& action = sample.actions[i];
+        const auto item = actions.begin + i * action_stride;
+        if (!copy_bytes(item, &action.type, sizeof(action.type)) ||
+            !copy_bytes(item + 4, &action.position, sizeof(action.position)) ||
+            !copy_bytes(item + 16, &action.face, sizeof(action.face)) ||
+            action.type < 0 || action.type > 39 || action.face < -1 || action.face > 5 ||
+            std::abs(static_cast<double>(action.position.x)) > 32000000 ||
+            std::abs(static_cast<double>(action.position.z)) > 32000000 ||
+            action.position.y < -4096 || action.position.y > 4096) {
+            sample.validation_stage = 6; // action entry validation failed
+            return false;
+        }
+    }
+    sample.valid = true;
+    sample.validation_stage = 7;
+    return true;
+}
+
+DestroyBlockDiagnostic BedrockGameplay::destroy_block_diagnostic() const noexcept {
+    const auto& state = *impl_;
+    DestroyBlockDiagnostic diagnostic{};
+    diagnostic.stage = state.destroy_diagnostic_stage;
+    diagnostic.profile_stage = state.destroy_diagnostic_profile_stage;
+    diagnostic.continue_return = state.destroy_diagnostic_continue_return;
+    diagnostic.native_destroyed = state.destroy_diagnostic_native_destroyed;
+    diagnostic.active = state.destroy_active;
+    diagnostic.progress = state.destroy_diagnostic_progress;
+    diagnostic.position = state.destroy_position;
+    diagnostic.face = state.destroy_face;
+    diagnostic.requested_mode = state.destroy_diagnostic_requested_mode;
+    diagnostic.requested_owner = state.destroy_diagnostic_requested_owner;
+    diagnostic.requested_vtable_rva = state.destroy_diagnostic_requested_vtable_rva;
+    diagnostic.requested_owner_matches = state.destroy_diagnostic_requested_owner_matches;
+    diagnostic.requested_position = state.destroy_diagnostic_requested_position;
+    diagnostic.requested_face = state.destroy_diagnostic_requested_face;
+    if (state.active) {
+        if (const auto block = state.block(state.destroy_position)) {
+            diagnostic.block_readable = true;
+            diagnostic.block_id = block->id;
+        }
+    }
+    return diagnostic;
+}
+
+DestroyModeDiagnostic BedrockGameplay::destroy_mode_diagnostic(std::uintptr_t game_mode) const noexcept {
+    DestroyModeDiagnostic diagnostic{};
+    const auto& state = *impl_;
+    std::uintptr_t table{};
+    if (!game_mode || !read_at(game_mode, 0, table) || !read_at(game_mode, 8, diagnostic.owner) ||
+        !read_at(game_mode, 0x10, diagnostic.position) || !read_at(game_mode, 0x1C, diagnostic.face) ||
+        !read_at(game_mode, 0x20, diagnostic.previous_progress) ||
+        !read_at(game_mode, 0x24, diagnostic.accumulated_progress) || diagnostic.face > 5 ||
+        !std::isfinite(diagnostic.previous_progress) || !std::isfinite(diagnostic.accumulated_progress))
+        return diagnostic;
+    diagnostic.vtable_rva = state.image.contains(table) ? table - state.image.address : 0;
+    diagnostic.local_mode = state.diagnostic_local_game_mode.load(std::memory_order_acquire) == game_mode;
+    diagnostic.readable = true;
+    return diagnostic;
+}
+
 bool BedrockGameplay::validates_body_yaw_interpolator(void* actor) const noexcept {
     if (!actor) return false;
     const auto target = body_yaw_interpolator_target();
@@ -1076,6 +1434,9 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
     state.thread = GetCurrentThreadId();
     state.client = reinterpret_cast<std::uintptr_t>(client);
     state.player = reinterpret_cast<std::uintptr_t>(local_actor);
+    std::uintptr_t sampled_game_mode{};
+    (void)read_at(state.player, 0xAA0, sampled_game_mode);
+    state.diagnostic_local_game_mode.store(sampled_game_mode, std::memory_order_release);
     const auto local_target = state.method(state.client, 31);
     if (!local_target || reinterpret_cast<void*(__fastcall*)(void*)>(local_target)(client) != local_actor ||
         !read_at(state.player, 0x10, state.registry) || !read_at(state.player, 0x18, state.local_entity)) {
@@ -1284,10 +1645,27 @@ bool BedrockGameplay::attack(std::uintptr_t actor_id) {
 bool BedrockGameplay::set_sprinting(bool sprinting) {
     auto& state = *impl_;
     if (!state.on_tick()) return false;
-    // Let the native movement update perform the sprint transition and change
-    // acceleration. Writing ActorDataFlag alone skips that transition.
-    return detail::write_gameplay_sprint_input(
+    const bool input_written = detail::write_gameplay_sprint_input(
         state.component(state.local_entity, move_input_hash, detail::move_input_size), sprinting);
+    if (!sprinting) {
+        const bool flag_cleared = detail::write_gameplay_sprinting_flag(
+            state.component(state.local_entity, actor_data_flag_hash, detail::actor_data_flags_size), false);
+        return input_written || flag_cleared;
+    }
+    return input_written;
+}
+
+bool BedrockGameplay::prepare_sprinting(bool sprinting) noexcept {
+    auto& state = *impl_;
+    if (!state.supported || !state.player || GetCurrentThreadId() != state.thread) return false;
+    const auto move_input = state.component(state.local_entity, move_input_hash, detail::move_input_size);
+    const bool input_written = detail::write_gameplay_sprint_input(move_input, sprinting);
+    if (!sprinting) {
+        const bool flag_cleared = detail::write_gameplay_sprinting_flag(
+            state.component(state.local_entity, actor_data_flag_hash, detail::actor_data_flags_size), false);
+        return input_written || flag_cleared;
+    }
+    return input_written;
 }
 
 bool BedrockGameplay::set_velocity(Vec3 velocity) {
@@ -1383,8 +1761,10 @@ SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
     const bool previous = was_overriding
         ? state.sprint_packet_last_state.load(std::memory_order_acquire)
         : packet_was_sprinting;
-    // Resume current native input rather than a state saved on module enable.
-    const bool desired = override_enabled ? sprinting : packet_was_sprinting;
+    // While Sprint is enabled, its desired state is authoritative. When it is
+    // disabled after controlling sprint, send one explicit stop transition,
+    // then let subsequent packets pass through unchanged.
+    const bool desired = override_enabled ? sprinting : (was_overriding ? false : packet_was_sprinting);
     if (desired) input_flags[0] |= bit(sprinting_input_bit);
     else input_flags[0] &= ~bit(sprinting_input_bit);
     if (override_enabled || was_overriding) {
@@ -1400,7 +1780,7 @@ SprintInputRewrite BedrockGameplay::rewrite_sprint_input(
     return SprintInputRewrite::rewritten;
 }
 
-RotationInputRewrite BedrockGameplay::rewrite_rotation_input(void* packet) noexcept {
+RotationInputRewrite BedrockGameplay::rewrite_rotation_input(void* packet, bool vector_fix) noexcept {
     const auto& state = *impl_;
     const auto angles = state.server_rotation.load(std::memory_order_acquire);
     if (!state.supported || !packet || angles == no_server_rotation) return RotationInputRewrite::ignored;
@@ -1421,17 +1801,81 @@ RotationInputRewrite BedrockGameplay::rewrite_rotation_input(void* packet) noexc
         return RotationInputRewrite::layout_rejected;
     const auto yaw = std::bit_cast<float>(static_cast<std::uint32_t>(angles));
     const auto pitch = std::bit_cast<float>(static_cast<std::uint32_t>(angles >> 32));
-    return detail::write_gameplay_rotation_input(address, id, yaw, pitch)
+    return detail::write_gameplay_rotation_input(address, id, yaw, pitch, vector_fix)
         ? RotationInputRewrite::rewritten : RotationInputRewrite::layout_rejected;
 }
 
+bool BedrockGameplay::read_rotation_movement(void* packet, RotationMovementSample& sample) const noexcept {
+    sample = {};
+    const auto& state = *impl_;
+    if (!state.supported || !packet) return false;
+    constexpr std::uintptr_t auth_vtable_rva = 0xE83A360;
+    constexpr std::uintptr_t auth_get_id_rva = 0xB26A00;
+    constexpr std::uintptr_t move_vtable_rva = 0xE85BFC0;
+    constexpr std::uintptr_t move_get_id_rva = 0x2ECD950;
+    constexpr std::size_t client_tick_offset = 0xA8;
+    constexpr std::array<unsigned char, 6> get_id_code{0xB8, 144, 0, 0, 0, 0xC3};
+    constexpr std::array<unsigned char, 6> move_get_id_code{0xB8, 19, 0, 0, 0, 0xC3};
+    const auto address = reinterpret_cast<std::uintptr_t>(packet);
+    const auto get_id = state.method(address, 1);
+    std::uintptr_t vtable{};
+    if (!get_id || !read_at(address, 0, vtable) || !state.image.contains(vtable)) return false;
+    const auto vtable_rva = vtable - state.image.address;
+    if (vtable_rva == auth_vtable_rva) {
+        if (!state.native_identity(get_id, auth_get_id_rva, get_id_code)) return false;
+    } else if (vtable_rva == move_vtable_rva) {
+        if (!state.native_identity(get_id, move_get_id_rva, move_get_id_code)) return false;
+    } else return false;
+    using GetId = int(__fastcall*)(void*);
+    sample.packet_id = reinterpret_cast<GetId>(get_id)(packet);
+    sample.recognized = true;
+    sample.validation_stage = 1;
+    if (sample.packet_id != player_auth_input_packet_id) {
+        sample.validation_stage = 2; // valid MovePlayer has no input vectors
+        return false;
+    }
+    if (vtable_rva != auth_vtable_rva) {
+        sample.validation_stage = 3;
+        return false;
+    }
+    if (!read_at(address, player_auth_input_rotation_offset, sample.rotation) ||
+        !read_at(address, 0x38, sample.position) ||
+        !read_at(address, player_auth_input_analog_move_offset, sample.analog_move) ||
+        !read_at(address, player_auth_input_move_offset, sample.move) ||
+        !read_at(address, player_auth_input_raw_move_offset, sample.raw_move) ||
+        !read_at(address, client_tick_offset, sample.client_tick) ||
+        !valid_position(sample.position) || !std::isfinite(sample.rotation.x) ||
+        !std::isfinite(sample.rotation.y)) {
+        sample.validation_stage = 4;
+        return false;
+    }
+    const auto valid_move = [](Vec2 value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) &&
+            std::abs(value.x) <= 1.01F && std::abs(value.y) <= 1.01F;
+    };
+    if (!valid_move(sample.analog_move) || !valid_move(sample.move) || !valid_move(sample.raw_move)) {
+        sample.validation_stage = 5;
+        return false;
+    }
+    sample.valid = true;
+    sample.validation_stage = 6;
+    return true;
+}
+
 bool BedrockGameplay::swing() {
+    return swing_with_source(4); // ActorSwingSource::Attack
+}
+
+bool BedrockGameplay::mining_swing() {
+    return swing_with_source(2); // ActorSwingSource::Mine
+}
+
+bool BedrockGameplay::swing_with_source(std::uint8_t swing_source) {
     constexpr std::uintptr_t local_swing_rva = 0x2080660;
     // Actor::swing(source, hand) is vtable slot 109 in the validated 1.26.52.3
     // actor layout. LocalPlayer overrides it to carry the swing source through
     // the normal gameplay/network path while updating the local arm animation.
     constexpr std::size_t local_player_swing_slot = 109;
-    constexpr std::uint8_t attack_swing_source = 4;
     constexpr std::uint8_t main_hand = 0;
     constexpr std::array<unsigned char, 24> local_swing_prefix{
         0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x89,0xCE,0x80,0xB9,0x34,0x04,0x00,0x00,0x01,
@@ -1450,7 +1894,7 @@ bool BedrockGameplay::swing() {
         if (const auto method = state.method(state.player, local_player_swing_slot)) {
             using PlayerSwing = bool(__fastcall*)(void*, std::uint8_t, std::uint8_t);
             return reinterpret_cast<PlayerSwing>(method)(reinterpret_cast<void*>(state.player),
-                attack_swing_source, main_hand);
+                swing_source, main_hand);
         }
     }
 
@@ -1471,6 +1915,306 @@ bool BedrockGameplay::replaceable(BlockPos position) const {
     if (!impl_->on_tick()) return false;
     const auto block = impl_->block(position);
     return block && (block->id == 0 || (block->id >= 8 && block->id <= 11));
+}
+
+bool BedrockGameplay::block_id(BlockPos position, std::uint16_t& id) const {
+    if (!impl_->on_tick()) return false;
+    const auto block = impl_->block(position);
+    if (!block) return false;
+    id = block->id;
+    return true;
+}
+
+bool BedrockGameplay::can_see_block(BlockPos position) const {
+    if (!impl_->on_tick()) return false;
+    return impl_->clear_ray_to_block(position);
+}
+
+void BedrockGameplay::stop_destroy_block() noexcept {
+    auto& state = *impl_;
+    state.clear_destroy_speed_target();
+    if (!state.destroy_active) return;
+    if (state.on_tick() && state.destroy_mode && state.game_mode() == state.destroy_mode) {
+        std::uintptr_t start{}, proceed{}, stop{};
+        std::uintptr_t destroy{};
+        if (state.destroy_methods(state.destroy_mode, start, destroy, proceed, stop)) {
+            using Stop = void(__fastcall*)(void*, const BlockPos*);
+            reinterpret_cast<Stop>(stop)(reinterpret_cast<void*>(state.destroy_mode), &state.destroy_position);
+        }
+    }
+    state.destroy_active = false;
+    state.destroy_mode = 0;
+}
+
+bool BedrockGameplay::advance_destroy_block(BlockPos position, std::uint8_t face, float destroy_time_scale,
+                                            float& progress, bool& destroyed) {
+    auto& state = *impl_;
+    progress = 0.0F;
+    destroyed = false;
+    state.destroy_diagnostic_stage = 1; // precondition/profile validation failed unless advanced below
+    state.destroy_diagnostic_profile_stage = 0;
+    state.destroy_diagnostic_continue_return = false;
+    state.destroy_diagnostic_native_destroyed = false;
+    state.destroy_diagnostic_progress = 0.0F;
+    state.destroy_diagnostic_requested_mode = 0;
+    state.destroy_diagnostic_requested_owner = 0;
+    state.destroy_diagnostic_requested_vtable_rva = 0;
+    state.destroy_diagnostic_requested_owner_matches = false;
+    state.destroy_diagnostic_requested_position = position;
+    state.destroy_diagnostic_requested_face = face;
+    if (!state.on_tick() || face > 5 || !std::isfinite(destroy_time_scale)) return false;
+    std::uintptr_t candidate_mode{}, candidate_owner{}, candidate_table{};
+    if (read_at(state.player, 0xAA0, candidate_mode) && candidate_mode &&
+        read_at(candidate_mode, 0, candidate_table) && read_at(candidate_mode, 8, candidate_owner)) {
+        state.destroy_diagnostic_requested_mode = candidate_mode;
+        state.destroy_diagnostic_requested_owner = candidate_owner;
+        state.destroy_diagnostic_requested_owner_matches = candidate_owner == state.player;
+        state.destroy_diagnostic_requested_vtable_rva = state.image.contains(candidate_table)
+            ? candidate_table - state.image.address : 0;
+        state.destroy_diagnostic_profile_stage = 1; // candidate pointer, owner and vtable readable
+    }
+    destroy_time_scale = std::clamp(destroy_time_scale, 0.01F, 1.0F);
+    state.destroy_speed_scale.store(destroy_time_scale, std::memory_order_release);
+    const auto mode = state.game_mode();
+    std::uintptr_t start{}, destroy{}, proceed{}, stop{};
+    if (!mode) {
+        state.destroy_diagnostic_stage = 2; // GameMode/vtable profile rejected
+        return false;
+    }
+    state.destroy_diagnostic_profile_stage = 2; // owner and mode vtable profile accepted
+    if (!state.destroy_methods(mode, start, destroy, proceed, stop)) {
+        state.destroy_diagnostic_stage = 2;
+        state.destroy_diagnostic_profile_stage = 3; // destroy method identities rejected
+        return false;
+    }
+    state.destroy_diagnostic_profile_stage = 4; // destroy methods validated
+    (void)start;
+    (void)stop;
+    constexpr std::size_t destroy_position_offset = 0x10;
+    constexpr std::size_t destroy_face_offset = 0x1C;
+    constexpr std::size_t destroy_progress_offset = 0x24;
+    if (state.destroy_active && (state.destroy_mode != mode || state.destroy_position.x != position.x ||
+        state.destroy_position.y != position.y || state.destroy_position.z != position.z || state.destroy_face != face))
+        stop_destroy_block();
+    if (!state.destroy_active) {
+        bool destroyed_immediately = false;
+        using Start = bool(__fastcall*)(void*, const BlockPos*, std::uint8_t, bool*);
+        const bool accepted = reinterpret_cast<Start>(start)(reinterpret_cast<void*>(mode), &position, face,
+                                                              &destroyed_immediately);
+        if (destroyed_immediately) {
+            destroyed = true;
+            state.destroy_diagnostic_native_destroyed = true;
+            progress = 1.0F;
+            state.destroy_diagnostic_stage = 7; // native immediate break
+            state.destroy_diagnostic_progress = progress;
+            return true;
+        }
+        if (!accepted) {
+            state.destroy_diagnostic_stage = 3; // startDestroyBlock returned false
+            return false;
+        }
+        BlockPos stored_position{};
+        std::uint8_t stored_face{};
+        float current_progress{};
+        if (!read_at(mode, destroy_position_offset, stored_position) ||
+            !read_at(mode, destroy_face_offset, stored_face) ||
+            !read_at(mode, destroy_progress_offset, current_progress) ||
+            stored_position.x != position.x || stored_position.y != position.y || stored_position.z != position.z ||
+            stored_face != face || !std::isfinite(current_progress) || current_progress < -0.01F ||
+            current_progress > 1.01F) {
+            using Stop = void(__fastcall*)(void*, const BlockPos*);
+            reinterpret_cast<Stop>(stop)(reinterpret_cast<void*>(mode), &position);
+            state.destroy_diagnostic_stage = 4; // native start state did not match the request
+            return false;
+        }
+        state.destroy_active = true;
+        state.destroy_mode = mode;
+        state.destroy_position = position;
+        state.destroy_face = face;
+        state.publish_destroy_speed_target(position, face, destroy_time_scale);
+        progress = std::clamp(current_progress, 0.0F, 1.0F);
+        state.destroy_diagnostic_stage = 8; // native start accepted
+        state.destroy_diagnostic_progress = progress;
+        return true;
+    }
+
+    BlockPos stored_position{};
+    std::uint8_t stored_face{};
+    float previous_progress{};
+    if (!read_at(mode, destroy_position_offset, stored_position) ||
+        !read_at(mode, destroy_face_offset, stored_face) ||
+        !read_at(mode, destroy_progress_offset, previous_progress) ||
+        stored_position.x != position.x || stored_position.y != position.y || stored_position.z != position.z ||
+        stored_face != face || !std::isfinite(previous_progress) || previous_progress < -0.01F ||
+        previous_progress > 1.01F) {
+        stop_destroy_block();
+        state.destroy_diagnostic_stage = 5; // active GameMode state changed before continue
+        return false;
+    }
+    bool destroyed_now = false;
+    state.destroy_speed_scale.store(destroy_time_scale, std::memory_order_release);
+    using Continue = bool(__fastcall*)(void*, const BlockPos*, std::uint8_t, const Vec3*, bool*);
+    const bool continuing = reinterpret_cast<Continue>(proceed)(reinterpret_cast<void*>(mode), &position, face,
+                                                                 &state.frame.local.position, &destroyed_now);
+    // The native return reports whether its own input loop should continue;
+    // Regen drives that loop explicitly, so validated GameMode progress is the
+    // completion signal for this caller.
+    state.destroy_diagnostic_continue_return = continuing;
+    float native_progress{};
+    if (!read_at(mode, destroy_progress_offset, native_progress) || !std::isfinite(native_progress) ||
+        native_progress < -0.01F || native_progress > 1.01F) {
+        stop_destroy_block();
+        state.destroy_diagnostic_stage = 6; // progress field became invalid after continue
+        return false;
+    }
+    progress = std::clamp(std::max(native_progress,
+        state.destroy_speed_server_progress.load(std::memory_order_acquire)), 0.0F, 1.0F);
+    destroyed = destroyed_now;
+    state.destroy_diagnostic_native_destroyed = destroyed_now;
+    state.destroy_diagnostic_stage = continuing ? 9 : 10; // 9=continue true, 10=continue false
+    state.destroy_diagnostic_progress = progress;
+    if (destroyed) {
+        state.destroy_active = false;
+        state.destroy_mode = 0;
+        state.clear_destroy_speed_target();
+    }
+    return true;
+}
+
+bool BedrockGameplay::should_switch_before_destroy(float destroy_time_scale) const {
+    const auto& state = *impl_;
+    if (!state.on_tick() || !state.destroy_active || state.game_mode() != state.destroy_mode ||
+        !std::isfinite(destroy_time_scale)) return false;
+    const auto mode = state.destroy_mode;
+    constexpr std::size_t old_progress_offset = 0x20;
+    constexpr std::size_t destroy_progress_offset = 0x24;
+    float previous{}, current{};
+    BlockPos position{};
+    if (!read_at(mode, 0x10, position) || position.x != state.destroy_position.x ||
+        position.y != state.destroy_position.y || position.z != state.destroy_position.z ||
+        !read_at(mode, old_progress_offset, previous) || !read_at(mode, destroy_progress_offset, current) ||
+        !std::isfinite(previous) || !std::isfinite(current) || previous < -0.01F || current < 0.0F ||
+        current > 1.01F || current <= previous) return false;
+    const float scale = std::clamp(destroy_time_scale, 0.01F, 1.0F);
+    return current + (current - previous) / scale >= 1.0F;
+}
+
+bool BedrockGameplay::prepare_durability_safe_finish() {
+    auto& state = *impl_;
+    if (!state.on_tick() || !state.destroy_active || state.game_mode() != state.destroy_mode) return false;
+    constexpr std::size_t destroy_progress_offset = 0x24;
+    float progress{};
+    BlockPos position{};
+    std::uint8_t face{};
+    if (!read_at(state.destroy_mode, 0x10, position) || position.x != state.destroy_position.x ||
+        position.y != state.destroy_position.y || position.z != state.destroy_position.z ||
+        !read_at(state.destroy_mode, 0x1C, face) || face != state.destroy_face ||
+        !read_at(state.destroy_mode, destroy_progress_offset, progress) || !std::isfinite(progress) ||
+        progress < 0.0F || progress >= 1.0F) return false;
+    return write_at(state.destroy_mode, destroy_progress_offset, 0.999F);
+}
+
+int BedrockGameplay::selected_hotbar_slot() const noexcept {
+    const auto& state = *impl_;
+    if (!state.on_tick()) return -1;
+    std::uintptr_t supplies{};
+    int selected = -1;
+    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0x10, selected) ||
+        selected < 0 || selected > 8) return -1;
+    return selected;
+}
+
+bool BedrockGameplay::hotbar_item(int slot, BlockPos target, HotbarItemInfo& info) const {
+    auto& state = *impl_;
+    info = {};
+    if (!state.on_tick() || slot < 0 || slot > 8) return false;
+    std::uintptr_t supplies{}, container{};
+    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0xB8, container)) return false;
+    const auto get_item = state.method(container, 7);
+    if (!get_item) return false;
+    using GetItem = std::uintptr_t(__fastcall*)(void*, int);
+    const auto stack = reinterpret_cast<GetItem>(get_item)(reinterpret_cast<void*>(container), slot);
+    std::uintptr_t item{};
+    std::uint8_t count{};
+    if (!stack || !read_at(stack, 0x18, item) || !read_at(stack, 0x22, count)) return false;
+    if (!item || count == 0) { info.occupied = false; return true; }
+    // The checked Item::getDescriptionId virtual is the primary source; if a
+    // derived item traps or does not return an item key, try the pinned object
+    // fields and require the exact item-key shape before accepting them.
+    constexpr std::size_t description_id_offset = 0xB0;
+    constexpr std::size_t item_id_offset = 0xAA;
+    constexpr std::size_t max_damage_offset = 0x150;
+    std::optional<std::string> name;
+    const auto try_description = [&](std::size_t offset) {
+        if (offset > UINTPTR_MAX - item) return std::optional<std::string>{};
+        auto candidate = read_msvc_string(reinterpret_cast<const void*>(item + offset), 128);
+        if (candidate && candidate->starts_with("item.") && candidate->ends_with(".name")) return candidate;
+        return std::optional<std::string>{};
+    };
+    if (const auto get_name = state.method(item, 4)) {
+        std::uintptr_t string_object{};
+        if (try_item_description_getter(get_name, item, string_object))
+            name = read_msvc_string(reinterpret_cast<const void*>(string_object), 128);
+        if (name && (!name->starts_with("item.") || !name->ends_with(".name"))) name.reset();
+    }
+    if (!name) name = try_description(description_id_offset);
+    if (!name) {
+        for (std::size_t offset = 0x08; offset <= 0x200; offset += 8) {
+            if (offset == description_id_offset) continue;
+            name = try_description(offset);
+            if (name) break;
+        }
+    }
+    std::int16_t item_id{}, max_damage{};
+    const bool item_id_read = read_at(item, item_id_offset, item_id);
+    const bool max_damage_read = read_at(item, max_damage_offset, max_damage) && max_damage >= 0;
+    const bool named_pickaxe = name && name->find("pickaxe") != std::string::npos;
+    const auto pickaxe_rank = [](std::int16_t id) noexcept -> float {
+        switch (id) {
+        case 621: case 607: return 5.0F; // Netherite
+        case 320: case 276: return 4.0F; // Diamond
+        case 299: case 267: return 3.0F; // Iron
+        case 327: case 283: return 2.0F; // Golden
+        case 316: case 272: return 1.0F; // Stone
+        case 312: case 268: return 0.5F; // Wooden
+        default: return 0.0F;
+        }
+    };
+    const float id_rank = item_id_read ? pickaxe_rank(item_id) : 0.0F;
+    if (!name && id_rank == 0.0F) return false;
+    info.occupied = true;
+    info.item_id = item_id_read ? item_id : 0;
+    info.pickaxe = named_pickaxe || id_rank > 0.0F;
+    info.damageable = max_damage_read ? max_damage > 0 : info.pickaxe;
+    if (info.pickaxe) {
+        // Tier ranking is only for choosing between known vanilla pickaxes;
+        // actual break progress still comes from the game's native GameMode.
+        float name_rank = 0.0F;
+        if (name) {
+            if (name->find("netherite") != std::string::npos) name_rank = 5.0F;
+            else if (name->find("diamond") != std::string::npos) name_rank = 4.0F;
+            else if (name->find("iron") != std::string::npos) name_rank = 3.0F;
+            else if (name->find("gold") != std::string::npos || name->find("golden") != std::string::npos)
+                name_rank = 2.0F;
+            else if (name->find("stone") != std::string::npos) name_rank = 1.0F;
+            else if (name->find("wooden") != std::string::npos) name_rank = 0.5F;
+        }
+        info.destroy_speed = std::max(name_rank, id_rank);
+    }
+    return true;
+}
+
+bool BedrockGameplay::select_hotbar_slot(int slot) {
+    auto& state = *impl_;
+    if (!state.on_tick() || slot < 0 || slot > 8) return false;
+    std::uintptr_t supplies{};
+    int selected = -1;
+    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0x10, selected) ||
+        selected < 0 || selected > 8) return false;
+    if (selected == slot) return true;
+    if (!write_at(supplies, 0x10, slot)) return false;
+    state.switched_this_tick = true;
+    return true;
 }
 
 bool BedrockGameplay::place_block(BlockPos position, bool auto_select) {

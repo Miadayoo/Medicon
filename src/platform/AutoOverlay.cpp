@@ -13,6 +13,7 @@
 #include <medicon/modules/AimbotModule.hpp>
 #include <medicon/modules/KillauraModule.hpp>
 #include <medicon/modules/RotationsModule.hpp>
+#include <medicon/modules/RegenModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/VelocityModule.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
@@ -27,6 +28,9 @@
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/sdk/CustomModelBox.hpp>
 #include <medicon/sdk/CustomModelAnimation.hpp>
+#include <medicon/memory/module_view.hpp>
+#include <medicon/memory/signature_catalog.hpp>
+#include <medicon/memory/signature_registry.hpp>
 #include <medicon/custom_model/SharedPlayers.hpp>
 #include <medicon/sdk/CustomModelView.hpp>
 #include <medicon/update/HostApi.h>
@@ -93,6 +97,9 @@ using HttpUrlFn = HRESULT(WINAPI*)(void*, const char**);
 using HttpHeaderFn = HRESULT(WINAPI*)(void*, const char*, const char*, bool);
 using HttpStatusFn = HRESULT(WINAPI*)(void*, std::uint32_t*);
 using YawInterpolationFn = float(__fastcall*)(void*, float);
+using SprintSpeedFn = int(__fastcall*)(void*, void*, void*, void*);
+using DestroyProgressFn = float(__fastcall*)(void*, void*);
+using DestroyStopFn = void(__fastcall*)(void*, const sdk::BlockPos*);
 namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
 
 constexpr GUID queue_guid{0xf6fe7dea, 0x438b, 0x49d6, {0x95, 0xb8, 0xe3, 0x67, 0x45, 0xd4, 0xea, 0xa2}};
@@ -220,6 +227,8 @@ public:
     HttpHeaderFn auth_http_header{};
     HttpStatusFn auth_http_status{};
     HookManager rotation_hooks;
+    HookManager sprint_speed_hooks;
+    HookManager regen_progress_hooks;
     HookManager model_hooks;
     HookManager model_box_hooks;
     HookManager model_static_hooks;
@@ -264,12 +273,15 @@ public:
     YawInterpolationFn body_yaw_interpolator{};
     YawInterpolationFn head_yaw_interpolator{};
     std::atomic_bool rotation_override_enabled{};
+    std::atomic_bool rotation_vector_fix_enabled{};
     std::atomic<std::uintptr_t> rotation_override_actor{};
+    std::atomic_bool rotation_render_pitch_reported{};
     std::atomic<std::uint64_t> rotation_override_yaws{};
     std::atomic<std::uint64_t> rotation_override_pitches{};
     std::atomic<std::uint64_t> rotation_visual_angles{};
     std::atomic_bool rotation_visual_ready{};
-    std::atomic<std::uintptr_t> rotation_override_render_component{};
+    std::atomic_uint regen_diagnostic_last{0xFFFFFFFFU};
+    std::atomic<std::uintptr_t> rotation_override_component{};
     std::atomic<sdk::custom_model::ViewMode> rotation_view_mode{sdk::custom_model::ViewMode::unknown};
     std::atomic_bool sprint_packet_override_enabled{};
     std::atomic_bool velocity_reply_route_enabled{};
@@ -280,10 +292,14 @@ public:
     std::mutex velocity_reset_mutex;
     std::vector<sdk::LocalPlayerMove> velocity_pending_resets;
     std::atomic_bool sprint_packet_requested{};
+    SprintSpeedFn sprint_speed_original{};
+    DestroyProgressFn destroy_progress_original{};
+    DestroyStopFn destroy_stop_original{};
     std::atomic_bool sprint_packet_route_reported{};
     std::atomic_bool sprint_packet_layout_error_reported{};
     std::atomic_bool rotation_packet_route_reported{};
     std::atomic_bool rotation_packet_layout_error_reported{};
+    std::atomic_uint rotation_vector_trace_issue{0xFFFFFFFFU};
     bool rotation_getter_identity_reported{}; // Game thread.
     ULONGLONG killaura_rotation_diagnostic_last{}; // Game thread, under render_mutex.
     ULONGLONG velocity_diagnostic_last{};
@@ -353,6 +369,12 @@ public:
     bool installed{};
     std::ofstream log;
     std::ofstream velocity_log;
+    std::ofstream regen_log;
+    std::ofstream rotation_vector_log;
+    std::atomic<ULONGLONG> regen_trace_until{};
+    std::atomic_uint64_t regen_packet_sequence{};
+    std::atomic_uint64_t regen_game_sequence{};
+    std::atomic_bool regen_packet_trace_enabled{};
     std::string last_error;
     std::vector<QueueCandidate> queues;
     std::deque<InputMessage> messages;
@@ -770,6 +792,8 @@ public:
     void connect_reconnect();
     void connect_auth();
     void connect_rotation();
+    void connect_sprint_speed();
+    void connect_regen_progress();
     void connect_model_probe();
     void connect_model_box();
     void connect_model_static();
@@ -2199,18 +2223,11 @@ void hook_model_data_render(model_native::DataDrivenRenderer* renderer,
     const bool allow_suppression=!state.model_box.custom_model_mode()||state.model_box.first_person_ready();
     if (!entered.previous && state.model_probe.inspect_render(
             renderer, context, data, model_actor_is_local, &state,allow_suppression)) return;
-    // Only the local model draw borrows Rotations' rendered pitch. The native
-    // value is restored before leaving this callback; camera pitch is untouched.
-    std::uintptr_t component = 0;
     void* actor = nullptr;
-    float pitch{};
     SIZE_T copied{};
     if (data && ReadProcessMemory(GetCurrentProcess(), data, &actor, sizeof(actor), &copied) && copied == sizeof(actor)) {
         if (state.draw_shared_model(context,actor)) return;
-        if (held_rotation_pitch(state, actor, pitch))
-            component = state.rotation_override_render_component.load(std::memory_order_acquire);
     }
-    sdk::detail::RenderPitchScope render_pitch(component, pitch);
     return original(renderer, context, data);
 }
 
@@ -2269,6 +2286,127 @@ void Runtime::connect_rotation() {
     report("Rotations head/body render interpolation hooks ready (Minecraft 1.26.52.3).");
 }
 
+int __fastcall hook_sprint_speed(void* first, void* flags, void* speed_component, void* fourth) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto result = state.sprint_speed_original(first, flags, speed_component, fourth);
+    // Keep the cached movement speed synchronized in both directions:
+    // sprint=0.026, released=0.020.
+    if (!state.stopping.load(std::memory_order_acquire)) {
+        (void)sdk::detail::write_gameplay_sprint_speed(
+            reinterpret_cast<std::uintptr_t>(speed_component),
+            state.sprint_packet_requested.load(std::memory_order_acquire));
+    }
+    return result;
+}
+
+float __fastcall hook_regen_destroy_progress(void* game_mode, void* block_context) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.destroy_progress_original;
+    if (!original) return 0.0F;
+    const auto mode_address = reinterpret_cast<std::uintptr_t>(game_mode);
+    const auto native_before = state.gameplay.destroy_mode_diagnostic(mode_address);
+    const float progress = original(game_mode, block_context);
+    if (state.stopping.load(std::memory_order_acquire)) return progress;
+    const float scaled = state.gameplay.scale_destroy_progress(mode_address, progress);
+    if (state.regen_packet_trace_enabled.load(std::memory_order_acquire)) {
+        std::lock_guard lock(state.log_mutex);
+        if (state.regen_log) {
+            SYSTEMTIME time{};
+            GetLocalTime(&time);
+            const auto native_after = state.gameplay.destroy_mode_diagnostic(mode_address);
+            char line[512]{};
+            std::snprintf(line, sizeof(line),
+                "[%02u:%02u:%02u.%03u] helper gameMode=%p owner=%p vtableRva=0x%llX local=%u readable=%u pos=%d,%d,%d face=%u accum=%.6f->%.6f context=%p raw=%.6f scaled=%.6f",
+                time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
+                game_mode, reinterpret_cast<void*>(native_before.owner),
+                static_cast<unsigned long long>(native_before.vtable_rva), native_before.local_mode ? 1U : 0U,
+                native_before.readable ? 1U : 0U,
+                native_before.position.x, native_before.position.y, native_before.position.z,
+                static_cast<unsigned>(native_before.face), native_before.accumulated_progress,
+                native_after.readable ? native_after.accumulated_progress : native_before.accumulated_progress,
+                block_context, progress, scaled);
+            state.regen_log << line << '\n' << std::flush;
+        }
+    }
+    return scaled;
+}
+
+void __fastcall hook_regen_destroy_stop(void* game_mode, const sdk::BlockPos* position) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    if (!state.stopping.load(std::memory_order_acquire) &&
+        state.gameplay.should_defer_destroy_stop(reinterpret_cast<std::uintptr_t>(game_mode), position)) return;
+    const auto original = state.destroy_stop_original;
+    if (original) original(game_mode, position);
+}
+
+void Runtime::connect_sprint_speed() {
+    if (stopping || !gameplay_ready.load(std::memory_order_acquire)) return;
+    if (sprint_speed_hooks.size()) {
+        std::string error;
+        if (!sprint_speed_hooks.enable_all(error))
+            report("Sprint speed hook unavailable: " + error, true);
+        return;
+    }
+    std::string diagnostic;
+    const auto module = memory::current_process_module(&diagnostic);
+    if (!module) {
+        report("Sprint speed signature unavailable: " + diagnostic, true);
+        return;
+    }
+    memory::SignatureRegistry signatures;
+    signatures.scan(memory::solstice_signatures(), module->executable_regions, module->image);
+    const auto target = signatures.address("GetSpeedInAirWithSprint");
+    if (!target) {
+        report("Sprint speed signature unavailable: GetSpeedInAirWithSprint.", true);
+        return;
+    }
+    std::string error;
+    if (!sprint_speed_hooks.create("Strike sprint speed", reinterpret_cast<void*>(*target),
+            reinterpret_cast<void*>(&hook_sprint_speed), reinterpret_cast<void**>(&sprint_speed_original), error)) {
+        report("Sprint speed hook unavailable: " + error, true);
+        return;
+    }
+    if (!sprint_speed_hooks.enable_all(error)) {
+        report("Sprint speed hook unavailable: " + error, true);
+        return;
+    }
+    report("Strike sprint speed hook active (GetSpeedInAirWithSprint -> 0.026).");
+}
+
+void Runtime::connect_regen_progress() {
+    if (stopping || !gameplay_ready.load(std::memory_order_acquire)) return;
+    if (regen_progress_hooks.size()) {
+        std::string error;
+        if (!regen_progress_hooks.enable_all(error))
+            report("Regen progress hook unavailable: " + error, true);
+        return;
+    }
+    const auto progress_target = gameplay.destroy_progress_target();
+    const auto stop_target = gameplay.destroy_stop_target();
+    if (!progress_target || !stop_target) {
+        report("Regen hooks unavailable: native GameMode destroy profile failed validation.", true);
+        return;
+    }
+    std::string error;
+    if (!regen_progress_hooks.create("Regen native destroy-progress scaling",
+            reinterpret_cast<void*>(progress_target), reinterpret_cast<void*>(&hook_regen_destroy_progress),
+            reinterpret_cast<void**>(&destroy_progress_original), error) ||
+        !regen_progress_hooks.create("Regen target-scoped destroy-stop guard",
+            reinterpret_cast<void*>(stop_target), reinterpret_cast<void*>(&hook_regen_destroy_stop),
+            reinterpret_cast<void**>(&destroy_stop_original), error)) {
+        report("Regen progress hook unavailable: " + error, true);
+        return;
+    }
+    if (!regen_progress_hooks.enable_all(error)) {
+        report("Regen progress hook unavailable: " + error, true);
+        return;
+    }
+    report("Regen progress scaling and target-scoped native stop guard active.");
+}
+
 void Runtime::connect_model_probe() {
     if (stopping) return;
     // connect_chat has finished publishing its immutable, validated current-
@@ -2314,10 +2452,24 @@ void hook_model_world_render(void* camera, void* context, const void* view, void
     auto& state = callback.state;
     const auto original = state.model_world_render;
     if (!original) return;
-    if (state.stopping.load(std::memory_order_acquire) || !state.model_box.enabled())
+    if (state.stopping.load(std::memory_order_acquire))
         return original(camera,context,view,client);
     const auto view_mode = sdk::custom_model::read_local_view(state.bedrock_chat.mouse_client());
-    sdk::custom_model::BoxRenderer::WorldScope world(state.model_box,context,state.bedrock_chat.local_player_for_render(),view_mode);
+    void* actor = state.bedrock_chat.local_player_for_render();
+    float pitch{};
+    const bool pitch_available = held_rotation_pitch(state, actor, pitch);
+    sdk::detail::RenderPitchScope pitch_scope(
+        pitch_available ? state.rotation_override_component.load(std::memory_order_acquire) : 0, pitch);
+    if (pitch_scope.applied() &&
+        !state.rotation_render_pitch_reported.exchange(true, std::memory_order_acq_rel)) {
+        char message[192]{};
+        std::snprintf(message, sizeof(message),
+            "Rotations local render pitch applied in world render callback: actor=%p pitch=%.2f.",
+            actor, pitch);
+        state.report(message);
+    }
+    if (!state.model_box.enabled()) return original(camera,context,view,client);
+    sdk::custom_model::BoxRenderer::WorldScope world(state.model_box,context,actor,view_mode);
     original(camera,context,view,client);
     if (!state.stopping.load(std::memory_order_acquire)) state.model_box.finish_world(state.model_mesh_immediate);
 }
@@ -2612,10 +2764,56 @@ void hook_send_packet(void* sender, void* packet) {
     if (hold_velocity_latency(state, sender, packet)) return;
     if (!state.stopping.load(std::memory_order_acquire)) {
         if (!state.input_open() && state.window_focused_cached.load(std::memory_order_acquire)) {
-            const auto result = state.gameplay.rewrite_rotation_input(packet);
+            sdk::RotationMovementSample movement_before{};
+            (void)state.gameplay.read_rotation_movement(packet, movement_before);
+            const bool vector_fix = state.rotation_vector_fix_enabled.load(std::memory_order_acquire);
+            const auto result = state.gameplay.rewrite_rotation_input(packet, vector_fix);
+            if (result == sdk::RotationInputRewrite::rewritten && movement_before.recognized &&
+                !movement_before.valid) {
+                const unsigned issue = static_cast<unsigned>(movement_before.packet_id + 1) * 16U +
+                    movement_before.validation_stage;
+                if (state.rotation_vector_trace_issue.exchange(issue, std::memory_order_acq_rel) != issue)
+                    state.report("Rotation vector trace could not parse outgoing packet: id=" +
+                        std::to_string(movement_before.packet_id) + " stage=" +
+                        std::to_string(movement_before.validation_stage) + ".", true);
+            }
+            if (result == sdk::RotationInputRewrite::rewritten && movement_before.valid) {
+                sdk::RotationMovementSample movement_after{};
+                if (state.gameplay.read_rotation_movement(packet, movement_after) && movement_after.valid) {
+                    const float delta = std::remainder(
+                        movement_after.rotation.y - movement_before.rotation.y, 360.0F);
+                    const float magnitude = std::max({
+                        std::hypot(movement_before.move.x, movement_before.move.y),
+                        std::hypot(movement_before.analog_move.x, movement_before.analog_move.y),
+                        std::hypot(movement_before.raw_move.x, movement_before.raw_move.y)});
+                    if (magnitude > 0.01F) {
+                        std::lock_guard lock(state.log_mutex);
+                        if (state.rotation_vector_log) {
+                            SYSTEMTIME time{};
+                            GetLocalTime(&time);
+                            char line[768]{};
+                            std::snprintf(line, sizeof(line),
+                                "[%02u:%02u:%02u.%03u] id=%d tick=%llu vectorFix=%u yaw=%.2f->%.2f dYaw=%.2f pos=%.3f,%.3f,%.3f move=(%.3f,%.3f)->(%.3f,%.3f) analog=(%.3f,%.3f)->(%.3f,%.3f) raw=(%.3f,%.3f)->(%.3f,%.3f)",
+                                time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
+                                movement_after.packet_id,
+                                static_cast<unsigned long long>(movement_after.client_tick),
+                                vector_fix ? 1U : 0U,
+                                movement_before.rotation.y, movement_after.rotation.y, delta,
+                                movement_before.position.x, movement_before.position.y, movement_before.position.z,
+                                movement_before.move.x, movement_before.move.y,
+                                movement_after.move.x, movement_after.move.y,
+                                movement_before.analog_move.x, movement_before.analog_move.y,
+                                movement_after.analog_move.x, movement_after.analog_move.y,
+                                movement_before.raw_move.x, movement_before.raw_move.y,
+                                movement_after.raw_move.x, movement_after.raw_move.y);
+                            state.rotation_vector_log << line << '\n' << std::flush;
+                        }
+                    }
+                }
+            }
             if (result == sdk::RotationInputRewrite::rewritten &&
                 !state.rotation_packet_route_reported.exchange(true, std::memory_order_acq_rel))
-                state.report("Server rotation movement-packet rewrite active (pitch/yaw/head yaw/interact rotation).");
+                state.report("Server rotation rewrite active (Vector Fix controls PlayerAuthInput movement vectors).");
             else if (result == sdk::RotationInputRewrite::layout_rejected &&
                 !state.rotation_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
                 state.report("Server rotation movement-packet layout check failed; angles left unchanged.", true);
@@ -2633,6 +2831,42 @@ void hook_send_packet(void* sender, void* packet) {
     // Observe both validated entries. General send is not assumed to forward
     // every movement packet through slot 4; route/pointer identify nested calls.
     trace_outgoing_movement(state, packet, state.send_server_packet == state.send_packet ? "shared" : "general");
+    sdk::OutgoingBlockActionSample block_actions{};
+    const bool block_actions_valid = state.gameplay.read_outgoing_block_actions(packet, block_actions);
+    if (block_actions.recognized) {
+        const auto now = GetTickCount64();
+        if (block_actions.count != 0)
+            state.regen_trace_until.store(now + 5000, std::memory_order_release);
+        if (state.regen_packet_trace_enabled.load(std::memory_order_acquire) || block_actions.count != 0 ||
+            now < state.regen_trace_until.load(std::memory_order_acquire)) {
+            std::lock_guard lock(state.log_mutex);
+            if (state.regen_log) {
+                const auto sequence = state.regen_packet_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+                SYSTEMTIME time{};
+                GetLocalTime(&time);
+                char line[1024]{};
+                int used = std::snprintf(line, sizeof(line),
+                    "[%02u:%02u:%02u.%03u] tx seq=%llu valid=%u parseStage=%u vtableRva=0x%llX clientTick=%llu perform=%u actions=%u",
+                    time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
+                    static_cast<unsigned long long>(sequence),
+                    block_actions.valid ? 1U : 0U,
+                    static_cast<unsigned>(block_actions.validation_stage),
+                    static_cast<unsigned long long>(block_actions.vtable_rva),
+                    static_cast<unsigned long long>(block_actions.client_tick),
+                    block_actions.perform_block_actions ? 1U : 0U, block_actions.count);
+                const auto captured = std::min<std::size_t>(block_actions.count, block_actions.actions.size());
+                for (std::size_t i = 0; i < captured && used > 0 && static_cast<std::size_t>(used) < sizeof(line); ++i) {
+                    const auto& action = block_actions.actions[i];
+                    used += std::snprintf(line + used, sizeof(line) - static_cast<std::size_t>(used),
+                        " {type=%d pos=%d,%d,%d face=%d}", action.type,
+                        action.position.x, action.position.y, action.position.z, action.face);
+                }
+                if (block_actions.count > captured && used > 0 && static_cast<std::size_t>(used) < sizeof(line))
+                    used += std::snprintf(line + used, sizeof(line) - static_cast<std::size_t>(used), " {truncated}");
+                if (used > 0) state.regen_log << line << '\n' << std::flush;
+            }
+        }
+    }
     state.send_packet(sender, packet);
 }
 
@@ -2659,6 +2893,11 @@ void hook_base_tick(void* actor) {
         } catch (const std::exception& error) { state.report(std::string("Native chat feedback: ") + error.what(), true); }
         catch (...) { /* Never interrupt the game's actor update. */ }
     }
+    const auto* sprint_before_tick = state.client
+        ? dynamic_cast<const SprintModule*>(state.client->modules().find(SprintModule::module_id)) : nullptr;
+    // A disabled Sprint must leave the player's own sprint key untouched.
+    if (sprint_before_tick && sprint_before_tick->enabled() && state.bedrock_chat.is_local_player(actor))
+        (void)state.gameplay.prepare_sprinting(sprint_before_tick->requested_sprinting());
     state.base_tick(actor);
     // The original actor update must finish before reading the current world.
     // Native mutations stay on this thread; Present only receives copied data.
@@ -2675,16 +2914,26 @@ void hook_base_tick(void* actor) {
     // CustomModel sharing selects nearby players from this snapshot. Without
     // it, nobody was announced or watched unless another module was ON.
     bool wanted = (sprint && sprint->needs_restore()) || (velocity && velocity->needs_restore()) || state.model_sync_wanted;
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "sprint", "velocity"}) {
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "regen", "esp", "rotations", "sprint", "velocity"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
     }
+    const auto* regen_module = dynamic_cast<const RegenModule*>(state.client->modules().find(RegenModule::module_id));
+    const auto* rotations_module = dynamic_cast<const RotationsModule*>(
+        state.client->modules().find(RotationsModule::module_id));
+    state.rotation_vector_fix_enabled.store(rotations_module && rotations_module->enabled() &&
+        rotations_module->vector_fix.get<bool>(), std::memory_order_release);
+    state.regen_packet_trace_enabled.store(regen_module &&
+        (regen_module->enabled() || regen_module->needs_restore()), std::memory_order_release);
+    if (regen_module && regen_module->needs_restore()) wanted = true;
     // A slot Scaffold's Auto Select switched to is put back by a later capture,
     // also after every gameplay module was turned off.
     if (!wanted && !state.gameplay.slot_restore_pending()) {
         state.velocity_reply_route_enabled.store(false, std::memory_order_release);
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-        state.rotation_override_render_component.store(0, std::memory_order_release);
+        state.sprint_packet_requested.store(false, std::memory_order_release);
+        state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
+        state.rotation_override_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.gameplay.clear();
@@ -2702,7 +2951,9 @@ void hook_base_tick(void* actor) {
             (aura && aura->enabled() && aura->visible_only.get<bool>());
         if (!state.gameplay.capture(state.bedrock_chat.mouse_client(), actor, visibility)) {
             state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-            state.rotation_override_render_component.store(0, std::memory_order_release);
+            state.sprint_packet_requested.store(false, std::memory_order_release);
+            state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
+            state.rotation_override_component.store(0, std::memory_order_release);
             state.rotation_override_enabled.store(false, std::memory_order_release);
             state.client->clear_gameplay();
             state.last_game_tick = {};
@@ -2790,6 +3041,60 @@ void hook_base_tick(void* actor) {
                 state.velocity_diagnostic_last = now_ms;
             }
         } else { state.velocity_diagnostic_last = 0; }
+        if (const auto* regen = dynamic_cast<const RegenModule*>(
+                state.client->modules().find(RegenModule::module_id))) {
+            const auto regen_status = regen->diagnostic_status();
+            if (regen->enabled() || regen->needs_restore()) {
+                const auto native = state.gameplay.destroy_block_diagnostic();
+                std::lock_guard log_lock(state.log_mutex);
+                if (state.regen_log) {
+                    SYSTEMTIME time{};
+                    GetLocalTime(&time);
+                    char line[640]{};
+                    const auto sequence = state.regen_game_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+                    std::snprintf(line, sizeof(line),
+                        "[%02u:%02u:%02u.%03u] game seq=%llu status=%u stage=%u profile=%u continue=%u destroyed=%u active=%u progress=%.4f blockReadable=%u blockId=%u target=%d,%d,%d face=%u request=%d,%d,%d/%u mode=%p owner=%p ownerMatch=%u vtableRva=0x%llX",
+                        time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
+                        static_cast<unsigned long long>(sequence), static_cast<unsigned>(regen_status),
+                        static_cast<unsigned>(native.stage), static_cast<unsigned>(native.profile_stage),
+                        native.continue_return ? 1U : 0U,
+                        native.native_destroyed ? 1U : 0U, native.active ? 1U : 0U, native.progress,
+                        native.block_readable ? 1U : 0U, static_cast<unsigned>(native.block_id),
+                        native.position.x, native.position.y, native.position.z,
+                        static_cast<unsigned>(native.face), native.requested_position.x,
+                        native.requested_position.y, native.requested_position.z,
+                        static_cast<unsigned>(native.requested_face),
+                        reinterpret_cast<void*>(native.requested_mode),
+                        reinterpret_cast<void*>(native.requested_owner),
+                        native.requested_owner_matches ? 1U : 0U,
+                        static_cast<unsigned long long>(native.requested_vtable_rva));
+                    state.regen_log << line << '\n' << std::flush;
+                }
+            }
+            if (regen_status != RegenModule::DiagnosticStatus::scanning) {
+                const auto status_code = static_cast<unsigned>(regen_status);
+                if (state.regen_diagnostic_last.exchange(status_code, std::memory_order_acq_rel) != status_code) {
+                    const char* label = "idle";
+                    switch (regen_status) {
+                    case RegenModule::DiagnosticStatus::idle: label = "idle"; break;
+                    case RegenModule::DiagnosticStatus::scanning: label = "scanning"; break;
+                    case RegenModule::DiagnosticStatus::no_target: label = "no visible redstone in Range"; break;
+                    case RegenModule::DiagnosticStatus::target_found: label = "redstone target found"; break;
+                    case RegenModule::DiagnosticStatus::no_pickaxe: label = "no readable hotbar pickaxe"; break;
+                    case RegenModule::DiagnosticStatus::pickaxe_fallback: label = "pickaxe scan unreadable; trying selected item"; break;
+                    case RegenModule::DiagnosticStatus::switching_pickaxe: label = "switching to pickaxe"; break;
+                    case RegenModule::DiagnosticStatus::waiting_for_pickaxe: label = "waiting for pickaxe slot sync"; break;
+                    case RegenModule::DiagnosticStatus::starting_mine: label = "starting native block break"; break;
+                    case RegenModule::DiagnosticStatus::mining: label = "native block break active"; break;
+                    case RegenModule::DiagnosticStatus::switching_safe_item: label = "switching for final hit"; break;
+                    case RegenModule::DiagnosticStatus::waiting_for_safe_item: label = "waiting for final-hit slot sync"; break;
+                    case RegenModule::DiagnosticStatus::mine_failed: label = "native block break rejected"; break;
+                    case RegenModule::DiagnosticStatus::broken: label = "target broken"; break;
+                    }
+                    state.report(std::string("Regen: ") + label + ".");
+                }
+            }
+        }
         const auto* killaura_module = dynamic_cast<const KillauraModule*>(
             state.client->modules().find(KillauraModule::module_id));
         std::uintptr_t killaura_target_id = 0;
@@ -2842,13 +3147,13 @@ void hook_base_tick(void* actor) {
                 const auto pitches = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(state.gameplay.frame().pitch)) |
                     (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(requested_pitch)) << 32);
                 state.rotation_override_pitches.store(pitches, std::memory_order_release);
-                state.rotation_override_render_component.store(pitch.render_component, std::memory_order_release);
+                state.rotation_override_component.store(pitch.rotation_component, std::memory_order_release);
             } else {
-                state.rotation_override_render_component.store(0, std::memory_order_release);
+                state.rotation_override_component.store(0, std::memory_order_release);
             }
             state.rotation_override_enabled.store(true, std::memory_order_release);
         } else {
-            state.rotation_override_render_component.store(0, std::memory_order_release);
+            state.rotation_override_component.store(0, std::memory_order_release);
             state.rotation_override_enabled.store(false, std::memory_order_release);
             if (rotation_requested && !body_getter_matches && !state.rotation_getter_identity_reported) {
                 state.report("Rotations render hold withheld: local actor body-yaw getter did not match its verified profile. " +
@@ -2882,13 +3187,17 @@ void hook_base_tick(void* actor) {
         }
     } catch (const std::exception& error) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-        state.rotation_override_render_component.store(0, std::memory_order_release);
+        state.sprint_packet_requested.store(false, std::memory_order_release);
+        state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
+        state.rotation_override_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
         state.report(std::string("Gameplay update: ") + error.what(), true);
     } catch (...) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
-        state.rotation_override_render_component.store(0, std::memory_order_release);
+        state.sprint_packet_requested.store(false, std::memory_order_release);
+        state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
+        state.rotation_override_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
         state.client->clear_gameplay();
     }
@@ -3663,6 +3972,10 @@ DWORD WINAPI start_worker(void*) {
                     }
                 }
             } catch (...) { /* inject.log remains the primary diagnostic log. */ }
+            if (!state.regen_log.is_open())
+                state.regen_log.open(default_config.parent_path() / L"regen.log", std::ios::trunc);
+            if (!state.rotation_vector_log.is_open())
+                state.rotation_vector_log.open(default_config.parent_path() / L"rotation-vector.log", std::ios::trunc);
             state.last_error.clear();
         }
         wchar_t override_path[32768]{};
@@ -3698,6 +4011,13 @@ DWORD WINAPI start_worker(void*) {
             state.gameplay_ready.store(state.gameplay.locate(diagnostic), std::memory_order_release);
             if (!diagnostic.empty()) state.report("Gameplay: " + diagnostic);
         } catch (const std::exception& error) { state.report(std::string("Gameplay profile unavailable: ") + error.what(), true); }
+        // Regen can be enabled as soon as the gameplay tick hook is installed.
+        // Attach its native progress observer now, before slower render/model
+        // profile setup, so the first mining action cannot outrun diagnostics.
+        try { state.connect_regen_progress(); }
+        catch (const std::exception& error) {
+            state.report(std::string("Regen destroy-progress hook unavailable: ") + error.what(), true);
+        }
         state.report("Native profiles prepared in " + std::to_string(GetTickCount64() - profile_start) + " ms.");
         if (state.stopping) return 0;
         state.connect_native_input();
@@ -3739,6 +4059,10 @@ DWORD WINAPI start_worker(void*) {
         catch (const std::exception& error) {
             state.report(std::string("Rotations hook unavailable: ") + error.what(), true);
         }
+        try { state.connect_sprint_speed(); }
+        catch (const std::exception& error) {
+            state.report(std::string("Sprint speed hook unavailable: ") + error.what(), true);
+        }
         return 0;
     } catch (const std::exception& error) { state.report(error.what(), true); }
     catch (...) { state.report("Overlay bootstrap failed.", true); }
@@ -3773,10 +4097,12 @@ extern "C" int MediconAutoUnloadReady() {
         }
         return -1;
     }
-    const std::array<medicon::HookManager*, 11> managers{
+    const std::array<medicon::HookManager*, 13> managers{
         &state.auth_hooks, &state.reconnect_hooks,
         &state.model_static_hooks, &state.model_box_hooks, &state.model_hooks, &state.navigation_hooks,
-        &state.rotation_hooks, &state.mouse_hooks, &state.tick_hooks, &state.chat_hooks, &state.hooks};
+        &state.rotation_hooks, &state.sprint_speed_hooks, &state.regen_progress_hooks,
+        &state.mouse_hooks, &state.tick_hooks,
+        &state.chat_hooks, &state.hooks};
     try {
         for (auto* manager : managers) {
             std::string error;
@@ -3933,6 +4259,7 @@ int MediconStopOverlay() {
     state.mouse_ready = false;
     if (!state.native_input_hooks.disable_all(error)) { state.report(error, true); return 0; }
     state.native_input_ready.store(false, std::memory_order_release);
+    if (!state.regen_progress_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.rotation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.tick_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.chat_hooks.disable_all(error)) { state.report(error, true); return 0; }

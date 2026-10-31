@@ -9,7 +9,9 @@ RotationsModule::RotationsModule()
     : Module(module_id, "Rotations", "Routes gameplay yaw/pitch requests and controls their render interpolation.",
              Category::Misc),
       always(add_setting({"always", "Always", "Keep render rotation active and aligned with the current view when no feature requests a target.", false})),
-      speed(add_setting({"speed", "Speed", "Maximum render rotation speed in degrees per second; it is reached at an angular distance of 180 degrees.", 1300.0F, 30.0F, 1440.0F, 10.0F})) {}
+      speed(add_setting({"speed", "Speed", "Maximum render rotation speed in degrees per second; it is reached at an angular distance of 180 degrees.", 1300.0F, 30.0F, 1440.0F, 10.0F})),
+      sprint_fix(add_setting({"sprint_fix", "Sprint Fix", "Allows Legit sprinting when the movement direction is within 45 degrees of the Rotations server direction.", false})),
+      vector_fix(add_setting({"vector_fix", "Vector Fix", "Rotate PlayerAuthInput move vectors with silent server yaw to preserve the intended world-space direction.", false})) {}
 
 void RotationsModule::set_server_rotation(float yaw, float pitch) noexcept {
     if (!std::isfinite(yaw) || !std::isfinite(pitch)) return;
@@ -21,6 +23,7 @@ void RotationsModule::set_server_rotation(float yaw, float pitch) noexcept {
 void RotationsModule::reset_render() noexcept {
     render_actor_ = 0;
     rendered_ = {};
+    snap_render_.store(false, std::memory_order_release);
 }
 
 void RotationsModule::on_enable() noexcept {
@@ -49,13 +52,15 @@ bool RotationsModule::update_render(std::uintptr_t actor, float view_yaw, float 
         render_actor_ = actor;
         rendered_ = {std::remainder(view_yaw, 360.0F), std::clamp(view_pitch, -90.0F, 90.0F)};
     }
+    const bool snap = snap_render_.exchange(false, std::memory_order_acq_rel);
+    if (snap) rendered_ = {std::remainder(yaw, 360.0F), std::clamp(pitch, -90.0F, 90.0F)};
     const float delta = std::isfinite(delta_seconds) ? std::clamp(delta_seconds, 0.0F, 0.1F) : 0.0F;
     const float configured_speed = speed.get<float>();
     const float maximum_speed = std::isfinite(configured_speed) ? std::clamp(configured_speed, 0.0F, 10000.0F) : 1300.0F;
     const float yaw_delta = std::remainder(yaw - rendered_.yaw, 360.0F);
     const float pitch_delta = std::clamp(pitch, -90.0F, 90.0F) - rendered_.pitch;
     const float distance = std::hypot(yaw_delta, pitch_delta);
-    if (distance > 0.0001F && delta > 0.0F) {
+    if (!snap && distance > 0.0001F && delta > 0.0F) {
         const float step = maximum_speed * std::min(distance / 180.0F, 1.0F) * delta;
         const float fraction = std::min(step / distance, 1.0F);
         rendered_.yaw = std::remainder(rendered_.yaw + yaw_delta * fraction, 360.0F);

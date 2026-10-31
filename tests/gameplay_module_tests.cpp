@@ -569,7 +569,7 @@ void test_disabled_and_unavailable() {
           aura.category() == Category::Player && scaffold.category() == Category::Movement,
           "Gameplay module categories changed");
     check(rotations.category() == Category::Misc && !rotations.enabled() &&
-          rotations.settings().size() == 2 && !rotations.always.get<bool>(),
+          rotations.settings().size() == 4 && !rotations.always.get<bool>(),
           "Rotations must start disabled with Always off");
     for (auto* module : modules) {
         check(!module->enabled(), "Gameplay modules must be disabled by default");

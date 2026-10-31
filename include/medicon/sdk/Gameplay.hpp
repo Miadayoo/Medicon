@@ -14,6 +14,11 @@ struct Vec2 { float x = 0, y = 0; };
 struct Vec3 { float x = 0, y = 0, z = 0; };
 struct Bounds { Vec3 min, max; };
 struct BlockPos { int x = 0, y = 0, z = 0; };
+struct HotbarItemInfo {
+    bool occupied = false, pickaxe = false, damageable = false;
+    std::int16_t item_id = 0;
+    float destroy_speed = 0.0F;
+};
 
 // Copied 1.26.52.3 NetworkStackLatency packet. The inspected class contains
 // scalar data and static native vtable/dispatcher pointers, with no owned heap
@@ -103,6 +108,11 @@ public:
         (void)pitch;
         return rotate_head_and_body(yaw);
     }
+    // Requests a one-shot render snap while retaining the same gameplay
+    // rotation and packet behavior as rotate_head_and_body(yaw, pitch).
+    virtual bool rotate_head_and_body_instant(float yaw, float pitch) {
+        return rotate_head_and_body(yaw, pitch);
+    }
     virtual bool attack(std::uintptr_t actor_id) = 0;
     // Requests sprint through native movement input so the game applies its
     // normal sprint transition, movement speed and eligibility checks.
@@ -119,8 +129,30 @@ public:
     // Starts the local player's native Attack swing, including the game's
     // normal animation notification path when the host supports it.
     virtual bool swing() { return false; }
+    // Requests the native Mine-source swing, separate from combat Attack.
+    virtual bool mining_swing() { return false; }
     virtual bool place_block(BlockPos position, bool auto_select) = 0;
     [[nodiscard]] virtual bool replaceable(BlockPos position) const = 0;
+    [[nodiscard]] virtual bool block_id(BlockPos position, std::uint16_t& id) const {
+        (void)position; (void)id; return false;
+    }
+    [[nodiscard]] virtual bool can_see_block(BlockPos position) const {
+        (void)position; return false;
+    }
+    virtual bool advance_destroy_block(BlockPos position, std::uint8_t face, float destroy_time_scale,
+                                       float& progress, bool& destroyed) {
+        (void)position; (void)face; (void)destroy_time_scale; (void)progress; (void)destroyed; return false;
+    }
+    [[nodiscard]] virtual bool should_switch_before_destroy(float destroy_time_scale) const {
+        (void)destroy_time_scale; return false;
+    }
+    virtual bool prepare_durability_safe_finish() { return false; }
+    virtual void stop_destroy_block() noexcept {}
+    [[nodiscard]] virtual int selected_hotbar_slot() const noexcept { return -1; }
+    [[nodiscard]] virtual bool hotbar_item(int slot, BlockPos target, HotbarItemInfo& info) const {
+        (void)slot; (void)target; (void)info; return false;
+    }
+    virtual bool select_hotbar_slot(int slot) { (void)slot; return false; }
 };
 
 } // namespace medicon::sdk

@@ -23,9 +23,12 @@ inline constexpr std::size_t actor_data_flags_size = 16;
 struct GameplayMoveInput { float strafe{}, forward{}; bool sneaking{}; };
 bool read_gameplay_move_input(std::uintptr_t component, GameplayMoveInput& input) noexcept;
 bool write_gameplay_sprint_input(std::uintptr_t component, bool sprinting) noexcept;
-// Validated 1.26.52.3 movement packet layouts; touches only pitch/yaw/head yaw
-// (and PlayerAuthInput's interact rotation).
-bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch) noexcept;
+bool write_gameplay_sprinting_flag(std::uintptr_t component, bool sprinting) noexcept;
+bool write_gameplay_sprint_speed(std::uintptr_t component, bool sprinting) noexcept;
+// Validated 1.26.52.3 movement packet layouts; touches pitch/yaw/head yaw,
+// and optionally PlayerAuthInput's interact rotation and movement vectors.
+bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch,
+                                   bool vector_fix = false) noexcept;
 bool read_gameplay_motion(std::uintptr_t packet, std::uint64_t local_runtime_id, Vec3& motion) noexcept;
 bool write_gameplay_motion(std::uintptr_t packet, Vec3 motion) noexcept;
 // StateVectorComponent is position / previous position / velocity (3 x Vec3).
@@ -41,18 +44,19 @@ using UpdatePredictedMotion = void(*)(void*);
 bool enqueue_gameplay_knockback(void* component, void* controller, Vec3 velocity, std::int64_t timestamp,
                                 EnqueuePredictedMotion enqueue, UpdatePredictedMotion update);
 
-// A model-render callback borrows the render pitch only for its duration.
-// Camera RotationComponent and adjacent render yaw are never changed.
+// A local model-render callback borrows the requested pitch only for its
+// duration. Only RotationComponent pitch/current-previous fields are touched.
 class RenderPitchScope {
 public:
-    RenderPitchScope(std::uintptr_t render_component, float pitch) noexcept;
+    RenderPitchScope(std::uintptr_t rotation_component, float pitch) noexcept;
     ~RenderPitchScope();
     RenderPitchScope(const RenderPitchScope&) = delete;
     RenderPitchScope& operator=(const RenderPitchScope&) = delete;
     [[nodiscard]] bool applied() const noexcept { return component_ != 0; }
 private:
     std::uintptr_t component_{};
-    float original_{};
+    float original_pitch_{};
+    float original_previous_pitch_{};
 };
 
 } // namespace medicon::sdk::detail

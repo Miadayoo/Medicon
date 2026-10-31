@@ -165,8 +165,11 @@ bool ConfigStore::load(ModuleManager& modules, std::string& error) const {
             }
             if (const auto settings = found->find("settings"); settings != found->end()) {
                 if (!settings->is_object()) invalid(location + ".settings", "expected an object");
+                const bool legacy_regen_mode = module->id() == "regen" &&
+                    settings->contains("mode") && !settings->contains("switch");
                 for (auto& setting : module->settings()) {
-                    const auto value = settings->find(setting.id);
+                    auto value = settings->find(setting.id);
+                    if (legacy_regen_mode && setting.id == "switch") value = settings->find("mode");
                     if (value == settings->end()) continue;
                     update.settings.emplace_back(&setting, read_value(setting, *value,
                         location + ".settings." + setting.id));

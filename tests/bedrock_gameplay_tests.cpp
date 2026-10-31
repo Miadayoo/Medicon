@@ -4,6 +4,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -379,11 +380,9 @@ void server_rotation_packets() {
         auto expected = before;
         store(expected, rotation, std::array<float, 2>{-45, -170});
         store(expected, head, -170.0F);
-        if (id == 144) store(expected, 0x6C, std::array<float, 2>{-45, -170});
         require(write_gameplay_rotation_input(address, id, 190, -45) && packet == expected,
-                "server rotation did not update only packet pitch/yaw/head yaw/interact rotation");
+                "server rotation did not update only packet pitch/yaw/head yaw");
         store(expected, rotation, std::array<float, 2>{90, -170});
-        if (id == 144) store(expected, 0x6C, std::array<float, 2>{90, -170});
         require(write_gameplay_rotation_input(address, id, -170, 120) && packet == expected,
                 "pitch-only server rotation or pitch clamp failed");
         const auto rotated = packet;
@@ -404,8 +403,22 @@ void server_rotation_packets() {
             packet = before;
             store(packet, 0x6C, std::array<float, 2>{std::numeric_limits<float>::quiet_NaN(), 73});
             const auto invalid_interact = packet;
-            require(!write_gameplay_rotation_input(address, id, 90, -30) && packet == invalid_interact,
+            require(!write_gameplay_rotation_input(address, id, 90, -30, true) && packet == invalid_interact,
                     "unknown PlayerAuthInput interact rotation layout was changed");
+            packet = before;
+            for (const std::size_t offset : {std::size_t{0x5C}, std::size_t{0x64}, std::size_t{0x80}})
+                store(packet, offset, std::array<float, 2>{0, 1});
+            require(write_gameplay_rotation_input(address, id, -17, -30, true),
+                    "Vector Fix rejected a valid PlayerAuthInput packet");
+            std::array<float, 2> interact{};
+            std::memcpy(interact.data(), packet.data() + 0x6C, sizeof(interact));
+            require(interact == std::array<float, 2>{-30, -17}, "Vector Fix did not update interact rotation");
+            for (const std::size_t offset : {std::size_t{0x5C}, std::size_t{0x64}, std::size_t{0x80}}) {
+                std::array<float, 2> move{};
+                std::memcpy(move.data(), packet.data() + offset, sizeof(move));
+                require(std::abs(move[0] + 1.0F) < 0.001F && std::abs(move[1]) < 0.001F,
+                        "Vector Fix did not rotate movement by view yaw minus server yaw");
+            }
         }
         if (id == 19) {
             packet = before;
