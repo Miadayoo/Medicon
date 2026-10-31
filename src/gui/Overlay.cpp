@@ -153,7 +153,7 @@ FontSizes Overlay::font_sizes(const FrameInfo& frame) const {
     }
     // Always in the atlas: a rebuild waits for the GPU, and Scaffold is turned on
     // in the middle of a jump.
-    sizes.block_count = std::round(32.0F * frame.hud_scale);
+    sizes.block_count = std::round(19.0F * frame.hud_scale);
     // Prepare the intro and menu together before the first intro render starts
     // its clock. Otherwise the handoff rebuilds the atlas and waits for the GPU
     // while the last animation frames should be presented.
