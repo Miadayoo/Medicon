@@ -17,8 +17,8 @@ bool wants_sprint(const sdk::GameplayFrame& frame, bool forward_only) noexcept {
 
 SprintModule::SprintModule()
     : GameplayModule(module_id, "Sprint", "Automatically sprints while movement input is held.", Category::Movement),
-      mode(add_setting({"mode", "Mode", "Strike follows movement input in any direction; Legit requires forward input.",
-                        Choice{0, {"Strike", "Legit"}}})) {}
+      mode(add_setting({"mode", "Mode", "Rage follows movement input in any direction; Legit requires forward input.",
+                        Choice{0, {"Rage", "Legit"}}})) {}
 
 void SprintModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noexcept {
     (void)delta_seconds;

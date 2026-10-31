@@ -5,9 +5,11 @@
 #include <medicon/gui/GuiMath.hpp>
 #include <medicon/gui/Overlay.hpp>
 #include <medicon/gui/Shadow.hpp>
+#include <medicon/gui/TopNav.hpp>
 #include <medicon/modules/BuiltinModules.hpp>
 #include <medicon/modules/ClientModules.hpp>
 #include <medicon/modules/ExampleModule.hpp>
+#include <medicon/modules/VelocityModule.hpp>
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -116,6 +118,32 @@ void test_slider() {
     check(close_to(slider_fraction(5, 0, 10), 0.5, 1e-6) && slider_fraction(5, 5, 5) == 0.0F, "slider fraction");
 }
 
+void test_velocity_settings() {
+    ImGuiScope imgui;
+    ModuleManager modules;
+    auto& velocity = modules.add<VelocityModule>();
+    Overlay overlay(modules);
+    overlay.gui().set_open(true);
+    overlay.gui().set_module_expanded("velocity", true);
+    const auto height = [&] {
+        overlay.gui().finish_animations();
+        imgui.frame(overlay);
+        for (const auto& panel : overlay.gui().panel_rects())
+            if (panel.category == Category::Movement) return panel.h;
+        return 0.0F;
+    };
+    const auto full_height = height();
+    velocity.mode.get<Choice>().index = 1;
+    const auto percent_height = height();
+    check(full_height > 0 && percent_height > full_height, "Percent mode did not lay out its two sliders");
+    velocity.mode.get<Choice>().index = 2;
+    const auto delay_height = height();
+    check(delay_height > full_height && close_to(delay_height, percent_height, 0.01) &&
+          velocity.setting_visible(velocity.sync_replies), "Delay must show its slider and Sync Replies");
+    velocity.mode.get<Choice>().index = 0;
+    check(close_to(height(), full_height, 0.01), "Full mode did not hide Percent slider rows");
+}
+
 // --- Animation primitives ------------------------------------------------------------
 void test_animation_primitives() {
     Reversible r;
@@ -128,6 +156,35 @@ void test_animation_primitives() {
 }
 
 // --- 9.1 ArrayList sort ----------------------------------------------------------------
+void test_top_nav() {
+    const auto one = top_nav_rect(0, 1, 1920.0F, 1.0F);
+    check(close_to(one.min.x + one.max.x, 1920.0, 1.0), "a single button is centred");
+    check(close_to(one.min.y, theme::top_nav::top, 0.5) && one.min.y > 0.0F, "with a margin below the top edge");
+    check(one.max.y < theme::metrics::start_y, "and above the default panels");
+    const auto left = top_nav_rect(0, 3, 1920.0F, 1.5F);
+    const auto right = top_nav_rect(2, 3, 1920.0F, 1.5F);
+    check(close_to(left.min.x + right.max.x, 1920.0, 1.0), "the group stays centred as buttons are added");
+    check(left.max.x <= top_nav_rect(1, 3, 1920.0F, 1.5F).min.x, "buttons do not overlap");
+    const float icon = theme::top_nav::icon_size;
+    check(icon >= 16.0F && icon <= 18.0F, "icon size");
+    check(theme::top_nav::indicator_width >= 10.0F && theme::top_nav::indicator_width <= 14.0F, "indicator width");
+    check(theme::top_nav::select_seconds >= 0.18F && theme::top_nav::select_seconds <= 0.22F, "selection timing");
+
+    TopNavItem item;
+    item.rect = one;
+    check(item.contains({960.0F, one.min.y + 1.0F}) && !item.contains({960.0F, one.max.y}), "the click area is the button");
+    item.selected = true;
+    item.animate(0.1F);
+    check(item.select.value() > 0.0F && item.select.value() < 1.0F, "the selection is still moving at 100 ms");
+    item.selected = false;
+    const float reversed = item.select.p;
+    item.animate(0.016F);
+    check(item.select.p < reversed && item.select.p > 0.0F, "and reverses from where it is");
+    item.selected = true;
+    item.animate(0.3F);
+    check(item.select.value() >= 1.0F, "and settles within its duration");
+}
+
 void test_arraylist_sort() {
     ArrayListAnimator::Row a, b, c;
     a.width = 50.0F; a.order = 2;
@@ -990,7 +1047,9 @@ int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"scale", test_scale},
         {"slider", test_slider},
+        {"Velocity settings", test_velocity_settings},
         {"animation primitives", test_animation_primitives},
+        {"top navigation", test_top_nav},
         {"arraylist sort", test_arraylist_sort},
         {"arraylist animation", test_arraylist_animation},
         {"arraylist updates at rest", test_arraylist_updates_at_rest},

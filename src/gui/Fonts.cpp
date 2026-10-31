@@ -22,7 +22,8 @@ namespace {
 constexpr char32_t cjk_first = 0x2E80;
 constexpr char32_t ellipsis = 0x2026;
 // The dedicated splash face needs only the four title glyphs: メジコン.
-constexpr ImWchar splash_ranges[]{0x30B3, 0x30B3, 0x30B8, 0x30B8, 0x30E1, 0x30E1, 0x30F3, 0x30F3, 0};
+constexpr ImWchar splash_ranges[]{0x3053, 0x3053, 0x3058, 0x3058, 0x3081, 0x3081, 0x3093, 0x3093, // めじこん
+                                  0x30B3, 0x30B3, 0x30B8, 0x30B8, 0x30E1, 0x30E1, 0x30F3, 0x30F3, 0}; // メジコン
 // The large menu face only needs "Medicon". A separate cache weight prevents
 // these restricted ranges being reused for ordinary text at the same size.
 constexpr ImWchar main_menu_logo_ranges[]{'M', 'M', 'c', 'e', 'i', 'i', 'n', 'o', 0};
@@ -167,7 +168,8 @@ FontWeight FontManager::role_weight(FontRole role) {
     switch (role) {
     case FontRole::ArrayList:
     case FontRole::ArrayListMode: return FontWeight::DynaPuffEm;
-    case FontRole::Splash: return FontWeight::Kawai;
+    case FontRole::Splash:
+    case FontRole::WatermarkJapanese: return FontWeight::Kawai;
     case FontRole::MainMenuLogo: return FontWeight::DynaPuffLogo;
     default: return FontWeight::DynaPuff;
     }
@@ -187,6 +189,7 @@ float FontManager::role_size(FontRole role) const {
     case FontRole::MainMenuButton: return sizes_.main_menu_button;
     case FontRole::Watermark: return sizes_.watermark;
     case FontRole::WatermarkSmall: return sizes_.watermark_small;
+    case FontRole::WatermarkJapanese: return sizes_.watermark_japanese;
     }
     return sizes_.module;
 }
@@ -411,7 +414,7 @@ bool FontManager::prepare(ImFontAtlas& atlas, const FontSizes& sizes) {
         if (!cjk_.valid) cjk_ = find_face("meiryo.ttc", "Meiryo UI", "Regular");
     }
 
-    const std::array<std::pair<FontWeight, float>, 12> required{{
+    const std::array<std::pair<FontWeight, float>, 13> required{{
         {role_weight(FontRole::Header), sizes.header},
         {role_weight(FontRole::Module), sizes.module},
         {role_weight(FontRole::KeyHint), sizes.key_hint},
@@ -424,6 +427,7 @@ bool FontManager::prepare(ImFontAtlas& atlas, const FontSizes& sizes) {
         {role_weight(FontRole::MainMenuButton), sizes.main_menu_button},
         {role_weight(FontRole::Watermark), sizes.watermark},
         {role_weight(FontRole::WatermarkSmall), sizes.watermark_small},
+        {role_weight(FontRole::WatermarkJapanese), sizes.watermark_japanese},
     }};
     const bool glyphs_changed = codepoints_.size() != built_codepoints_;
     bool missing = false;

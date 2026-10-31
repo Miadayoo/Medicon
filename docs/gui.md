@@ -10,6 +10,7 @@
 | Module 行 | 左 / 右 / 中クリック | ON/OFF / 設定の展開 / キー割り当て待機 |
 | 設定 | クリック・ドラッグ | Toggle、Slider、Dropdown、ColorPicker、Keybind |
 | パネル内 | ホイール | スクロール |
+| 上部中央の Social アイコン | 左クリック | Social 画面の開閉 |
 | `Insert`（ClickGUI のキー） | | 開閉 |
 | `End` | | オーバーレイを安全に停止 |
 | `Esc` | | 待機の取消 → オーバーレイを閉じる → GUI を閉じる |
@@ -32,6 +33,8 @@
 `name` は表示名、`id` は保存キー、`visible = false` の項目は表示されません。設定値は即座に変わり、変更時に自動保存されます。名前が `Mode` の `Choice` 設定は ArrayList の Suffix になります（`Module::suffix()` を override して変更可）。ArrayList に出したくない Module は `set_show_in_arraylist(false)` を呼びます。
 
 Watermark（`watermark`、Client カテゴリ、既定で ON）はゲーム中だけ左上に出る HUD です。メインメニューのボタンと同じガラスプレート（`draw_glass_plate`：ミルキーな白の塗り、白い 1px の縁、左の水色のアクセントライン、柔らかい青のドロップ）に、メインメニューと同じ DynaPuff で「Medicon」（21px、`#80C9FF`）とバージョン（11px、灰色がかった青）を載せます。バージョンは MediconLoader が起動時に取得・署名検証した更新サーバーの manifest の最新版（`MediconLoaderGetStatus` の `latest_version`）を使い、オフラインなどで取れなかったときは起動した Core のバージョン、ローダーなしで注入したときはビルドのバージョンを出します。Core 自身は通信しません。高さ 40・角丸 14・画面端から 16（すべて HUD スケール × `scale`）。影は `#A9D9FF` のぼかし、Glow は淡い青の光とアクセントラインのにじみで、どちらもメッシュをワーカーで1回作って使い回します。表示時は 250 ms の EaseOutCubic で不透明度 0→1・Y −5→0・拡大 0.97→1、OFF にすると同じ動きを逆に再生します。設定は `version`（ON）、`fps`（OFF、0.5 秒ごとに更新）、`ping`（OFF、取得元がまだないため現在は何も出ません）、`shadow`、`glow`、`scale`（0.75〜1.5）、`opacity`（0.5〜1.0）。項目が増えるとプレートの幅が合わせて伸びます。ゲーム画面の背景ブラーは描画基盤が対応していないため使わず、塗りと影で質感を出しています。DynaPuff は同梱の太さが Medium だけなので、太字にはしていません。
+
+`mode` を `Japanese` にするとプレートの代わりに、注入アニメーションのタイトルと同じ見た目（`kawai.otf`、白い塗りに `#9C6BB8` の縁取り）で「めじこん」（30px）を出し、`glow` がオンなら周りに淡い紫の光を足します。光は文字をずらして重ねたリングで作るので、文字の形に沿います。詳細は文字の右に、読めるよう同じ縁取りを付けて並べます。動きは `Plate` と同じで、`shadow` は対象のプレートがないため設定から隠れます。
 
 ArrayList 自体の設定は `accentA`（`#FF4FA0`）、`accentB`（`#8B6BFF`）、`glow`（1.0、0〜1.6）、`shadow`（1.0、0〜1.6）、`pulse`（ON）、`scale`（1.0、0.5〜2.0）の 6 つです。行は高さ 24・隙間 0、名前は Geist SemiBold 15px・モードは Geist Mono Medium 12px、右揃えの幅順。すべての寸法は実画面 px に `scale` だけを掛け、GUI Scale や DPI から独立しています。従来の位置・文字サイズ・背景表示・Suffix 表示などの個別設定は使いません。
 
@@ -82,6 +85,17 @@ ClickGUI 表示中も `W/A/S/D`、Space、Shift、Ctrl で移動できます。�
 
 ゲーム内部にもマウス入力のキューと視点更新があるため、対応する1.26.52.3では両方の入口でも遮断します。根拠とテストは [native-gui-input.md](native-gui-input.md) を参照してください。
 
+## 上部中央のナビゲーション
+
+`TopNav.hpp` の `TopNavItem` は、画面の上部中央に置くアイコンだけのボタンです。今は Social の 1 つだけで、バーのような背景は持ちません。
+
+- 寸法は 44×38 rpx のクリック領域と 18 rpx のアイコンで、上端から 12 rpx の位置に置きます。既定のパネル（y = 88）とは重なりません。パネルを重ねた場合はボタンが手前になり、先にポインターを受け取ります。
+- 待機中はアイコンのみです。ホバーで 1.5 rpx 浮き、ごく薄い角丸プレートと小さなラベル `Social` が出ます。押している間は 4% 縮みます。
+- 選択中はアイコンの色が変わり、アイコンの下に 12×2 rpx のインジケーターが 200 ms で幅を広げながら現れます。Social 画面の淡い背景に乗るため、選択中の色は濃い青です。
+- `ClickGui` は Social 画面を開いている間も描画を続けず、Social 画面の上に重ねる処理だけを `Overlay` が呼びます（`social_button_input` / `draw_social_button`）。ClickGUI から開いた Social ではボタンが画面の上に残り、もう一度押すと閉じます。ClickGUI を閉じたまま `Home` で開いたときと、サインインの必須画面では出しません。
+- 通知は上部中央に出るため、通知の下にあるボタンとパネルはクリックを受け取りません。
+- ボタンを増やすときは `TopNavIcon` に 1 つ足してアイコンを描き、`top_nav_rect(slot, count, ...)` で並べます。色・寸法・時間は `theme::top_nav` にまとめています。
+
 ## ClickGUI の描画負荷
 
 この節の比較値は外観の刷新前に行った描画負荷改善の記録です。
@@ -123,7 +137,7 @@ DLL のネイティブマウス状態の定期確認は 100ms 間隔です。GUI
 | `edgelit_scale` | `scale = 1.25`、小数の文字サイズも再ラスタライズ |
 | `edgelit_single` / `edgelit_empty` | 1 行の A 色、空リストで残像なし |
 
-ClickGUI のシナリオは `clickgui_reference`（代表的な機能を有効化し Example の設定を展開）、`closed`、`open`、`collapsed`、`settings`、`dropdown`、`colorpicker`、`scroll`、`arraylist_on`、`arraylist_off`、`shadow_on`、`shadow_off`、`shadow_profile` です。
+ClickGUI のシナリオは `clickgui_reference`（代表的な機能を有効化し Example の設定を展開）、`clickgui_social`（上部中央の Social ボタンの待機・ホバー・押下・選択）、`closed`、`open`、`collapsed`、`settings`、`dropdown`、`colorpicker`、`scroll`、`arraylist_on`、`arraylist_off`、`shadow_on`、`shadow_off`、`shadow_profile` です。
 
 リポジトリのルートから、昼・夜・白背景を同じサイズで撮影できます。出力は 1 倍の実画面 px なので、2 倍で書き出された参考画像と比較するときは参考を半分の寸法へ合わせます。
 

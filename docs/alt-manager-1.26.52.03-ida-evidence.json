@@ -1,0 +1,73 @@
+{
+  "source": "IDA MCP decompile",
+  "binary_sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+  "date_jst": "2026-10-31",
+  "note": "Excerpts only; original IDA names/types are preserved and are not asserted to be complete C++ types.",
+  "functions": [
+    {
+      "addr": "0x140479280",
+      "total_lines": 404,
+      "excerpt": "__int64 __fastcall sub_140479280(\n        __int64 a1,\n        _QWORD *a2,\n        _QWORD *a3,\n        __int64 a4,\n        __int64 a5,\n        __int64 a6,\n        __int64 a7,\n        __int64 a8,\n        unsigned int a9,\n        unsigned int a10,\n        __int64 a11,\n        unsigned __int8 a12,\n        unsigned int a13,\n        char a14,\n        __int64 *a15,\n        __int64 *a16,\n        __int64 *a17,\n        unsigned __int8 a18,\n        __int64 a19,\n        __int64 a20,\n        __int64 a21,\n        __int64 a22,\n        __int64 a23,\n        unsigned __int8 a24,\n        __int64 a25,\n        __int64 a26)\n{\n  sub_14046ADD0(v90, a3); /*0x1404792b9*/\n  sub_1445D7CE0(&v94, v104, *a3); /*0x140479b87*/\n  sub_14047A6A0(a1, v80, v90); /*0x140479c65*/"
+    },
+    {
+      "addr": "0x14046add0",
+      "total_lines": 21,
+      "excerpt": "__int64 __fastcall sub_14046ADD0(__int64 a1, __int64 a2)\n{\n  __int64 v3; // rax\n  __int64 v4; // rax\n  _BYTE v6[16]; // [rsp+20h] [rbp-20h] BYREF\n  __int64 v7; // [rsp+30h] [rbp-10h]\n  __int64 v8; // [rsp+38h] [rbp-8h]\n\n  v8 = -2; /*0x14046addc*/\n  v7 = a1; /*0x14046ade7*/\n  sub_14E01D030(a1, 0); /*0x14046aded*/\n  sub_14E01D270(v6, a2 + 16); /*0x14046adfa*/\n  v3 = ((__int64 (__fastcall *)(__int64, const char *))unk_14E01EA60)(v7, \"Token\"); /*0x14046ae0a*/\n  sub_14E01D740(v3, v6); /*0x14046ae19*/\n  sub_14E01D560(v6); /*0x14046ae21*/\n  ((void (__fastcall *)(_BYTE *, _QWORD))unk_14E01D140)(v6, *(unsigned int *)(a2 + 8)); /*0x14046ae2d*/\n  v4 = ((__int64 (__fastcall *)(__int64, const char *))unk_14E01EA60)(v7, \"AuthenticationType\"); /*0x14046ae3d*/\n  sub_14E01D740(v4, v6); /*0x14046ae4c*/\n  sub_14E01D560(v6); /*0x14046ae54*/\n  return v7; /*0x14046ae5d*/\n}"
+    },
+    {
+      "addr": "0x146175c30",
+      "total_lines": 427,
+      "excerpt": "_QWORD *__fastcall sub_146175C30(__int64 *a1, _QWORD *a2)\n{\n_QWORD *__fastcall sub_146175C30(__int64 *a1, _QWORD *a2)\n{\n  __int64 v4; // rbx\n  LOBYTE(v12) = 1; /*0x146175d12*/\n  sub_140E1FD60(v53, v16, v15, v12); /*0x146175d15*/\n  (*(void (__fastcall **)(__int64, __int128 *, _QWORD *, _QWORD *))(*(_QWORD *)v4 + 104LL))(v4, &v67, v53, v66); /*0x146175d36*/\n  v58[0] = \"Bedrock::Threading::Async<RawGameServerToken> __cdecl PlayerAuthentication::getGlobalToken(void)\"; /*0x146175d43*/\n  v58[1] = 96; /*0x146175d47*/\n  v58[2] = 0x100000000LL; /*0x146175d59*/\n            534,\n            \"D:\\\\a\\\\_work\\\\1\\\\s\\\\src\\\\base\\\\Core\\\\include\\\\Core/Threading/BackgroundTask.h\",\n            \"BackgroundTask<RawGameServerToken, Social::AuthServiceMultiplayerSession>::BackgroundTask(gsl::not_null<IBac\"\n            \"kgroundTaskOwner *>, const TaskStartInfo &, bool, TaskFunction) [TResult = RawGameServerToken, TInput = Soci\"\n            \"al::AuthServiceMultiplayerSession]\");\n    v23 = v71; /*0x146175ff9*/"
+    },
+    {
+      "addr": "0x1413d5fa0",
+      "total_lines": 364,
+      "excerpt": "__int64 __fastcall sub_1413D5FA0(__int64 a1, __int64 a2, __int128 *a3)\n{\n  *(_BYTE *)(v4 + 505) = 0; /*0x1413d5fdb*/\n  *(_QWORD *)(v4 + 512) = 0; /*0x1413d5fe1*/\n  if ( (*(_BYTE *)(v4 + 505) & 1) != 0 || (v5 = *(_QWORD **)(v4 + 456), !v5[15]) ) /*0x1413d6006*/\n  {\n    v8 = (__int64 *)(v4 + 48); /*0x1413d6036*/\n    v9 = *(_QWORD *)(v4 + 72); /*0x1413d603a*/\n    if ( v9 >= 0x10 ) /*0x1413d6042*/\n    *(_QWORD *)&v52 = v5[248]; /*0x1413d6108*/\n    *((_QWORD *)&v52 + 1) = v7; /*0x1413d610c*/\n    sub_1413911C0(&v58); /*0x1413d6117*/\n    if ( v63 == 1 ) /*0x1413d6123*/\n    {\n      sub_1400ECB60(&v53, v58, 10); /*0x1413d6136*/\n      v51 = 1; /*0x1413d613b*/\n      v47 = v53; /*0x1413d6147*/\n    v19 = &v65; /*0x1413d6228*/\n    sub_140D6FAF0(&v47, &v65, &v44, 2, 45); /*0x1413d623c*/\n    v21 = v4 + 48; /*0x1413d6241*/\n    if ( (__int128 *)(v4 + 48) != &v65 ) /*0x1413d6248*/\n    {\n      v22 = v66; /*0x1413d624e*/\n      {\n        if ( v23 >= 0x10 ) /*0x1413d65d4*/\n          v21 = *(_QWORD *)(v4 + 48); /*0x1413d65d6*/\n        *(_QWORD *)(v4 + 64) = v66; /*0x1413d65da*/\n        ((void (__fastcall *)(__int64, __int128 *, unsigned __int64))unk_14E5A6400)(v21, v19, v22); /*0x1413d65e7*/\n      else\n      {\n        sub_14009DAF0(v4 + 48, v66, v20, v19); /*0x1413d627c*/\n      }\n    }\n    }\n  }\n  if ( (*(_BYTE *)(v4 + 505) & 1) != 0 || (v11 = *(_QWORD **)(v4 + 456), !v11[15]) ) /*0x1413d609e*/\n  {\n    if ( *(_QWORD *)(v4 + 496) < 0x10u ) /*0x1413d60d9*/\n      v14 = (_BYTE *)(v4 + 472); /*0x1413d60e4*/\n    else\n      v14 = *(_BYTE **)(v4 + 472); /*0x1413d60db*/\n    *(_QWORD *)(v4 + 488) = 0; /*0x1413d60eb*/\n    *v14 = 0; /*0x1413d60f6*/\n  }\n    *(_QWORD *)&v64 = v11[248]; /*0x1413d6290*/\n    *((_QWORD *)&v64 + 1) = v13; /*0x1413d6297*/\n    sub_1413913A0(&v47); /*0x1413d62a2*/\n    v53 = 0; /*0x1413d62aa*/\n    *(_QWORD *)&v54 = 0; /*0x1413d62ae*/\n    if ( v25 ) /*0x1413d633a*/\n      v27 = (__int128 *)v24; /*0x1413d633a*/\n    v28 = (__int64 *)(v4 + 472); /*0x1413d633e*/\n    if ( (__int128 *)(v4 + 472) != v27 ) /*0x1413d6348*/\n    {\n      v29 = *(_QWORD *)(v4 + 496); /*0x1413d634e*/\n        v24 = v46; /*0x1413d6393*/\n      }\n      *(_QWORD *)(v4 + 488) = 0; /*0x1413d6397*/\n      *(_QWORD *)(v4 + 496) = 15; /*0x1413d63a2*/\n      *(_BYTE *)(v4 + 472) = 0; /*0x1413d63ad*/\n      v31 = *v27; /*0x1413d63b4*/\n      *(_OWORD *)(v4 + 488) = v27[1]; /*0x1413d63bd*/\n      *(_OWORD *)v28 = v31; /*0x1413d63c1*/\n      if ( v25 ) /*0x1413d63c7*/"
+    },
+    {
+      "addr": "0x1413c92f0",
+      "total_lines": 118,
+      "excerpt": "_QWORD *__fastcall sub_1413C92F0(__int64 a1, _QWORD *a2, __int64 a3)\n{\n    *(_QWORD *)&v29 = *(_QWORD *)(v5 + 1984); /*0x1413c93a5*/\n    *((_QWORD *)&v29 + 1) = v9; /*0x1413c93a9*/\n    sub_141392740(&v30, &v29, v6, a3); /*0x1413c93b8*/\n    v23[0] = \"virtual Bedrock::Threading::Async<AuthToken> __cdecl Social::XboxLiveIdentity::getAuthToken(const std::string &) const\"; /*0x1413c93cb*/\n    v23[1] = 118; /*0x1413c93cf*/"
+    },
+    {
+      "addr": "0x140e57870",
+      "total_lines": 5,
+      "excerpt": "__int64 __fastcall sub_140E57870(__int64 a1, __int64 a2)\n{"
+    },
+    {
+      "addr": "0x1413bf4c0",
+      "total_lines": 27,
+      "excerpt": "__int64 __fastcall sub_1413BF4C0(__int64 a1)\n{\n  __int64 v2; // rax\n  __int64 v3; // rcx\n  __int64 v4; // r9\n  __int64 v5; // rdx\n  __int64 result; // rax\n\n  v2 = *(_QWORD *)(a1 + 32); /*0x1413bf4c8*/\n  v3 = *(_QWORD *)(a1 + 16); /*0x1413bf4cc*/\n  v4 = *(_QWORD *)(a1 + 24); /*0x1413bf4d0*/\n  v5 = (unsigned int)*(unsigned __int8 *)(v4 + 48) + 2; /*0x1413bf4de*/\n  if ( !*(_BYTE *)(v4 + 49) ) /*0x1413bf4d9*/\n    v5 = *(unsigned __int8 *)(v4 + 48); /*0x1413bf4e2*/\n  result = sub_14E0225CC( /*0x1413bf50e*/\n             v3,\n             v5,\n             *(_QWORD *)v4,\n             *(_QWORD *)(v4 + 8),\n             *(unsigned int *)(v4 + 16),\n             *(_QWORD *)(v4 + 24),\n             *(_QWORD *)(v4 + 32),\n             *(_QWORD *)(v4 + 40),\n             v2);\n  **(_DWORD **)(a1 + 8) = result; /*0x1413bf517*/\n  return result; /*0x1413bf519*/\n}"
+    },
+    {
+      "addr": "0x1413bf560",
+      "total_lines": 13,
+      "excerpt": "__int64 __fastcall sub_1413BF560(__int64 a1)\n{\n  __int64 result; // rax\n\n  result = sub_14E022730( /*0x1413bf581*/\n             *(_QWORD *)(a1 + 16),\n             *(_QWORD *)(a1 + 24),\n             *(_QWORD *)(a1 + 32),\n             *(_QWORD *)(a1 + 40),\n             *(_QWORD *)(a1 + 48));\n  **(_DWORD **)(a1 + 8) = result; /*0x1413bf58a*/\n  return result; /*0x1413bf58c*/\n}"
+    },
+    {
+      "addr": "0x1413bf5d0",
+      "total_lines": 8,
+      "excerpt": "__int64 __fastcall sub_1413BF5D0(__int64 a1)\n{\n  __int64 result; // rax\n\n  result = sub_14E0226B0(*(_QWORD *)(a1 + 16), *(_QWORD *)(a1 + 24)); /*0x1413bf5e0*/\n  **(_DWORD **)(a1 + 8) = result; /*0x1413bf5e9*/\n  return result; /*0x1413bf5eb*/\n}"
+    },
+    {
+      "addr": "0x145dad6b0",
+      "total_lines": 641,
+      "excerpt": "_QWORD *__fastcall sub_145DAD6B0(_QWORD *a1, _QWORD *a2, char a3, __int16 a4, _QWORD *a5)\n{\n      v29 = (*(__int64 (__fastcall **)(_QWORD *))(*a1 + 1120LL))(a1); /*0x145dadae7*/\n      sub_146174E40(v29, &v92, 1); /*0x145dadafd*/\n      sub_145DAD4B0(a1, 0, &v92); /*0x145dadb0e*/\n      if ( v94 < 0x10 ) /*0x145dadb1e*/\n      {\n    v40 = (*(__int64 (__fastcall **)(_QWORD *))(*a1 + 1120LL))(a1); /*0x145dadda4*/\n    sub_146174E40(v40, &v92, 0); /*0x145daddb7*/\n    sub_145DAD4B0(a1, 2, &v92); /*0x145daddcb*/\n    if ( v94 >= 0x10 ) /*0x145dadddb*/\n    {\n    v93 = 0; /*0x145dadeb1*/\n    v94 = 15; /*0x145dadebc*/\n    sub_146175C30(v39, &v88); /*0x145daded1*/\n    sub_145DAC8A0(&v87, a1[193], &v88, &v92, Reserved, v78); /*0x145dadeef*/\n  }\n            534,\n            \"D:\\\\a\\\\_work\\\\1\\\\s\\\\src\\\\base\\\\Core\\\\include\\\\Core/Threading/BackgroundTask.h\",\n            \"BackgroundTask<ClientGameSetupResult, RawGameServerToken>::BackgroundTask(gsl::not_null<IBackgroundTaskOwner\"\n            \" *>, const TaskStartInfo &, bool, TaskFunction) [TResult = ClientGameSetupResult, TInput = RawGameServerToken]\");\n    v52 = v96; /*0x145dae1a1*/\n    v50 = v85; /*0x145dae1a8*/"
+    },
+    {
+      "addr": "0x145dde400",
+      "total_lines": 120,
+      "excerpt": "__int64 __fastcall sub_145DDE400(__int64 a1, __int128 *a2)\n{\n    {\n      v5 = 0; /*0x145dde541*/\n      sub_145DAD4B0(v4, 0, (__int64)&v14); /*0x145dde54c*/\n    }\n    else\n        v10 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v4 + 1120LL))(v4); /*0x145dde56b*/\n        sub_146174E40(v10, v16, 0); /*0x145dde57b*/\n        sub_145DAD4B0(v4, 2u, (__int64)v16); /*0x145dde58c*/\n        if ( v17 >= 0x10 ) /*0x145dde599*/\n        {"
+    },
+    {
+      "addr": "0x145dac6c0",
+      "total_lines": 54,
+      "excerpt": "__int64 __fastcall sub_145DAC6C0(_QWORD *a1, __int64 a2, int a3, __int64 a4)\n{"
+    },
+    {
+      "addr": "0x145dad4b0",
+      "total_lines": 64,
+      "excerpt": "__int64 __fastcall sub_145DAD4B0(__int64 a1, unsigned int a2, __int64 a3)\n{\n__int64 __fastcall sub_145DAD4B0(__int64 a1, unsigned int a2, __int64 a3)\n{\n  __int64 v6; // r14"
+    }
+  ]
+}

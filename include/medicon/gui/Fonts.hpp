@@ -17,7 +17,7 @@
 namespace medicon::gui {
 
 enum class FontRole { Header, Module, KeyHint, Label, Value, ArrayList, ArrayListMode, Splash, MainMenuLogo, MainMenuButton,
-                      Watermark, WatermarkSmall };
+                      Watermark, WatermarkSmall, WatermarkJapanese };
 enum class FontWeight { DynaPuff, DynaPuffEm, Kawai, DynaPuffLogo };
 
 // Metrics of one face in a font file or collection (.ttc), found by its family
@@ -54,6 +54,7 @@ struct FontSizes {
     // The in-game Watermark: its name and the small version / FPS / ping text.
     float watermark = 0.0F;
     float watermark_small = 0.0F;
+    float watermark_japanese = 0.0F;
 };
 
 // A font face ready for drawing. Measurement and drawing must both go through

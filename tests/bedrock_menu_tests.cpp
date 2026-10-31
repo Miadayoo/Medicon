@@ -64,6 +64,7 @@ struct MenuFixture {
     std::array<std::byte, 0x1E00> game{};
     std::array<std::byte, 0x80> factory{}, stack{}, scene{}, view{}, definition{}, controller{};
     std::array<std::byte, 0x20> definition_owner{};
+    std::array<char,96> screen_storage{};
     // Observed live entry stride is 32 bytes. The final scene pointer lives at
     // end - 24, which is eight bytes into the last entry, not at its beginning.
     static constexpr std::size_t top_entry_offset = 4 * 32 - 24;
@@ -130,11 +131,16 @@ struct MenuFixture {
         }
     }
     void screen(std::string_view name) {
-        require(name.size() <= 15, "Screen fixture must fit the inspected SSO layout.");
+        require(name.size() < screen_storage.size(), "Screen fixture exceeds bounded string storage.");
         std::fill(definition.begin() + 0x20, definition.begin() + 0x40, std::byte{});
-        std::memcpy(definition.data() + 0x20, name.data(), name.size());
+        if (name.size() <= 15) std::memcpy(definition.data() + 0x20, name.data(), name.size());
+        else {
+            std::fill(screen_storage.begin(),screen_storage.end(),0);
+            std::memcpy(screen_storage.data(),name.data(),name.size());
+            store(definition,0x20,reinterpret_cast<std::uintptr_t>(screen_storage.data()));
+        }
         store(definition, 0x30, static_cast<std::uint64_t>(name.size()));
-        store(definition, 0x38, std::uint64_t{15});
+        store(definition, 0x38, name.size()<=15?std::uint64_t{15}:std::uint64_t{95});
     }
     void expect(MenuScreenState expected, const char* label, void* selected_client = nullptr) {
         medicon::sdk::BedrockMenuTestAccess::invalidate_profile(reader);
@@ -205,6 +211,11 @@ void supported_image() {
     f.bytes(stack_count + 0x5F, {0x90});
     f.expect(MenuScreenState::unknown, "A changed SceneStack stride was accepted.");
     f.observed_code();
+    f.screen("disconnect_screen");
+    f.expect(MenuScreenState::disconnected, "Disconnect screen was not recognized.");
+    f.screen("realms_disconnect_screen");
+    f.expect(MenuScreenState::disconnected, "Realms disconnect screen was not recognized.");
+    f.screen("start_screen");
     for (const auto name : {"play_screen", "settings_screen", "hud_screen", "pause_screen"}) {
         f.screen(name);
         f.expect(MenuScreenState::other, "A non-menu screen enabled the replacement menu.");

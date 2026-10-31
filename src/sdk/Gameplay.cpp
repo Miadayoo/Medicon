@@ -37,6 +37,8 @@ constexpr std::uint32_t type_hash = 0x4F6BA419;
 constexpr std::uint32_t owner_hash = 0x85B93800, dead_hash = 0x710A62C4;
 constexpr std::uint32_t head_hash = 0xBABE7211, body_hash = 0xD7F64BBA;
 constexpr std::uint32_t render_position_hash = 0xE53C7221;
+constexpr std::uint32_t runtime_id_hash = 0xFC0DBBB5;
+constexpr std::uint32_t predicted_movement_hash = 0x18513471;
 // PlayerAuthInputPacket/InputData values in the 1.26.50 protocol profile.
 // https://mojang.github.io/bedrock-protocol-docs/1.26.50/types/player-auth-input-data/
 constexpr int player_auth_input_packet_id = 144;
@@ -156,6 +158,69 @@ bool supported_version(std::string& diagnostic) {
 } // namespace
 
 namespace detail {
+
+bool read_gameplay_motion(std::uintptr_t packet, std::uint64_t local_runtime_id, Vec3& motion) noexcept {
+    std::uint64_t runtime_id{};
+    Vec3 incoming{};
+    if (!local_runtime_id || !read_at(packet, 0x30, runtime_id) || runtime_id != local_runtime_id ||
+        !read_at(packet, 0x38, incoming) || !finite(incoming)) return false;
+    motion = incoming;
+    return true;
+}
+
+bool write_gameplay_motion(std::uintptr_t packet, Vec3 motion) noexcept {
+    return finite(motion) && write_at(packet, 0x38, motion);
+}
+
+bool write_gameplay_velocity(std::uintptr_t component, Vec3 velocity) noexcept {
+    struct State { Vec3 position, previous_position, velocity; } state{};
+    if (!finite(velocity) || !read_at(component, 0, state) ||
+        !valid_position(state.position) || !finite(state.velocity)) return false;
+    return write_at(component, offsetof(State, velocity), velocity);
+}
+
+bool copy_gameplay_latency(std::uintptr_t packet, LatencyReply& reply) noexcept {
+    LatencyReply copied;
+    if (!copy_bytes(packet, copied.bytes.data(), copied.bytes.size()) ||
+        std::to_integer<unsigned>(copied.bytes[0x38]) > 1) return false;
+    reply = copied;
+    return true;
+}
+
+bool read_gameplay_movement_report(std::uintptr_t packet, MovementReport& report) noexcept {
+    MovementReport copied;
+    if (!read_at(packet, 0x38, copied.position) || !read_at(packet, 0x48, copied.delta) ||
+        !read_at(packet, 0x88, copied.flags) || !read_at(packet, 0xA8, copied.input_tick) ||
+        !valid_position(copied.position) || !finite(copied.delta) || (copied.flags[1] & ~std::uint64_t{3})) return false;
+    report = copied;
+    return true;
+}
+
+bool read_gameplay_local_move(std::uintptr_t packet, std::uint64_t runtime_id, LocalPlayerMove& move) noexcept {
+    LocalPlayerMove copied;
+    std::uint64_t target{};
+    std::uint8_t ground{};
+    if (!runtime_id || !read_at(packet, 0x30, target) || target != runtime_id ||
+        !read_at(packet, 0x38, copied.position) || !read_at(packet, 0x50, copied.mode) ||
+        !read_at(packet, 0x51, ground) || copied.mode > 3 || ground > 1 || !valid_position(copied.position)) return false;
+    copied.on_ground = ground != 0;
+    copied.runtime_id = target;
+    move = copied;
+    return true;
+}
+
+bool enqueue_gameplay_knockback(void* component, void* controller, Vec3 velocity, std::int64_t timestamp,
+                                EnqueuePredictedMotion enqueue, UpdatePredictedMotion update) {
+    if (!component || !controller || !enqueue || !update || timestamp <= 0 || !finite(velocity)) return false;
+    // Inspected queue function reads only the vector at packet +0x38 and
+    // the timestamp passed separately. This is a scalar argument envelope,
+    // not a constructed game Packet or a cross-runtime shared_ptr.
+    alignas(8) std::array<std::byte, 0x48> argument{};
+    std::memcpy(argument.data() + 0x38, &velocity, sizeof velocity);
+    enqueue(controller, argument.data(), &timestamp);
+    update(component);
+    return true;
+}
 
 bool read_gameplay_pools(std::uintptr_t registry, std::vector<GameplayPool>& output) noexcept {
     output.clear();
@@ -296,6 +361,10 @@ struct BedrockGameplay::Impl {
     std::uintptr_t render_position = 0;
     std::atomic_bool sprint_packet_override{};
     std::atomic_bool sprint_packet_last_state{};
+    std::uintptr_t packet_send_target{};
+    void(*packet_send_original)(void*, void*){};
+    VelocityTraceObserver velocity_observer{};
+    void* velocity_observer_context{};
     // NaN marks no request. Publishing both axes at once prevents a send on
     // another thread from pairing a new yaw with the previous tick's pitch.
     std::atomic<std::uint64_t> server_rotation{no_server_rotation};
@@ -328,6 +397,21 @@ struct BedrockGameplay::Impl {
     std::vector<memory::AddressRange> executable_regions;
     std::vector<detail::GameplayPool> pools;
     std::string diagnostic;
+
+    void trace_velocity(VelocityTracePhase phase, const char* path, KnockbackApplyResult result,
+                        std::uint64_t latency_id = 0) const noexcept {
+        if (!velocity_observer || !frame.ready) return;
+        NativeVelocityTrace event;
+        event.phase = phase; event.path = path; event.result = result;
+        event.capture_serial = capture_serial; event.latency_id = latency_id;
+        event.position = frame.local.position; event.velocity = frame.local.velocity;
+        const auto vector = component(local_entity, state_hash, 36);
+        std::uintptr_t cached{};
+        event.state_matches_cached = vector && read_at(player, 0x218, cached) && vector == cached;
+        (void)read_at(vector, 0, event.position);
+        (void)read_at(vector, 24, event.velocity);
+        velocity_observer(velocity_observer_context, event);
+    }
 
     bool executable(std::uintptr_t address) const noexcept {
         return image.contains(address) && std::ranges::any_of(executable_regions,
@@ -612,6 +696,175 @@ void BedrockGameplay::clear() noexcept {
 void BedrockGameplay::end_tick() noexcept { impl_->active = false; }
 
 bool BedrockGameplay::slot_restore_pending() const noexcept { return impl_->switch_from >= 0; }
+
+std::uintptr_t BedrockGameplay::motion_dispatcher_target() const noexcept {
+    // 1.26.52.3 SetActorMotion dispatcher: borrows shared_ptr at R9, then
+    // tail-calls the callback's +0x668 virtual method with Packet* in R8.
+    constexpr std::uintptr_t rva = 0x1733000;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x68,0x06,0,0};
+    auto& state = *impl_;
+    if (!state.supported || rva > UINTPTR_MAX - state.image.address) return 0;
+    const auto target = state.image.address + rva;
+    std::uintptr_t table_entry{};
+    return state.native_identity(target, rva, prefix) &&
+        read_at(state.image.address, 0xE7BF8C8, table_entry) && table_entry == target ? target : 0;
+}
+
+std::uintptr_t BedrockGameplay::prediction_correction_dispatcher_target() const noexcept {
+    constexpr std::uintptr_t rva = 0x1734000;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x30,0x02,0,0};
+    const auto& state = *impl_;
+    std::uintptr_t entry{};
+    const auto target = state.image.address + rva;
+    return state.supported && state.native_identity(target, rva, prefix) &&
+        read_at(state.image.address, 0xE7C0038, entry) && entry == target ? target : 0;
+}
+
+std::uintptr_t BedrockGameplay::disconnect_dispatcher_target() const noexcept {
+    constexpr std::uintptr_t rva = 0x1723320;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0xE8,0x07,0,0};
+    const auto& state = *impl_;
+    std::uintptr_t entry{};
+    const auto target = state.image.address + rva;
+    return state.supported && state.native_identity(target, rva, prefix) &&
+        read_at(state.image.address, 0xE7BE680, entry) && entry == target ? target : 0;
+}
+
+bool BedrockGameplay::is_client_network_handler(void* handler) const noexcept {
+    std::uintptr_t table{};
+    return impl_->supported && read_at(reinterpret_cast<std::uintptr_t>(handler), 0, table) &&
+        table == impl_->image.address + 0xE7AF110;
+}
+
+std::uintptr_t BedrockGameplay::move_player_dispatcher_target() const noexcept {
+    constexpr std::uintptr_t rva = 0x1732C20;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x08,0x07,0,0};
+    const auto& state = *impl_;
+    std::uintptr_t entry{};
+    const auto target = state.image.address + rva;
+    return state.supported && state.native_identity(target, rva, prefix) &&
+        read_at(state.image.address, 0xE7BF748, entry) && entry == target ? target : 0;
+}
+
+bool BedrockGameplay::read_movement_report(void* packet, MovementReport& report) const noexcept {
+    const auto& state = *impl_;
+    const auto address = reinterpret_cast<std::uintptr_t>(packet);
+    std::uintptr_t table{}, get_id{};
+    constexpr std::array<unsigned char, 6> prefix{0xB8,0x90,0,0,0,0xC3};
+    return state.supported && read_at(address, 0, table) && table == state.image.address + 0xE83A360 &&
+        read_at(table, 8, get_id) && state.native_identity(get_id, 0xB26A00, prefix) &&
+        detail::read_gameplay_movement_report(address, report);
+}
+
+bool BedrockGameplay::read_player_move(void* packet_reference, LocalPlayerMove& move) const noexcept {
+    const auto& state = *impl_;
+    std::uintptr_t packet{}, table{}, get_id{};
+    std::uint64_t runtime_id{};
+    constexpr std::array<unsigned char, 6> prefix{0xB8,0x13,0,0,0,0xC3};
+    return state.supported && read_at(reinterpret_cast<std::uintptr_t>(packet_reference), 0, packet) &&
+        read_at(packet, 0, table) && table == state.image.address + 0xE85BFC0 &&
+        read_at(table, 8, get_id) && state.native_identity(get_id, 0x2ECD950, prefix) &&
+        read_at(packet, 0x30, runtime_id) &&
+        detail::read_gameplay_local_move(packet, runtime_id, move);
+}
+
+bool BedrockGameplay::is_local_runtime_id(std::uint64_t runtime_id) const noexcept {
+    const auto& state = *impl_;
+    std::uint64_t current{};
+    return state.supported && state.frame.ready && runtime_id &&
+        read_at(state.component(state.local_entity, runtime_id_hash, 8), 0, current) && current == runtime_id;
+}
+
+bool BedrockGameplay::local_player_move(void* packet_reference, LocalPlayerMove& move) const noexcept {
+    LocalPlayerMove copied;
+    if (!read_player_move(packet_reference, copied) || !is_local_runtime_id(copied.runtime_id)) return false;
+    move = copied;
+    return true;
+}
+
+void BedrockGameplay::bind_velocity_trace(VelocityTraceObserver observer, void* context) noexcept {
+    impl_->velocity_observer = observer;
+    impl_->velocity_observer_context = context;
+}
+
+bool BedrockGameplay::local_motion(void* packet_reference, void* local_actor, Vec3& motion,
+                                   std::uint64_t* input_tick, std::int64_t* received_timestamp) const noexcept {
+    auto& state = *impl_;
+    const auto actor = reinterpret_cast<std::uintptr_t>(local_actor);
+    std::uint32_t entity{};
+    std::uintptr_t packet{}, table{}, get_id{}, owner{};
+    std::uint64_t runtime_id{};
+    constexpr std::array<unsigned char, 6> get_id_prefix{0xB8,0x28,0,0,0,0xC3};
+    if (!state.supported || !state.frame.ready || !state.frame.local.alive || actor != state.player || !state.context(actor, entity) ||
+        !read_at(state.component(entity, owner_hash, 8), 0, owner) || owner != actor ||
+        !read_at(state.component(entity, runtime_id_hash, 8), 0, runtime_id) ||
+        !read_at(reinterpret_cast<std::uintptr_t>(packet_reference), 0, packet) ||
+        !read_at(packet, 0, table) || table != state.image.address + 0xE8A73D0 ||
+        !read_at(table, 8, get_id) || !state.native_identity(get_id, 0xB270F0, get_id_prefix)) return false;
+    Vec3 copied;
+    std::uint64_t tick{};
+    std::int64_t timestamp{};
+    if (!detail::read_gameplay_motion(packet, runtime_id, copied) || (input_tick && !read_at(packet, 0x48, tick)) ||
+        (received_timestamp && !read_at(packet, 0x18, timestamp))) return false;
+    motion = copied;
+    if (input_tick) *input_tick = tick;
+    if (received_timestamp) *received_timestamp = timestamp;
+    return true;
+}
+
+bool BedrockGameplay::write_local_motion(void* packet_reference, void* local_actor, Vec3 motion) const noexcept {
+    std::uintptr_t packet{};
+    Vec3 current{};
+    return local_motion(packet_reference, local_actor, current) &&
+        read_at(reinterpret_cast<std::uintptr_t>(packet_reference), 0, packet) &&
+        detail::write_gameplay_motion(packet, motion);
+}
+
+void BedrockGameplay::bind_latency_sender(std::uintptr_t target, void(*original)(void*, void*)) noexcept {
+    if (!impl_->supported || !impl_->executable(target) || !original) return;
+    impl_->packet_send_target = target;
+    impl_->packet_send_original = original;
+}
+
+bool BedrockGameplay::is_latency_reply(void* packet) const noexcept {
+    std::uintptr_t table{};
+    return impl_->supported && read_at(reinterpret_cast<std::uintptr_t>(packet), 0, table) &&
+        table == impl_->image.address + 0xE7B0FD0;
+}
+
+bool BedrockGameplay::read_latency_reply(void* sender, void* packet, LatencyReply& reply) const noexcept {
+    const auto& state = *impl_;
+    std::uintptr_t current_sender{}, table{}, get_id{}, dispatcher{};
+    const auto address = reinterpret_cast<std::uintptr_t>(packet);
+    constexpr std::array<unsigned char, 6> prefix{0xB8,0x73,0,0,0,0xC3};
+    if (!state.supported || !state.frame.ready || !state.packet_send_original ||
+        !read_at(state.client, 0x1D0, current_sender) || current_sender != reinterpret_cast<std::uintptr_t>(sender) ||
+        state.method(current_sender, 4) != state.packet_send_target ||
+        !read_at(address, 0, table) || table != state.image.address + 0xE7B0FD0 ||
+        !read_at(table, 8, get_id) || !state.native_identity(get_id, 0x3C40700, prefix) ||
+        !read_at(address, 0x20, dispatcher) || dispatcher != state.image.address + 0x1185B5B0) return false;
+    return detail::copy_gameplay_latency(address, reply);
+}
+
+bool BedrockGameplay::send_latency_reply(const LatencyReply& reply) {
+    auto& state = *impl_;
+    if (!state.on_tick() || !state.packet_send_original) return false;
+    std::uintptr_t sender{};
+    LatencyReply checked;
+    // Revalidate the native identity and current sender at replay. The
+    // original sender borrows Packet* synchronously, bypassing our send hook.
+    if (!read_at(state.client, 0x1D0, sender) || !sender ||
+        !read_latency_reply(reinterpret_cast<void*>(sender), const_cast<std::byte*>(reply.bytes.data()), checked)) return false;
+    std::uint64_t latency_id{};
+    std::memcpy(&latency_id, checked.bytes.data() + 0x30, sizeof latency_id);
+    state.trace_velocity(VelocityTracePhase::latency_submit, "sendToServer", KnockbackApplyResult::direct, latency_id);
+    state.packet_send_original(reinterpret_cast<void*>(sender), checked.bytes.data());
+    return true;
+}
 
 bool BedrockGameplay::refresh_view(GameplayFrame& frame) const noexcept {
     const auto& state = *impl_;
@@ -1035,6 +1288,74 @@ bool BedrockGameplay::set_sprinting(bool sprinting) {
     // acceleration. Writing ActorDataFlag alone skips that transition.
     return detail::write_gameplay_sprint_input(
         state.component(state.local_entity, move_input_hash, detail::move_input_size), sprinting);
+}
+
+bool BedrockGameplay::set_velocity(Vec3 velocity) {
+    auto& state = *impl_;
+    std::uintptr_t owner{};
+    if (!state.on_tick() || !state.frame.local.alive ||
+        !read_at(state.component(state.local_entity, owner_hash, 8), 0, owner) || owner != state.player ||
+        !detail::write_gameplay_velocity(state.component(state.local_entity, state_hash, 36), velocity)) return false;
+    state.frame.local.velocity = velocity;
+    return true;
+}
+
+KnockbackApplyResult BedrockGameplay::apply_knockback(Vec3 velocity, std::int64_t received_timestamp) {
+    auto& state = *impl_;
+    std::uintptr_t owner{};
+    if (!state.on_tick() || !state.frame.local.alive || !finite(velocity) ||
+        !read_at(state.component(state.local_entity, owner_hash, 8), 0, owner) || owner != state.player)
+        return KnockbackApplyResult::failed;
+    auto result = KnockbackApplyResult::failed;
+    const char* path = "validate";
+    state.trace_velocity(VelocityTracePhase::apply_begin, path, result);
+    struct TraceEnd {
+        Impl& state;
+        KnockbackApplyResult& result;
+        const char*& path;
+        ~TraceEnd() { state.trace_velocity(VelocityTracePhase::apply_end, path, result); }
+    } trace{state, result, path};
+    const auto component = state.component(state.local_entity, predicted_movement_hash, 0x90);
+    path = component ? "direct:bypassed" : "direct:no-component";
+    std::uint8_t bypass{};
+    if (component) {
+        if (!read_at(component, 0, bypass)) return KnockbackApplyResult::failed;
+        if (!bypass) {
+            constexpr std::array<unsigned char, 16> enabled_prefix{
+                0x55,0x56,0x57,0x53,0x48,0x83,0xEC,0x58,0x48,0x8D,0x6C,0x24,0x50,0x48,0xC7,0x45};
+            const auto enabled = state.image.address + 0x1040080;
+            if (!state.native_identity(enabled, 0x1040080, enabled_prefix)) return KnockbackApplyResult::failed;
+            // Same no-argument feature gate used by the native motion handler.
+            path = "direct:feature-off";
+            if (reinterpret_cast<bool(*)()>(enabled)()) {
+                path = "predicted";
+                constexpr std::array<unsigned char, 16> enqueue_prefix{
+                    0x55,0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x90,0,0};
+                constexpr std::array<unsigned char, 16> update_prefix{
+                    0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x8B,0x41,0x30,0x4C,0x8B,0x40,0x20,0x49,0x83};
+                const auto enqueue = state.image.address + 0x2888190;
+                const auto update = state.image.address + 0x7CAEA60;
+                std::uintptr_t controller{};
+                std::array<std::byte, 0x40> probe{};
+                if (!state.native_identity(enqueue, 0x2888190, enqueue_prefix) ||
+                    !state.native_identity(update, 0x7CAEA60, update_prefix) ||
+                    !read_at(component, 0x30, controller) || !controller || controller % 8 ||
+                    !copy_bytes(controller, probe.data(), probe.size()))
+                    return KnockbackApplyResult::failed;
+                if (!detail::enqueue_gameplay_knockback(reinterpret_cast<void*>(component),
+                    reinterpret_cast<void*>(controller), velocity, received_timestamp,
+                    reinterpret_cast<detail::EnqueuePredictedMotion>(enqueue),
+                    reinterpret_cast<detail::UpdatePredictedMotion>(update))) return KnockbackApplyResult::failed;
+                // Queue admission can leave the current StateVector unchanged
+                // until the next native simulation step. Report actual memory.
+                Vec3 current{};
+                const auto vector = state.component(state.local_entity, state_hash, 36);
+                if (read_at(vector, 24, current) && finite(current)) state.frame.local.velocity = current;
+                return result = KnockbackApplyResult::predicted;
+            }
+        }
+    }
+    return result = set_velocity(velocity) ? KnockbackApplyResult::direct : KnockbackApplyResult::failed;
 }
 
 SprintInputRewrite BedrockGameplay::rewrite_sprint_input(

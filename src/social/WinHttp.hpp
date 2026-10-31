@@ -82,7 +82,7 @@ public:
 
     // path includes the query. A non-empty json_body is sent as application/json.
     HttpResponse request(const Endpoint& endpoint, const wchar_t* method, std::string_view path,
-                         std::string_view json_body, std::string_view bearer) const;
+                         std::string_view json_body, std::string_view bearer, std::string_view extra_headers = {}) const;
 
     // A binary POST (the Core DLL release upload) with an explicit content type.
     HttpResponse upload(const Endpoint& endpoint, std::string_view path, std::string_view content_type,

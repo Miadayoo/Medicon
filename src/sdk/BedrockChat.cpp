@@ -219,6 +219,7 @@ BedrockChat::State BedrockChat::locate(std::string& diagnostic) {
         return State::waiting;
     }
     std::uintptr_t verified_target = 0;
+    std::uintptr_t verified_server_target = 0;
     std::uintptr_t verified_client = 0;
     std::size_t verified_offset = 0;
     unsigned valid_candidates = 0;
@@ -229,6 +230,7 @@ BedrockChat::State BedrockChat::locate(std::string& diagnostic) {
             read_at(instance, 0x1D0, sender) && object_vtable(sender, sender_methods)) {
             ++valid_candidates;
             verified_target = sender_methods[2];
+            verified_server_target = sender_methods[4];
             verified_client = instance;
             verified_offset = offset;
         }
@@ -240,6 +242,7 @@ BedrockChat::State BedrockChat::locate(std::string& diagnostic) {
         return State::waiting;
     }
     send_target_ = verified_target;
+    server_send_target_ = verified_server_target;
     verified_client_ = verified_client;
     state_ = State::ready;
     terminal_diagnostic_ = "Chat SDK bridge ready for Minecraft " + version_ +

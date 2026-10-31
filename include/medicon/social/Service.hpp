@@ -1,10 +1,12 @@
 #pragma once
 
+#include "medicon/alt/Alt.hpp"
 #include "medicon/social/Events.hpp"
 
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -31,12 +33,21 @@ public:
     void start();
     // Non-blocking. For the game window going away, when the process ends soon.
     void request_stop() noexcept;
+    bool alt_worker_finished() const noexcept;
     // Closes the WebSocket and joins the threads within 2 s (spec 4.3). Returns
     // false when a thread had to be detached. Never call it from DllMain.
     bool stop();
 
     // Valid for the lifetime of this object.
     Channel& channel() noexcept;
+    // The AltManager's worker runs and stops with this service; alts.bin sits
+    // next to license.bin. Independent of the Social sign-in.
+    alt::Channel& alt_channel() noexcept;
+    void set_alt_game_bridge(bool available);
+    std::optional<std::string> alt_native_authorization(std::string_view url);
+    void alt_native_auth_result(unsigned status);
+    std::optional<std::string> alt_connection_token(std::string_view native_token);
+    void alt_connection_used(std::string_view token);
 
     // %APPDATA%\Medicon (spec 4.10).
     static std::filesystem::path default_directory();

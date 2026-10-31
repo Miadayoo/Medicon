@@ -109,7 +109,42 @@ void test_social_layout() {
         check(social.min.x >= 0 && social.max.x <= size.x && social.min.y > frame.buttons[2].max.y,
               "inside the window and below the left column");
         check(!frame.show_social, "evaluate_main_menu does not show Social by itself");
+        const auto& alts = frame.alts;
+        check(alts.min.x > social.max.x && alts.max.x <= size.x, "AltManager sits right of Social, inside the window");
+        check(near(alts.min.y, social.min.y) && near(alts.max.y, social.max.y), "AltManager shares Social's row");
+        check(!frame.show_alts, "evaluate_main_menu does not show AltManager by itself");
     }
+}
+
+void test_alts_button() {
+    ImGuiScope context;
+    FontManager fonts;
+    MainMenu menu;
+    const ImVec2 size(1920, 1080);
+    const auto layout = evaluate_main_menu(size, 0.0);
+    PointerInput pointer;
+    pointer.valid = true;
+    pointer.position = {(layout.alts.min.x + layout.alts.max.x) * 0.5F, (layout.alts.min.y + layout.alts.max.y) * 0.5F};
+    const auto frame = [&](double time, bool down, bool pressed = false, bool released = false) {
+        pointer.buttons[0] = {down, pressed, released};
+        menu.render_at(nullptr, fonts, size, pointer, time);
+    };
+    menu.set_active(true);
+    frame(0.0, false);
+    frame(0.1, true, true);
+    frame(0.2, false, false, true);
+    check(!menu.consume_alts_request() && !menu.consume_action(), "a hidden AltManager button does nothing");
+    menu.set_social(true, false);
+    menu.set_alts(true);
+    frame(0.6, true, true);
+    frame(0.7, false, false, true);
+    check(menu.consume_alts_request(), "a click on AltManager is reported to the overlay");
+    check(!menu.consume_social_request() && !menu.consume_alts_request() && !menu.consume_action(),
+          "once, not as Social and never as a game action");
+    menu.set_alts(false);
+    frame(1.2, true, true);
+    frame(1.3, false, false, true);
+    check(!menu.consume_alts_request(), "hiding the button stops its clicks");
 }
 
 void test_social_button() {
@@ -270,7 +305,7 @@ int main() {
     const std::pair<const char*, std::function<void()>> tests[]{
         {"motion and layout", test_motion_and_layout}, {"logo direction", test_logo_direction},
         {"actions", test_actions}, {"drawing", test_drawing},
-        {"social layout", test_social_layout}, {"social button", test_social_button},
+        {"social layout", test_social_layout}, {"social button", test_social_button}, {"alts button", test_alts_button},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

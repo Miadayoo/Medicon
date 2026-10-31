@@ -154,6 +154,10 @@ void draw_buttons(ImDrawList* list, const FontManager& fonts, const MainMenuFram
         draw_button(list, face.font, frame, frame.buttons[i], main_menu_action_name(static_cast<MainMenuAction>(i)), hot,
                     held, false);
     }
+    if (frame.show_alts) {
+        const bool hot = hovered == MainMenu::alts_button, held = pressed == MainMenu::alts_button && hot;
+        draw_button(list, face.font, frame, frame.alts, "AltManager", hot, held, true);
+    }
     if (!frame.show_social) return;
     const bool hot = hovered == MainMenu::social_button, held = pressed == MainMenu::social_button && hot;
     draw_button(list, face.font, frame, frame.social, "Social", hot, held, true);
@@ -215,6 +219,11 @@ void layout_main_menu_text(ImVec2 size, MainMenuFrame& frame) noexcept {
     frame.logo_size = std::min(108.0F * scale, size.x * 0.17F);
     frame.button_text_size = 24.0F * scale;
     frame.corner_radius = 13.0F * scale;
+    // Social stays centred; AltManager follows it, wide enough for its longer label.
+    const float alts_gap = 14.0F * social_scale;
+    const float alts_left = frame.social.max.x + alts_gap;
+    frame.alts = {{alts_left, frame.social.min.y},
+                  {std::min(alts_left + frame.button_text_size * 6.7F, size.x - alts_gap), frame.social.max.y}};
 }
 
 MainMenuFrame evaluate_main_menu(ImVec2 size, double elapsed) noexcept {
@@ -299,6 +308,7 @@ void MainMenu::set_active(bool active) noexcept {
     last_action_time_ = -1.0;
     pending_action_.reset();
     social_requested_ = false;
+    alts_requested_ = false;
     start_time_ = std::chrono::steady_clock::now();
 }
 
@@ -319,11 +329,13 @@ void MainMenu::render_at(ImDrawList* list, const FontManager& fonts, ImVec2 size
     auto frame = valid_size(size) ? evaluate_main_menu(size, elapsed) : MainMenuFrame{};
     frame.show_social = social_shown_;
     frame.social_badge = social_badge_;
+    frame.show_alts = alts_shown_;
     int hovered = -1;
     if (valid_size(size) && pointer.valid) {
         for (std::size_t i = 0; i < frame.buttons.size(); ++i)
             if (frame.buttons[i].contains(pointer.position)) hovered = static_cast<int>(i);
         if (social_shown_ && frame.social.contains(pointer.position)) hovered = social_button;
+        if (alts_shown_ && frame.alts.contains(pointer.position)) hovered = alts_button;
     }
     const auto& left = pointer.buttons[0];
     // Require a neutral frame after activation/focus loss. A click which was
@@ -334,8 +346,9 @@ void MainMenu::render_at(ImDrawList* list, const FontManager& fonts, ImVec2 size
         if (left.pressed) pressed_button_ = hovered;
         if (left.released) {
             if (pressed_button_ >= 0 && pressed_button_ == hovered && !pending_action_ && !social_requested_ &&
-                (last_action_time_ < 0.0 || elapsed - last_action_time_ >= click_cooldown)) {
+                !alts_requested_ && (last_action_time_ < 0.0 || elapsed - last_action_time_ >= click_cooldown)) {
                 if (pressed_button_ == social_button) social_requested_ = true;
+                else if (pressed_button_ == alts_button) alts_requested_ = true;
                 else pending_action_ = static_cast<MainMenuAction>(pressed_button_);
                 last_action_time_ = elapsed;
             }
@@ -361,5 +374,15 @@ void MainMenu::set_social(bool shown, bool badge) noexcept {
 }
 
 bool MainMenu::consume_social_request() noexcept { return std::exchange(social_requested_, false); }
+
+void MainMenu::set_alts(bool shown) noexcept {
+    alts_shown_ = shown;
+    if (!shown) {
+        alts_requested_ = false;
+        if (pressed_button_ == alts_button) pressed_button_ = -1;
+    }
+}
+
+bool MainMenu::consume_alts_request() noexcept { return std::exchange(alts_requested_, false); }
 
 } // namespace medicon::gui

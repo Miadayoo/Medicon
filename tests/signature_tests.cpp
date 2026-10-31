@@ -112,6 +112,19 @@ void registry_failures_and_catalog() {
         require(signature.source_line > 0, "signature has no upstream source line");
     }
     require(names.contains("TapSwingAnim") && !names.contains("glm_rotate"), "upstream comments imported incorrectly");
+
+    // Medicon's own auth catalog (docs/alt-manager-*). Not runtime-verified, so
+    // every entry must stay flagged uncertain; the patterns must still be valid.
+    std::unordered_set<std::string_view> auth_names;
+    require(medicon_auth_signatures().size() == 9, "auth catalog count changed without review");
+    require(medicon_auth_signature_source().license_status == "project_research", "auth catalog provenance changed");
+    for (const auto& signature : medicon_auth_signatures()) {
+        require(auth_names.insert(signature.name).second, "duplicate name in auth catalog");
+        require(Pattern::parse(signature.pattern).has_value(), "invalid pattern in auth catalog");
+        require(signature.upstream_uncertain, "auth signatures must stay flagged as runtime-unverified");
+    }
+    require(auth_names.contains("Social_UserImpl_create") && auth_names.contains("ConnectionRequest_create"),
+            "auth catalog is missing a documented function");
 }
 
 void loaded_module_inspection() {

@@ -1,5 +1,7 @@
 #include <medicon/gui/SocialScreen.hpp>
 
+#include "SocialPanel.hpp"
+
 #include <medicon/gui/Draw.hpp>
 #include <medicon/gui/Glass.hpp>
 #include <medicon/gui/MainMenu.hpp>
@@ -22,6 +24,7 @@ namespace style = theme::social;
 namespace metrics = theme::social::metrics;
 using social::ConnectionState;
 using social::NewsKind;
+using namespace social_panel;
 
 enum : std::uint32_t {
     id_close = 1,
@@ -99,27 +102,6 @@ constexpr const char* tab_labels[]{"News", "Change Log"};
 constexpr const char* empty_labels[]{"No news yet", "No change log yet"};
 constexpr float max_offset = 400.0F; // settings slider range for notify.inGameOffsetY
 
-// The open/close animation scales finished geometry around the panel centre
-// (spec 4.6: 0.96 -> 1) and fades it, instead of laying the panel out again at
-// another size, which would also need fonts rasterised at that size.
-void scale_from(ImDrawList* list, int first_vertex, int first_command, ImVec2 center, float scale, float alpha) {
-    for (int i = first_vertex; i < list->VtxBuffer.Size; ++i) {
-        auto& vertex = list->VtxBuffer[i];
-        vertex.pos.x = center.x + (vertex.pos.x - center.x) * scale;
-        vertex.pos.y = center.y + (vertex.pos.y - center.y) * scale;
-        const auto a = static_cast<float>((vertex.col >> IM_COL32_A_SHIFT) & 0xFFu);
-        vertex.col = (vertex.col & ~IM_COL32_A_MASK) |
-                     (static_cast<ImU32>(std::lround(a * alpha)) << IM_COL32_A_SHIFT);
-    }
-    for (int i = first_command; i < list->CmdBuffer.Size; ++i) {
-        auto& clip = list->CmdBuffer[i].ClipRect;
-        clip.x = center.x + (clip.x - center.x) * scale;
-        clip.y = center.y + (clip.y - center.y) * scale;
-        clip.z = center.x + (clip.z - center.x) * scale;
-        clip.w = center.y + (clip.w - center.y) * scale;
-    }
-}
-
 std::string format_date(std::int64_t milliseconds) {
     const std::time_t seconds = static_cast<std::time_t>(milliseconds / 1000);
     std::tm local{};
@@ -130,30 +112,6 @@ std::string format_date(std::int64_t milliseconds) {
 }
 
 std::size_t slot(NewsKind kind) { return static_cast<std::size_t>(kind); }
-
-// Social sizes scale with the window like the rest of the client: height / 1080,
-// or less in a window narrower than 16:9.
-float layout_scale(ImVec2 display) { return std::min(display.y / metrics::reference_height, display.x / 1920.0F); }
-
-ImVec2 panel_size(ImVec2 display, bool login) {
-    const float s = layout_scale(display);
-    return {std::round(std::min((login ? metrics::login_panel_width : metrics::panel_width) * s,
-                                display.x * metrics::panel_max_ratio)),
-            std::round(std::min((login ? metrics::login_panel_height : metrics::panel_height) * s,
-                                display.y * metrics::panel_max_ratio))};
-}
-
-// A wide, soft blue shadow (never black) and a faint pale-blue glow around the panel.
-ShadowParams panel_shadow(float s) {
-    return {style::panel_shadow.opacity, style::panel_shadow.blur * 0.5F * s, 0.0F, style::panel_shadow.offset_y * s,
-            to_u32(style::shadow_tint)};
-}
-
-ShadowParams panel_glow(float s) {
-    return {style::panel_glow_opacity, style::panel_glow_blur * 0.5F * s, 0.0F, 0.0F, to_u32(style::panel_glow)};
-}
-
-float sidebar_width(float panel_width, float s) { return std::round(std::min(panel_width * 0.4F, metrics::sidebar_width * s)); }
 
 // The sign-in form's width inside its card.
 float login_form_width(ImVec2 display) {
@@ -173,12 +131,6 @@ void draw_title(ImDrawList* list, const SocialFonts& fonts, const SocialRect& re
                    to_u32(style::title_outline, alpha), text);
     }
     fonts.draw(list, SocialText::Display, x, y, to_u32(style::title, alpha), text);
-}
-
-void draw_centered(ImDrawList* list, const SocialFonts& fonts, SocialText role, const SocialRect& rect, ImU32 color,
-                   std::string_view text) {
-    fonts.draw(list, role, rect.min.x + (rect.width() - fonts.measure(role, text)) * 0.5F,
-               rect.min.y + (rect.height() - fonts.line_height(role)) * 0.5F, color, text);
 }
 
 } // namespace

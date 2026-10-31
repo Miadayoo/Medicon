@@ -266,7 +266,8 @@ void unsupported_host() {
     medicon::sdk::BedrockChat bridge;
     std::string diagnostic;
     require(bridge.locate(diagnostic) == medicon::sdk::BedrockChat::State::unsupported &&
-            !diagnostic.empty() && bridge.send_target() == 0, "non-game process was not rejected");
+            !diagnostic.empty() && bridge.send_target() == 0 && bridge.server_send_target() == 0,
+            "non-game process exposed a packet-send target");
     bool enqueued = false;
     require(!bridge.consume(reinterpret_cast<void*>(1), [&](std::string) { enqueued = true; }) && !enqueued,
             "unsupported bridge dispatched a command");

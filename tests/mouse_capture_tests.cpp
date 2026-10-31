@@ -395,6 +395,22 @@ void polling_keeps_transitions_and_retries_responsive() {
     check(schedule.update(true, false, 1001) && schedule.update(false, true, 1002) && schedule.update(true, true, 1003),
           "Rapid GUI transitions were delayed by native polling");
 }
+void disconnect_account_picker_keeps_native_cursor() {
+    MouseCaptureController controller;
+    unsigned releases=0,grabs=0;
+    const auto release=[&]{++releases;return true;};
+    const auto grab=[&]{++grabs;return true;};
+    check(controller.update(true,true,true,release,grab),"gameplay capture setup failed");
+    check(releases==1 && controller.active(),"capture setup did not retain restoration");
+    // The game has disconnected while an old gameplay restore is still owed.
+    check(controller.update(true,true,true,release,grab,true),"disconnect picker did not relinquish native capture policy");
+    check(releases==1 && grabs==0 && !controller.active(),"disconnect picker called native release/grab");
+    check(controller.update(false,true,false,release,grab,true),"account completion could not close picker");
+    check(grabs==0 && !controller.active(),"account completion restored a stale gameplay mouse");
+    check(controller.update(false,true,false,release,grab),"leaving disconnect screen failed");
+    check(grabs==0,"stale restore survived leaving disconnect screen");
+}
+
 } // namespace
 
 int main() {
@@ -402,6 +418,7 @@ int main() {
         opening_and_reassertion();
         overlay_press_keeps_its_owner_until_release();
         preserve_already_free_inventory();
+        disconnect_account_picker_keeps_native_cursor();
         unknown_state_is_conservative();
         focus_defers_restoration();
         retry_failed_operations();

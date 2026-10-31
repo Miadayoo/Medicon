@@ -1,3 +1,5 @@
+#include "../src/alt/AltService.hpp"
+
 #include <medicon/gui/Fonts.hpp>
 #include <medicon/gui/Clock.hpp>
 #include <medicon/gui/Shadow.hpp>
@@ -11,6 +13,8 @@
 #include <imgui.h>
 
 #include <Windows.h>
+#include <wincrypt.h>
+#include <nlohmann/json.hpp>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -501,6 +505,187 @@ ImVector<ImWchar> characters(std::wstring_view text) {
     return result;
 }
 
+// The worker against a real file. No sign-in reaches a server: the build's client
+// ID is checked first, and a damaged alts.bin must survive untouched.
+void test_alt_service() {
+    const auto directory = std::filesystem::temp_directory_path() / L"medicon-alt-test";
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    const auto next_event = [](medicon::alt::Channel& channel) {
+        std::vector<medicon::alt::Event> events;
+        for (int i = 0; i < 500 && !channel.events.drain(events); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        check(!events.empty(), "the alt worker answers");
+        return events;
+    };
+    {
+        medicon::alt::AltService service({directory, "test", {}});
+        service.start();
+        const auto events = next_event(service.channel());
+        const auto* loaded = std::get_if<medicon::alt::AccountsChanged>(&events.front());
+        check(loaded && loaded->accounts.empty() && !loaded->load_failed, "no alts.bin is an empty list");
+        if (medicon::alt::client_id.empty()) {
+            service.channel().commands.push(medicon::alt::StartSignIn{});
+            const auto answer = next_event(service.channel());
+            const auto* finished = std::get_if<medicon::alt::SignInFinished>(&answer.back());
+            check(finished && !finished->ok && finished->error == "not_configured", "a build without a client ID says so");
+        }
+        check(service.stop(std::chrono::seconds(2)), "the idle worker joins");
+    }
+    const auto file = directory / L"alts.bin";
+    std::ofstream(file, std::ios::binary) << "damaged";
+    {
+        medicon::alt::AltService service({directory, "test", {}});
+        service.start();
+        const auto events = next_event(service.channel());
+        const auto* loaded = std::get_if<medicon::alt::AccountsChanged>(&events.front());
+        check(loaded && loaded->load_failed, "a damaged alts.bin is reported");
+        service.channel().commands.push(medicon::alt::RemoveAccount{"1"});
+        next_event(service.channel());
+        check(service.stop(std::chrono::seconds(2)), "the worker joins after a failed load");
+    }
+    std::ifstream stream(file, std::ios::binary);
+    check(std::string(std::istreambuf_iterator<char>(stream), {}) == "damaged", "a damaged alts.bin is never overwritten");
+    stream.close();
+    std::filesystem::remove_all(directory);
+}
+
+// Exercises the real sign_in -> DPAPI save -> UI event -> restart path. Only
+// Microsoft/desktop responses are substituted; no browser or network is used.
+void test_alt_sign_in_persistence() {
+    struct Host final : alt::SignInHost {
+        alt::Channel& channel;
+        bool token_request = false;
+        explicit Host(alt::Channel& value) : channel(value) {}
+        alt::HttpReply post_form(std::string_view, std::string_view, std::string_view body) override {
+            if (token_request || body.find("grant_type=refresh_token") != body.npos)
+                return {200, R"({"access_token":"access","refresh_token":"refresh"})"};
+            token_request = true;
+            return {200, R"({"device_code":"device","user_code":"ABCD1234","verification_uri":"https://www.microsoft.com/link","interval":1})"};
+        }
+        alt::HttpReply post_json(std::string_view host, std::string_view, std::string_view body) override {
+            if (host == "user.auth.xboxlive.com") return {200, R"({"Token":"user"})"};
+            if (host == "20ca2.playfabapi.com") return {200, R"({"data":{"SessionTicket":"ticket"}})"};
+            if (host == "authorization.franchise.minecraft-services.net")
+                return {200, R"({"result":{"authorizationHeader":"MCToken credential"}})"};
+            const auto rp = nlohmann::json::parse(body)["RelyingParty"];
+            if (rp != "http://xboxlive.com" && rp != "https://b980a380.minecraft.playfabapi.com/") return {400, ""};
+            return {200, R"({"Token":"xsts","DisplayClaims":{"xui":[{"uhs":"1"}]}})"};
+        }
+        static std::string jwt(const std::string& key) {
+            const auto body = nlohmann::json{{"cpk", key}, {"xid", "2535400012345678"}, {"exp", 4102444800LL},
+                {"iss", "https://authorization.franchise.minecraft-services.net/"},
+                {"aud", "api://auth-minecraft-services/multiplayer"}}.dump();
+            DWORD length = 0;
+            CryptBinaryToStringA(reinterpret_cast<const BYTE*>(body.data()), body.size(), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &length);
+            std::string encoded(length, '\0');
+            CryptBinaryToStringA(reinterpret_cast<const BYTE*>(body.data()), body.size(), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, encoded.data(), &length);
+            encoded.resize(length);
+            while (encoded.ends_with('\0') || encoded.ends_with('=')) encoded.pop_back();
+            for (char& c : encoded) { if (c == '+') c = '-'; else if (c == '/') c = '_'; }
+            return "e30." + encoded + ".fixture";
+        }
+        alt::HttpReply post_authorized_json(std::string_view, std::string_view, std::string_view body, std::string_view auth) override {
+            if (auth != "MCToken credential") return {401, ""};
+            return {200, nlohmann::json{{"signedToken", jwt(nlohmann::json::parse(body)["publicKey"])}}.dump()};
+        }
+        alt::HttpReply get_profile(std::string_view user_hash, std::string_view token) override {
+            if (user_hash != "1" || token != "xsts") return {401, ""};
+            return {200, R"({"profileUsers":[{"id":"2535400012345678","settings":[{"id":"Gamertag","value":"Linked Alt"}]}]})"};
+        }
+        bool copy_code(std::string_view) override { return true; }
+        bool open_window(const std::string&) override { return false; }
+        void close_window() override {}
+        bool wait(std::chrono::seconds) override { return true; }
+        void stage(alt::SignInStage stage, std::string_view code, bool copied, bool opened) override {
+            channel.events.push(alt::SignInProgress{stage, std::string(code), copied, opened});
+        }
+    };
+    const auto directory = std::filesystem::temp_directory_path() /
+        (L"medicon-alt-signin-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+    alt::AltService::Options options{directory, "test", {}};
+    options.application_id = "test-app";
+    options.make_sign_in_host = [](alt::Channel& channel) { return std::make_unique<Host>(channel); };
+    {
+        alt::AltService service(options);
+        SocialUi ui;
+        FontManager fonts;
+        ui.attach_alts(&service.channel());
+        service.start();
+        service.channel().commands.push(alt::StartSignIn{});
+        const auto deadline = std::chrono::steady_clock::now() + 3s;
+        while ((ui.alts().accounts().empty() || ui.alts().signing_in()) && std::chrono::steady_clock::now() < deadline) {
+            ui.pump(fonts, true);
+            std::this_thread::sleep_for(5ms);
+        }
+        check(ui.alts().accounts().size() == 1 && ui.alts().accounts()[0].gamertag == "Linked Alt" &&
+              ui.alts().accounts()[0].xuid == "2535400012345678", "a linked account reaches the Alt list after sign-in");
+        check(!ui.alts().signing_in() && ui.alts().error().empty(), "the successful account is not hidden behind the sign-in state");
+        service.set_game_bridge(true);
+        service.channel().commands.push(alt::UseAccount{"2535400012345678",42});
+        bool selected = false, use_completed = false;
+        const auto use_deadline = std::chrono::steady_clock::now() + 3s;
+        while ((!selected || !use_completed) && std::chrono::steady_clock::now() < use_deadline) {
+            std::vector<alt::Event> events;
+            service.channel().events.drain(events);
+            for (const auto& event : events) {
+                if (const auto* changed = std::get_if<alt::SessionChanged>(&event))
+                    selected = !changed->busy && changed->selected_xuid == "2535400012345678";
+                if (const auto* finished = std::get_if<alt::UseFinished>(&event))
+                    use_completed = finished->ok && finished->request_id==42 && finished->xuid=="2535400012345678";
+                service.channel().events.push(event);
+            }
+            ui.pump(fonts, true);
+            std::this_thread::sleep_for(5ms);
+        }
+        check(selected && use_completed && ui.alts().active_xuid().empty(), "Use reports its correlated completion without falsely marking a server login");
+        constexpr auto multiplayer = "https://authorization.franchise.minecraft-services.net/api/v1.0/multiplayer/session/start";
+        const auto authorization = service.native_authorization(multiplayer);
+        check(authorization && *authorization == "MCToken credential", "the native token request uses the selected account before NetherNet starts");
+        check(!service.native_authorization("https://hive.example/v1/join/123"), "the service credential is never attached to server signaling");
+        // This represents the native response shared with NetherNet. The login
+        // callback must preserve it verbatim and must not make a second request.
+        const auto native_token = Host::jwt(std::string(160, 'A'));
+        const auto override = service.connection_token(native_token);
+        check(!override, "the native JWT is shared unchanged by transport and LoginPacket");
+        check(ui.alts().active_xuid().empty(), "an issued native credential alone is not an active server login");
+        service.connection_used(native_token);
+        ui.pump(fonts, true);
+        check(ui.alts().active_xuid() == "2535400012345678", "native serialization confirms the active row through the real service/UI channel");
+        const auto rejected = service.connection_token("missing-native-key");
+        check(rejected && rejected->empty(), "a failed selected login cannot fall back to the original account");
+        ui.pump(fonts, true);
+        check(ui.alts().error() == "native_session_stale", "a stale native identity is reported without late token replacement");
+        service.native_auth_result(401);
+        ui.pump(fonts, true);
+        check(ui.alts().error() == "connection_failed" && ui.alts().diagnostic() == "Native multiplayer token: HTTP 401",
+              "native token request errors reach the screen");
+        check(service.stop(2s), "the authenticated worker stops");
+    }
+    const auto file = directory / L"alts.bin";
+    std::ifstream stream(file, std::ios::binary);
+    const std::string encrypted(std::istreambuf_iterator<char>(stream), {});
+    stream.close();
+    check(!encrypted.empty() && encrypted.find("Linked Alt") == std::string::npos && encrypted.find("refresh") == std::string::npos,
+          "the linked account and refresh token are encrypted on disk");
+    {
+        alt::AltService service(options);
+        SocialUi ui;
+        FontManager fonts;
+        ui.attach_alts(&service.channel());
+        service.start();
+        const auto deadline = std::chrono::steady_clock::now() + 3s;
+        while (ui.alts().accounts().empty() && std::chrono::steady_clock::now() < deadline) {
+            ui.pump(fonts, true);
+            std::this_thread::sleep_for(5ms);
+        }
+        check(ui.alts().accounts().size() == 1 && ui.alts().accounts()[0].gamertag == "Linked Alt",
+              "the linked account appears in the list after restarting the service");
+        check(service.stop(2s), "the reloaded worker stops");
+    }
+    std::filesystem::remove(file);
+    std::filesystem::remove(directory);
+}
+
 void test_text_input_animation() {
     using Input = SocialTextInput;
     // The pose: sinks for 60 ms, rises for 120 ms, no overshoot, settled at 180 ms.
@@ -729,6 +914,8 @@ int main() {
         test_text_input_drawing();
         test_background_cache();
         test_license_store();
+        test_alt_service();
+        test_alt_sign_in_persistence();
         test_music_setting_persistence();
         std::cout << "social ui tests passed (" << checks << " checks)\n";
         return 0;

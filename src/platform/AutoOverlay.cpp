@@ -14,12 +14,15 @@
 #include <medicon/modules/KillauraModule.hpp>
 #include <medicon/modules/RotationsModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
+#include <medicon/modules/VelocityModule.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockAuth.hpp>
 #include <medicon/sdk/BedrockInput.hpp>
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
 #include <medicon/sdk/BedrockMenu.hpp>
+#include <medicon/sdk/BedrockReconnect.hpp>
 #include <medicon/sdk/VanillaNavigation.hpp>
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/sdk/CustomModelBox.hpp>
@@ -28,6 +31,7 @@
 #include <medicon/sdk/CustomModelView.hpp>
 #include <medicon/update/HostApi.h>
 #include <medicon/social/Service.hpp>
+#include <medicon/alt/Session.hpp>
 #include <backends/imgui_impl_win32.h>
 #include <d3d11.h>
 #include <imm.h>
@@ -77,8 +81,17 @@ using RawBufferFn = UINT(WINAPI*)(PRAWINPUT, PUINT, UINT);
 using KeyStateFn = SHORT(WINAPI*)(int);
 using SendPacketFn = void(*)(void*, void*);
 using BaseTickFn = void(*)(void*);
+// Native SetActorMotion dispatcher takes a borrowed shared_ptr<Packet> at R9.
+// Keep it opaque: the game retains and releases its own control block.
+using MotionDispatchFn = void(*)(void*, void*, void*, void*);
 using GrabMouseFn = void(*)(void*);
 using MainMenuUpdateFn = std::uint32_t(*)(void*);
+using ConnectionAuthJsonFn = void*(*)(void*, const void*);
+// Documented libHttpClient C ABI. Its async block and handles stay game-owned.
+using HttpPerformFn = HRESULT(WINAPI*)(void*, void*);
+using HttpUrlFn = HRESULT(WINAPI*)(void*, const char**);
+using HttpHeaderFn = HRESULT(WINAPI*)(void*, const char*, const char*, bool);
+using HttpStatusFn = HRESULT(WINAPI*)(void*, std::uint32_t*);
 using YawInterpolationFn = float(__fastcall*)(void*, float);
 namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
 
@@ -194,6 +207,18 @@ public:
     bool native_input_registered{};
     std::atomic_bool native_input_ready{};
     HookManager navigation_hooks;
+    HookManager reconnect_hooks;
+    sdk::BedrockReconnect reconnect;
+    void (*disconnect_update)(void*) = nullptr;
+    std::atomic_bool recovery_visible{false};
+    std::atomic<int> recovery_left{0}, recovery_top{0}, recovery_right{0}, recovery_bottom{0};
+    HookManager auth_hooks;
+    sdk::BedrockAuth bedrock_auth;
+    ConnectionAuthJsonFn connection_auth_json{};
+    HttpPerformFn auth_http_perform{};
+    HttpUrlFn auth_http_url{};
+    HttpHeaderFn auth_http_header{};
+    HttpStatusFn auth_http_status{};
     HookManager rotation_hooks;
     HookManager model_hooks;
     HookManager model_box_hooks;
@@ -247,6 +272,13 @@ public:
     std::atomic<std::uintptr_t> rotation_override_render_component{};
     std::atomic<sdk::custom_model::ViewMode> rotation_view_mode{sdk::custom_model::ViewMode::unknown};
     std::atomic_bool sprint_packet_override_enabled{};
+    std::atomic_bool velocity_reply_route_enabled{};
+    std::atomic<std::uint64_t> velocity_latency_hook_hits{}, velocity_latency_rejected{}, velocity_latency_busy{};
+    std::atomic<std::uint64_t> velocity_trace_start{}, velocity_trace_until{}, velocity_trace_sequence{};
+    std::atomic<unsigned> velocity_trace_budget{};
+    std::atomic<std::uint64_t> velocity_move_observer_busy{};
+    std::mutex velocity_reset_mutex;
+    std::vector<sdk::LocalPlayerMove> velocity_pending_resets;
     std::atomic_bool sprint_packet_requested{};
     std::atomic_bool sprint_packet_route_reported{};
     std::atomic_bool sprint_packet_layout_error_reported{};
@@ -254,6 +286,8 @@ public:
     std::atomic_bool rotation_packet_layout_error_reported{};
     bool rotation_getter_identity_reported{}; // Game thread.
     ULONGLONG killaura_rotation_diagnostic_last{}; // Game thread, under render_mutex.
+    ULONGLONG velocity_diagnostic_last{};
+    VelocityModule::Diagnostics velocity_reported_counts{};
     ULONGLONG pitch_diagnostic_last{}; // Game thread, under render_mutex.
     unsigned pitch_diagnostic_count{};
     std::chrono::steady_clock::time_point rotation_visual_updated{};
@@ -286,7 +320,12 @@ public:
     UINT overlay_display_w{};
     UINT overlay_display_h{};
     SendPacketFn send_packet{};
+    SendPacketFn send_server_packet{};
     BaseTickFn base_tick{};
+    MotionDispatchFn motion_dispatch{};
+    MotionDispatchFn prediction_correction_dispatch{};
+    MotionDispatchFn disconnect_dispatch{};
+    MotionDispatchFn move_player_dispatch{};
     GrabMouseFn grab_mouse{};
     bool mouse_registered{};
     // Only the window owner thread accesses these transition fields.
@@ -313,6 +352,7 @@ public:
     bool window_callbacks_restored{true};
     bool installed{};
     std::ofstream log;
+    std::ofstream velocity_log;
     std::string last_error;
     std::vector<QueueCandidate> queues;
     std::deque<InputMessage> messages;
@@ -445,9 +485,15 @@ public:
         // Game callbacks can precede the window's focus notifications. Their
         // input must not depend on a cached foreground-window observation.
         return !stopping.load(std::memory_order_acquire) &&
-            (input_open() || cursor_owned.load(std::memory_order_acquire));
+            (input_open() || recovery_hit() || cursor_owned.load(std::memory_order_acquire));
+    }
+    bool recovery_hit() const noexcept {
+        long x=0,y=0;
+        return recovery_visible.load(std::memory_order_acquire) && read_client_cursor(x,y) &&
+            x>=recovery_left.load() && x<recovery_right.load() && y>=recovery_top.load() && y<recovery_bottom.load();
     }
     bool blocks_key(int key, const InputCapture& capture) const noexcept {
+        if (key==VK_ESCAPE && recovery_visible.load() && !input_open()) return false;
         return key == open_key.load(std::memory_order_acquire) ||
             (key == gui::Overlay::social_key && social_available.load(std::memory_order_acquire)) ||
             (capture.open && !(capture.movement && clickgui_movement_key(key)));
@@ -471,7 +517,7 @@ public:
         const auto epoch = menu_epoch.load(std::memory_order_acquire);
         const auto opening = opening_input.load(std::memory_order_acquire) & 3U;
         const bool menu = menu_visible.load(std::memory_order_acquire);
-        const bool open = menu || gui_open.load(std::memory_order_acquire) || opening || cursor_owned.load(std::memory_order_acquire);
+        const bool open = menu || gui_open.load(std::memory_order_acquire) || opening || recovery_hit() || cursor_owned.load(std::memory_order_acquire);
         // A concurrent transition consumes this boundary message and leaves it
         // stamped with the earlier epoch, so Present will discard it.
         if (epoch != menu_epoch.load(std::memory_order_acquire)) return {epoch, true, true, false};
@@ -488,8 +534,13 @@ public:
         SYSTEMTIME time{};
         GetLocalTime(&time);
         char stamp[40]{};
-        std::snprintf(stamp, sizeof stamp, "[%02u:%02u:%02u] ", time.wHour, time.wMinute, time.wSecond);
+        const bool velocity_message = message.starts_with("Velocity");
+        if (velocity_message)
+            std::snprintf(stamp, sizeof stamp, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] ",
+                time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+        else std::snprintf(stamp, sizeof stamp, "[%02u:%02u:%02u] ", time.wHour, time.wMinute, time.wSecond);
         if (log) { log << stamp << message << '\n'; log.flush(); }
+        if ((velocity_message || message.starts_with("AltManager:")) && velocity_log) { velocity_log << stamp << message << '\n'; velocity_log.flush(); }
         std::string output = "[Medicon] ";
         output.append(message).push_back('\n');
         OutputDebugStringA(output.c_str());
@@ -635,8 +686,12 @@ public:
 
     void suspend_menu() {
         publish_menu_visible(false);
+        recovery_visible.store(false,std::memory_order_release);
         set_open(false);
-        if (client) client->overlay().set_main_menu_active(false);
+        if (client) {
+            client->overlay().set_main_menu_active(false);
+            client->overlay().set_disconnect_state(false,false,0);
+        }
     }
 
     void release_graphics() {
@@ -664,6 +719,10 @@ public:
         if (context) { ImGui::DestroyContext(context); context = nullptr; }
         window = nullptr;
         gameplay.clear();
+        {
+            std::lock_guard resets(velocity_reset_mutex);
+            velocity_pending_resets.clear();
+        }
         last_game_tick = {};
         gameplay_diagnostic.clear();
         model_probe.reset(); // Stop has already disabled the hook and drained callbacks.
@@ -708,6 +767,8 @@ public:
     void connect_mouse();
     void connect_native_input();
     void connect_navigation();
+    void connect_reconnect();
+    void connect_auth();
     void connect_rotation();
     void connect_model_probe();
     void connect_model_box();
@@ -725,6 +786,102 @@ struct CallbackScope {
     CallbackScope() { state.callbacks.fetch_add(1); }
     ~CallbackScope() { state.callbacks.fetch_sub(1); }
 };
+
+HRESULT WINAPI hook_auth_http_perform(void* call, void* async) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.auth_http_perform;
+    if (!original) return E_FAIL;
+    if (state.stopping.load(std::memory_order_acquire) || !state.social) return original(call, async);
+    try {
+        const char* url = nullptr;
+        if (FAILED(state.auth_http_url(call, &url)) || !url) return original(call, async);
+        auto authorization = state.social->alt_native_authorization(url);
+        if (!authorization) return original(call, async);
+        if (authorization->empty()) return E_ABORT;
+        // Change authorization before the native request is started. Native
+        // response parsing, public key, async ownership and NetherNet consumers
+        // are preserved. Never trace the credential header.
+        const auto set = state.auth_http_header(call, "Authorization", authorization->c_str(), false);
+        if (FAILED(set)) { state.social->alt_native_auth_result(0); return set; }
+        state.report("AltManager: native multiplayer token request uses selected session (NetherNet/login shared).");
+        const auto result = original(call, async);
+        if (FAILED(result)) state.social->alt_native_auth_result(0);
+        return result;
+    } catch (...) { return E_FAIL; }
+}
+
+HRESULT WINAPI hook_auth_http_status(void* call, std::uint32_t* status) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto result = state.auth_http_status(call, status);
+    if (FAILED(result) || !status || state.stopping.load(std::memory_order_acquire) || !state.social) return result;
+    try {
+        const char* url = nullptr;
+        if (SUCCEEDED(state.auth_http_url(call, &url)) && url && alt::native_multiplayer_url(url))
+            state.social->alt_native_auth_result(*status);
+    } catch (...) { /* Diagnostics never interrupt native response handling. */ }
+    return result;
+}
+
+void* hook_connection_auth_json(void* output, const void* auth) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    const auto original = state.connection_auth_json;
+    if (!original) return output;
+    if (state.stopping.load(std::memory_order_acquire) || !state.social) return original(output, auth);
+    auto snapshot = sdk::detail::read_connection_auth(auth);
+    // A selected account must fail visibly if the native input cannot be read,
+    // rather than silently sending the old identity. No selection still passes
+    // the untouched original input through.
+    if (!snapshot) snapshot.emplace();
+    // Observe the same token already used by NetherNet. The only override here
+    // is an empty token to reject a stale native identity, never a second JWT.
+    std::optional<std::string> token;
+    try { token = state.social->alt_connection_token(snapshot->token); }
+    catch (...) { token = std::string{}; }
+    if (token) {
+        sdk::detail::ConnectionAuthView view(*snapshot, *token);
+        auto* result = original(output, view.bytes.data());
+        if (!token->empty()) state.social->alt_connection_used(*token);
+        return result;
+    }
+    auto* result = original(output, auth);
+    state.social->alt_connection_used(snapshot->token);
+    return result;
+}
+
+void Runtime::connect_auth() {
+    if (!social || stopping) return;
+    std::string diagnostic;
+    const auto state = bedrock_auth.locate(diagnostic);
+    const auto target = state == sdk::BedrockAuth::State::ready ? bedrock_auth.login_serialization_target(diagnostic) : 0;
+    const auto http = GetModuleHandleW(L"libHttpClient.GDK.dll");
+    const auto perform = http ? GetProcAddress(http, "HCHttpCallPerformAsync") : nullptr;
+    const auto status = http ? GetProcAddress(http, "HCHttpCallResponseGetStatusCode") : nullptr;
+    auth_http_url = http ? reinterpret_cast<HttpUrlFn>(GetProcAddress(http, "HCHttpCallGetRequestUrl")) : nullptr;
+    auth_http_header = http ? reinterpret_cast<HttpHeaderFn>(GetProcAddress(http, "HCHttpCallRequestSetHeader")) : nullptr;
+    bool ready = target && perform && status && auth_http_url && auth_http_header;
+    if (ready && !auth_hooks.size()) {
+        ready = auth_hooks.create("AltManager native multiplayer authorization", reinterpret_cast<void*>(perform),
+                reinterpret_cast<void*>(&hook_auth_http_perform), reinterpret_cast<void**>(&auth_http_perform), diagnostic) &&
+            auth_hooks.create("AltManager native multiplayer result", reinterpret_cast<void*>(status),
+                reinterpret_cast<void*>(&hook_auth_http_status), reinterpret_cast<void**>(&auth_http_status), diagnostic) &&
+            auth_hooks.create("AltManager server login", reinterpret_cast<void*>(target),
+                reinterpret_cast<void*>(&hook_connection_auth_json), reinterpret_cast<void**>(&connection_auth_json), diagnostic);
+    }
+    ready = ready && auth_hooks.size() == 3 && auth_hooks.enable_all(diagnostic);
+    if (!ready) {
+        std::string cleanup;
+        auth_hooks.clear(cleanup);
+        if (diagnostic.empty()) diagnostic = "Native libHttpClient multiplayer API is unavailable.";
+        report("AltManager: game login bridge unavailable: " + diagnostic);
+        social->set_alt_game_bridge(false);
+        return;
+    }
+    social->set_alt_game_bridge(true);
+    report("AltManager: Minecraft 1.26.52.03 native multiplayer/NetherNet login bridge ready (v2).");
+}
 
 DWORD WINAPI eject_overlay_worker(void*) {
     auto& state = runtime();
@@ -829,14 +986,14 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
         std::string diagnostic;
         const auto release = [&] { return bedrock_chat.release_mouse(diagnostic); };
         const auto grab = [&] { return bedrock_chat.grab_mouse(diagnostic); };
-        if (reset) success = mouse_capture.reset(focused && identity, grab);
+        if (reset) success = mouse_capture.reset(focused && identity && !recovery_visible.load(), grab);
         else if (identity) {
             const auto grabbed = bedrock_chat.mouse_grabbed(diagnostic);
             // Releasing the native mouse also disables player movement. Only
             // modal screens need that transition; ClickGUI owns the OS cursor
             // through our Win32/raw-input hooks while the game stays grabbed.
             success = mouse_capture.update(open && (modal_input() || !native_input_ready.load(std::memory_order_acquire)),
-                                           focused, grabbed, release, grab);
+                                           focused, grabbed, release, grab,recovery_visible.load());
         }
         mouse_active = mouse_capture.active();
         if (!success && !diagnostic.empty() && diagnostic != mouse_error) {
@@ -1140,12 +1297,20 @@ bool consume_raw_input(Runtime& state, HWND window, LPARAM lparam, const InputCa
     }
     if (!capture.open) {
         state.raw_buttons_down.fill(false);
+        // A drag can leave the recovery controls before its release. Keep the
+        // overlay's button state balanced even though native UI owns the cursor.
+        if (owned_tail && state.recovery_visible.load()) {
+            constexpr std::array<UINT,5> releases{WM_LBUTTONUP,WM_RBUTTONUP,WM_MBUTTONUP,WM_XBUTTONUP,WM_XBUTTONUP};
+            for (std::size_t i=0;i<up_flags.size();++i) if (raw.data.mouse.usButtonFlags&up_flags[i])
+                queue_input(state,window,releases[i],i>=3?MAKEWPARAM(0,i==3?XBUTTON1:XBUTTON2):0,0,capture.epoch);
+        }
         return owned_tail;
     }
     if (state.raw_mouse_nolegacy < 0) state.raw_mouse_nolegacy = raw_mouse_suppresses_legacy() ? 1 : 0;
     const bool focused = state.window_focused_cached.load(std::memory_order_acquire);
     const bool absolute = (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0;
-    if (relative_pointer_owns_motion(capture.open, focused, state.raw_mouse_nolegacy == 1, absolute)) {
+    const bool relative_capture=capture.open && (!state.recovery_visible.load() || state.input_open());
+    if (relative_pointer_owns_motion(relative_capture, focused, state.raw_mouse_nolegacy == 1, absolute)) {
         if (state.relative_pointer_epoch != capture.epoch) {
             reset_relative_cursor(state);
             state.relative_pointer_epoch = capture.epoch;
@@ -1255,7 +1420,7 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
             state.cursor_message_pending = false;
             // Position-only sampling does not invoke native mouse transitions
             // or inspect game objects, and stays on the window owner thread.
-            if (!state.stopping && state.input_open() && state.window_focused_cached.load(std::memory_order_acquire))
+            if (!state.stopping && (state.input_open() || state.recovery_visible.load()) && state.window_focused_cached.load(std::memory_order_acquire))
                 cache_client_cursor(state, window);
         }
         return 0;
@@ -1311,6 +1476,7 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
         catch (...) { return 0; }
     }
     WNDPROC original = DefWindowProcW;
+    if (state.recovery_visible.load() && (mouse_message(message) || message==WM_INPUT)) cache_client_cursor(state,window);
     const auto capture = state.input_capture();
     {
         std::lock_guard lock(state.window_mutex);
@@ -1538,9 +1704,14 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         ClickGui::apply_theme();
         client = std::make_unique<Client>(config_path);
+        client->overlay().set_alt_choice_handler([this](bool retry) {
+            report(retry?"AltManager: account choice completed; automatic reconnect requested (v2).":
+                         "AltManager: account choice completed; switch only, no reconnect (v2).");
+        });
         client->overlay().set_owns_font_atlas(true);
         if (social) {
             client->overlay().set_social(&social->channel(), &social::play_notification_sound);
+            client->overlay().set_alts(&social->alt_channel());
             client->overlay().social().set_startup_sign_in(true);
             if (!update_version.empty()) client->overlay().social().set_update_notice(update_version);
         }
@@ -1585,6 +1756,11 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     if (menu_changed) report(main_menu ? "MainMenu active: verified start_screen; native input is blocked." :
         "MainMenu inactive: replacement hidden; native input restored.");
     client->overlay().set_main_menu_active(main_menu);
+    const auto disconnected = reconnect.snapshot();
+    client->overlay().set_disconnect_state(disconnected.visible && !main_menu,disconnected.available,
+        disconnected.generation,disconnected.error);
+    recovery_visible.store(disconnected.visible && !main_menu,std::memory_order_release);
+    if (recovery_visible.load()) request_cursor_sample();
     if (main_menu) client->clear_gameplay();
     publish_client_input();
     publish_menu_visible(main_menu);
@@ -1640,10 +1816,10 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     }
     if (auto* module = client->modules().find(ClickGuiModule::module_id)) open_key = module->keybind() ? module->keybind() : VK_INSERT;
     publish_client_input();
-    const bool cursor_visible = input_open() && window_focused_cached.load(std::memory_order_acquire);
+    const bool cursor_visible = (input_open() || recovery_visible.load()) && window_focused_cached.load(std::memory_order_acquire);
     ImGui::GetIO().MouseDrawCursor = false;
     present_safe_imgui_new_frame(swap);
-    if (input_open()) {
+    if (input_open() || recovery_visible.load()) {
         const auto submit_cursor = [&](long x, long y) {
             const auto size = ImGui::GetIO().DisplaySize;
             if (menu_visible.load(std::memory_order_acquire) &&
@@ -1720,6 +1896,16 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
                 report("MainMenu action could not be queued to the window thread.", true);
             }
         }
+    }
+    const auto bounds=client->overlay().disconnect_screen().bounds();
+    const bool recovery_buttons=recovery_visible.load() && !client->overlay().social().screen_visible();
+    recovery_left.store(recovery_buttons?static_cast<int>(bounds.min.x):0);
+    recovery_top.store(recovery_buttons?static_cast<int>(bounds.min.y):0);
+    recovery_right.store(recovery_buttons?static_cast<int>(bounds.max.x):0);
+    recovery_bottom.store(recovery_buttons?static_cast<int>(bounds.max.y):0);
+    if (const auto generation=client->overlay().disconnect_screen().consume_reconnect(); generation) {
+        if (reconnect.request(*generation)) report("Reconnect: native SceneStack retry queued (v2).");
+        else report("Reconnect request cancelled: the disconnect screen changed or a retry is already pending.");
     }
     if (status.exchange(3) != 3) report("Overlay drawing. Insert opens/closes the GUI.");
     return true;
@@ -2263,6 +2449,157 @@ void Runtime::connect_model_static() {
     report("CustomModel worker started: bundled Neon / Chocolat; Model selects the character. Mode=Custom model; vanilla retained until ready.");
 }
 
+// Motion reception and actual KB application arm windows under render_mutex.
+// Sending threads read atomic bounds and copied packet scalars, never the frame.
+void arm_velocity_trace(Runtime& state, int delay_ms) noexcept {
+    const auto now = GetTickCount64();
+    const auto due = now + static_cast<std::uint64_t>(std::max(delay_ms, 0));
+    const auto start = due > 250 ? due - 250 : 0;
+    const auto until = due + 1500;
+    const auto previous_until = state.velocity_trace_until.load(std::memory_order_relaxed);
+    if (now > previous_until) {
+        state.velocity_trace_start.store(start, std::memory_order_relaxed);
+        state.velocity_trace_budget.store(2048, std::memory_order_relaxed);
+    } else {
+        state.velocity_trace_start.store(std::min(start, state.velocity_trace_start.load(std::memory_order_relaxed)),
+                                         std::memory_order_relaxed);
+    }
+    state.velocity_trace_until.store(std::max(until, previous_until), std::memory_order_release);
+}
+
+bool velocity_trace_active(const Runtime& state) noexcept {
+    const auto now = GetTickCount64();
+    return !state.stopping.load(std::memory_order_acquire) &&
+        now <= state.velocity_trace_until.load(std::memory_order_acquire) &&
+        now >= state.velocity_trace_start.load(std::memory_order_relaxed) &&
+        state.velocity_trace_budget.load(std::memory_order_relaxed) != 0;
+}
+
+bool take_velocity_trace(Runtime& state) noexcept {
+    if (!velocity_trace_active(state)) return false;
+    auto remaining = state.velocity_trace_budget.load(std::memory_order_relaxed);
+    while (remaining && !state.velocity_trace_budget.compare_exchange_weak(remaining, remaining - 1,
+                                                                          std::memory_order_relaxed)) {}
+    if (remaining == 1) {
+        try { state.report("Velocity trace limit: 2048 observations reached; further bounded trace lines suppressed until a new window."); }
+        catch (...) {}
+    }
+    return remaining != 0;
+}
+
+void trace_native_velocity(void* context, const sdk::NativeVelocityTrace& event) noexcept {
+    auto& state = *static_cast<Runtime*>(context);
+    if (event.phase == sdk::VelocityTracePhase::apply_begin) arm_velocity_trace(state, 0);
+    if (!take_velocity_trace(state)) return;
+    try {
+        const auto phase = event.phase == sdk::VelocityTracePhase::apply_begin ? "apply_begin" :
+            event.phase == sdk::VelocityTracePhase::apply_end ? "apply_end" : "nsl_submit";
+        const auto result = event.phase == sdk::VelocityTracePhase::apply_begin ? "pending" :
+            event.phase == sdk::VelocityTracePhase::latency_submit ? "submit" :
+            event.result == sdk::KnockbackApplyResult::predicted ? "predicted" :
+            event.result == sdk::KnockbackApplyResult::direct ? "direct" : "failed";
+        char message[512]{};
+        std::snprintf(message, sizeof message,
+            "Velocity trace: seq=%llu thread=%lu phase=%s capture=%llu path=%s result=%s id=%llu cache_match=%d "
+            "position=(%.4f,%.4f,%.4f) velocity=(%.4f,%.4f,%.4f)",
+            static_cast<unsigned long long>(state.velocity_trace_sequence.fetch_add(1, std::memory_order_relaxed) + 1),
+            GetCurrentThreadId(), phase, static_cast<unsigned long long>(event.capture_serial), event.path, result,
+            static_cast<unsigned long long>(event.latency_id), event.state_matches_cached,
+            event.position.x, event.position.y, event.position.z, event.velocity.x, event.velocity.y, event.velocity.z);
+        state.report(message);
+    } catch (...) { /* Observation must not interrupt simulation or sending. */ }
+}
+
+void trace_outgoing_movement(Runtime& state, void* packet, const char* route) noexcept {
+    if (!velocity_trace_active(state)) return;
+    sdk::MovementReport report;
+    if (!state.gameplay.read_movement_report(packet, report) || !take_velocity_trace(state)) return;
+    try {
+        char message[384]{};
+        std::snprintf(message, sizeof message,
+            "Velocity trace: seq=%llu thread=%lu phase=pai_submit route=%s packet=%p tick=%llu position=(%.4f,%.4f,%.4f) "
+            "delta=(%.4f,%.4f,%.4f) flags=%016llx,%016llx",
+            static_cast<unsigned long long>(state.velocity_trace_sequence.fetch_add(1, std::memory_order_relaxed) + 1),
+            GetCurrentThreadId(), route, packet, static_cast<unsigned long long>(report.input_tick),
+            report.position.x, report.position.y, report.position.z, report.delta.x, report.delta.y, report.delta.z,
+            static_cast<unsigned long long>(report.flags[0]), static_cast<unsigned long long>(report.flags[1]));
+        state.report(message);
+    } catch (...) { /* Packet is read-only; native sending always continues. */ }
+}
+
+// Called with render_mutex held. Receive callbacks can enqueue scalar reset
+// notices even while Present owns the frame; identity is checked at consumption.
+void apply_velocity_position_resets(Runtime& state, VelocityModule& velocity) noexcept {
+    std::vector<sdk::LocalPlayerMove> resets;
+    try {
+        std::lock_guard lock(state.velocity_reset_mutex);
+        resets.swap(state.velocity_pending_resets);
+    } catch (...) { return; }
+    for (const auto& move : resets) {
+        if (!state.gameplay.is_local_runtime_id(move.runtime_id)) continue;
+        const auto discarded = velocity.handle_position_reset(move.mode);
+        try {
+            char message[320]{};
+            std::snprintf(message, sizeof message,
+                "Velocity reset: source=MovePlayer mode=%u discarded_kb=%llu replies_pending=%llu; confirmations retained for game-tick cleanup.",
+                static_cast<unsigned>(move.mode), static_cast<unsigned long long>(discarded),
+                static_cast<unsigned long long>(velocity.pending_reply_count()));
+            state.report(message);
+        } catch (...) { /* Logging cannot prevent invalidation or later notices. */ }
+    }
+}
+
+bool hold_velocity_latency(Runtime& state, void* sender, void* packet) {
+    if (state.stopping.load(std::memory_order_acquire) ||
+        !state.velocity_reply_route_enabled.load(std::memory_order_acquire) || !state.gameplay.is_latency_reply(packet)) return false;
+    state.velocity_latency_hook_hits.fetch_add(1, std::memory_order_relaxed);
+    std::unique_lock render(state.render_mutex, std::defer_lock);
+    (void)render.try_lock_for(std::chrono::milliseconds(4));
+    if (!render.owns_lock()) {
+        state.velocity_latency_busy.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (!state.client || !state.gameplay_ready.load(std::memory_order_acquire)) return false;
+    auto* velocity = dynamic_cast<VelocityModule*>(state.client->modules().find(VelocityModule::module_id));
+    if (!velocity || (!velocity->enabled() && !velocity->needs_restore())) return false;
+    apply_velocity_position_resets(state, *velocity);
+    sdk::LatencyReply reply;
+    if (!state.gameplay.read_latency_reply(sender, packet, reply)) {
+        state.velocity_latency_rejected.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    // The server owns this value: it may be an acknowledgment ID rather than
+    // a client clock. Preserve it bit-for-bit, both when held and passed through.
+    // Let the module drain an existing FIFO even after Sync Replies is turned off.
+    const bool held = velocity->handle_latency(reply, state.gameplay.frame());
+    if (take_velocity_trace(state)) {
+        try {
+            std::uint64_t id{};
+            std::memcpy(&id, reply.bytes.data() + 0x30, sizeof id);
+            char message[256]{};
+            std::snprintf(message, sizeof message,
+                "Velocity trace: seq=%llu thread=%lu phase=%s id=%llu kb_pending=%llu replies_pending=%llu",
+                static_cast<unsigned long long>(state.velocity_trace_sequence.fetch_add(1, std::memory_order_relaxed) + 1),
+                GetCurrentThreadId(), held ? "nsl_hold" : "nsl_passthrough",
+                static_cast<unsigned long long>(id), static_cast<unsigned long long>(velocity->pending_count()),
+                static_cast<unsigned long long>(velocity->pending_reply_count()));
+            state.report(message);
+        } catch (...) { /* Preserve the hold/pass decision if logging fails. */ }
+    }
+    return held;
+}
+
+void hook_send_server_packet(void* sender, void* packet) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    // 1.26.52.3's automatic NSL echo uses this slot directly. It never
+    // visits hook_send_packet; the replay also uses this original trampoline.
+    if (!hold_velocity_latency(state, sender, packet)) {
+        trace_outgoing_movement(state, packet, "sendToServer");
+        state.send_server_packet(sender, packet);
+    }
+}
+
 void hook_send_packet(void* sender, void* packet) {
     CallbackScope callback;
     auto& state = callback.state;
@@ -2271,6 +2608,8 @@ void hook_send_packet(void* sender, void* packet) {
             // Commands stay local even if a producer overruns the bounded queue.
             if (state.pending_commands.size() < 64) state.pending_commands.push_back(std::move(input));
         })) return;
+    // Also covers callers of general send and a sender whose two slots alias.
+    if (hold_velocity_latency(state, sender, packet)) return;
     if (!state.stopping.load(std::memory_order_acquire)) {
         if (!state.input_open() && state.window_focused_cached.load(std::memory_order_acquire)) {
             const auto result = state.gameplay.rewrite_rotation_input(packet);
@@ -2291,6 +2630,9 @@ void hook_send_packet(void* sender, void* packet) {
             !state.sprint_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
             state.report("Sprint PlayerAuthInput layout check failed; packet left unchanged.", true);
     }
+    // Observe both validated entries. General send is not assumed to forward
+    // every movement packet through slot 4; route/pointer identify nested calls.
+    trace_outgoing_movement(state, packet, state.send_server_packet == state.send_packet ? "shared" : "general");
     state.send_packet(sender, packet);
 }
 
@@ -2329,16 +2671,18 @@ void hook_base_tick(void* actor) {
     (void)render.try_lock_for(std::chrono::milliseconds(4));
     if (!render.owns_lock() || !state.client || !state.bedrock_chat.is_local_player(actor)) return;
     const auto* sprint = dynamic_cast<const SprintModule*>(state.client->modules().find(SprintModule::module_id));
+    auto* velocity = dynamic_cast<VelocityModule*>(state.client->modules().find(VelocityModule::module_id));
     // CustomModel sharing selects nearby players from this snapshot. Without
     // it, nobody was announced or watched unless another module was ON.
-    bool wanted = (sprint && sprint->needs_restore()) || state.model_sync_wanted;
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "sprint"}) {
+    bool wanted = (sprint && sprint->needs_restore()) || (velocity && velocity->needs_restore()) || state.model_sync_wanted;
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "sprint", "velocity"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
     }
     // A slot Scaffold's Auto Select switched to is put back by a later capture,
     // also after every gameplay module was turned off.
     if (!wanted && !state.gameplay.slot_restore_pending()) {
+        state.velocity_reply_route_enabled.store(false, std::memory_order_release);
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
         state.rotation_override_render_component.store(0, std::memory_order_release);
         state.rotation_override_enabled.store(false, std::memory_order_release);
@@ -2383,6 +2727,7 @@ void hook_base_tick(void* actor) {
             state.report("Gameplay world components ready.");
             state.gameplay_diagnostic.clear();
         }
+        if (velocity) apply_velocity_position_resets(state, *velocity);
         const auto now = std::chrono::steady_clock::now();
         const float seconds = state.last_game_tick == std::chrono::steady_clock::time_point{}
             ? 0.05F : std::clamp(std::chrono::duration<float>(now - state.last_game_tick).count(), 0.001F, 0.1F);
@@ -2398,6 +2743,53 @@ void hook_base_tick(void* actor) {
         const bool allow_actions = !state.input_open() && grabbed.value_or(false) &&
             state.window_focused_cached.load(std::memory_order_acquire);
         state.client->game_tick(state.gameplay, seconds, allow_actions);
+        if (velocity) {
+            const auto& counts = velocity->diagnostics();
+            const auto& previous = state.velocity_reported_counts;
+            if (counts.applied != previous.applied || counts.latency_sent != previous.latency_sent ||
+                counts.write_failures != previous.write_failures || counts.send_failures != previous.send_failures) {
+                const auto& local = state.gameplay.frame().local;
+                char message[560]{};
+                std::snprintf(message, sizeof message,
+                    "Velocity release: applied=%llu native_predicted=%llu direct=%llu sent=%llu kb_pending=%llu replies_pending=%llu write_fail=%llu send_fail=%llu position=(%.4f,%.4f,%.4f) velocity=(%.4f,%.4f,%.4f)",
+                    static_cast<unsigned long long>(counts.applied), static_cast<unsigned long long>(counts.predicted),
+                    static_cast<unsigned long long>(counts.direct), static_cast<unsigned long long>(counts.latency_sent),
+                    static_cast<unsigned long long>(velocity->pending_count()),
+                    static_cast<unsigned long long>(velocity->pending_reply_count()),
+                    static_cast<unsigned long long>(counts.write_failures), static_cast<unsigned long long>(counts.send_failures),
+                    local.position.x, local.position.y, local.position.z, local.velocity.x, local.velocity.y, local.velocity.z);
+                state.report(message);
+                state.velocity_reported_counts = counts;
+            }
+        }
+        const auto* velocity_mode = velocity ? std::get_if<Choice>(&velocity->mode.value) : nullptr;
+        state.velocity_reply_route_enabled.store(velocity &&
+            ((velocity->enabled() && velocity_mode && velocity_mode->index == 2) || velocity->needs_restore()),
+            std::memory_order_release);
+        if (velocity && ((velocity->enabled() && velocity_mode && velocity_mode->index == 2) || velocity->needs_restore())) {
+            const auto now_ms = GetTickCount64();
+            if (!state.velocity_diagnostic_last || now_ms - state.velocity_diagnostic_last >= 2000) {
+                const auto& counts = velocity->diagnostics();
+                char message[960]{};
+                std::snprintf(message, sizeof message,
+                    "Velocity Delay: kb_pending=%llu replies_pending=%llu kb_queued=%llu kb_applied=%llu latency_seen=%llu held=%llu sent=%llu write_fail=%llu send_fail=%llu nsl_hook_hits=%llu nsl_rejected=%llu nsl_busy=%llu move_observer_busy=%llu position_resets=%llu invalidated_kb=%llu zero_motion=%llu",
+                    static_cast<unsigned long long>(velocity->pending_count()),
+                    static_cast<unsigned long long>(velocity->pending_reply_count()),
+                    static_cast<unsigned long long>(counts.queued), static_cast<unsigned long long>(counts.applied),
+                    static_cast<unsigned long long>(counts.latency_seen), static_cast<unsigned long long>(counts.latency_held),
+                    static_cast<unsigned long long>(counts.latency_sent), static_cast<unsigned long long>(counts.write_failures),
+                    static_cast<unsigned long long>(counts.send_failures),
+                    static_cast<unsigned long long>(state.velocity_latency_hook_hits.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(state.velocity_latency_rejected.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(state.velocity_latency_busy.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(state.velocity_move_observer_busy.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(counts.position_resets),
+                    static_cast<unsigned long long>(counts.invalidated_motion),
+                    static_cast<unsigned long long>(counts.zero_motion_stops));
+                state.report(message);
+                state.velocity_diagnostic_last = now_ms;
+            }
+        } else { state.velocity_diagnostic_last = 0; }
         const auto* killaura_module = dynamic_cast<const KillauraModule*>(
             state.client->modules().find(KillauraModule::module_id));
         std::uintptr_t killaura_target_id = 0;
@@ -2606,6 +2998,37 @@ std::uint32_t hook_main_menu_update(void* controller) {
     return result; // Preserve the original native update result mask.
 }
 
+void hook_disconnect_update(void* adjusted_client) {
+    CallbackScope callback;
+    auto& state=callback.state;
+    static thread_local bool updating=false;
+    FlagScope recursion(updating);
+    state.disconnect_update(adjusted_client);
+    if (recursion.previous || state.stopping || inside_overlay || inside_present) return;
+    try {
+        std::string diagnostic;
+        state.reconnect.update(adjusted_client,state.bedrock_chat.mouse_client(),diagnostic);
+        if (!diagnostic.empty()) state.report(diagnostic);
+    } catch (...) {
+        state.report("Reconnect: native screen observation failed; pending request discarded.",true);
+        state.reconnect.stop();
+    }
+}
+
+void Runtime::connect_reconnect() {
+    std::string diagnostic;
+    if (stopping || !reconnect.initialize(diagnostic)) {
+        if (!diagnostic.empty()) report(diagnostic);
+        return;
+    }
+    if ((!reconnect_hooks.size() && !reconnect_hooks.create("Disconnect screen recovery",reinterpret_cast<void*>(reconnect.update_target()),
+            reinterpret_cast<void*>(&hook_disconnect_update),reinterpret_cast<void**>(&disconnect_update),diagnostic)) ||
+        !reconnect_hooks.enable_all(diagnostic)) {
+        reconnect.stop();report("Reconnect hook unavailable: "+diagnostic,true);return;
+    }
+    report("Reconnect: native disconnect observer and SceneStack retry ready (v2).");
+}
+
 void Runtime::connect_navigation() {
     if (stopping || navigation_ready.load(std::memory_order_acquire)) return;
     std::string error;
@@ -2651,6 +3074,148 @@ void Runtime::connect_mouse() {
     report("Minecraft native ClickGUI releaseMouse/grabMouse ready.");
 }
 
+void hook_motion_dispatch(void* dispatcher, void* network, void* handler, void* packet_reference) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    if (!state.stopping && state.gameplay_ready.load(std::memory_order_acquire) &&
+        !state.input_open() && state.window_focused_cached.load(std::memory_order_acquire)) {
+        try {
+            std::unique_lock render(state.render_mutex, std::defer_lock);
+            (void)render.try_lock_for(std::chrono::milliseconds(4));
+            if (render.owns_lock() && state.client && state.client->running() && !state.client->capturing_input()) {
+                auto* velocity = dynamic_cast<VelocityModule*>(
+                    state.client->modules().find(VelocityModule::module_id));
+                if (velocity && velocity->enabled()) {
+                    apply_velocity_position_resets(state, *velocity);
+                    std::string diagnostic;
+                    bool grabbed = false;
+                    {
+                        std::unique_lock mouse(state.mouse_mutex, std::try_to_lock);
+                        if (mouse.owns_lock()) grabbed = state.bedrock_chat.mouse_grabbed(diagnostic).value_or(false);
+                    }
+                    sdk::Vec3 motion{};
+                    std::uint64_t input_tick{};
+                    std::int64_t received_timestamp{};
+                    void* local_actor = grabbed ? state.bedrock_chat.local_player_for_render() : nullptr;
+                    if (grabbed && state.gameplay.local_motion(packet_reference, local_actor, motion, &input_tick, &received_timestamp)) {
+                        const auto* mode = std::get_if<Choice>(&velocity->mode.value);
+                        const bool unsupported_delay = mode && mode->index == 2 && (input_tick || received_timestamp <= 0);
+                        if (unsupported_delay) {
+                            char message[320]{};
+                            std::snprintf(message, sizeof message,
+                                "Velocity bypass: input_tick=%llu received_ns=%lld motion=(%.4f,%.4f,%.4f) kb_pending=%llu; native dispatch unchanged.",
+                                static_cast<unsigned long long>(input_tick), static_cast<long long>(received_timestamp),
+                                motion.x, motion.y, motion.z, static_cast<unsigned long long>(velocity->pending_count()));
+                            state.report(message);
+                        }
+                        const auto result = unsupported_delay ? VelocityModule::MotionResult::ignored :
+                            velocity->handle_motion(motion, state.gameplay.frame(), VelocityModule::Clock::now(), received_timestamp);
+                        // Delay=0 is a native baseline: no KB is intercepted, but
+                        // the same short movement/confirmation trace is available.
+                        if (mode && mode->index == 2 && velocity->delay_ms.get<int>() == 0) {
+                            arm_velocity_trace(state, 0);
+                            char message[256]{};
+                            std::snprintf(message, sizeof message,
+                                "Velocity native baseline: motion=(%.4f,%.4f,%.4f) input_tick=%llu received_ns=%lld",
+                                motion.x, motion.y, motion.z, static_cast<unsigned long long>(input_tick),
+                                static_cast<long long>(received_timestamp));
+                            state.report(message);
+                        }
+                        if (result == VelocityModule::MotionResult::delayed) {
+                            if (mode && mode->index == 2) state.velocity_reply_route_enabled.store(true, std::memory_order_release);
+                            arm_velocity_trace(state, velocity->delay_ms.get<int>());
+                            char message[256]{};
+                            std::snprintf(message, sizeof message,
+                                "Velocity queue: motion=(%.4f,%.4f,%.4f) delay_ms=%d kb_pending=%llu input_tick=%llu received_ns=%lld",
+                                motion.x, motion.y, motion.z, velocity->delay_ms.get<int>(),
+                                static_cast<unsigned long long>(velocity->pending_count()), static_cast<unsigned long long>(input_tick),
+                                static_cast<long long>(received_timestamp));
+                            state.report(message);
+                            return;
+                        }
+                        if (result == VelocityModule::MotionResult::cancelled) return;
+                        if (result == VelocityModule::MotionResult::scaled)
+                            (void)state.gameplay.write_local_motion(packet_reference, local_actor, motion);
+                    }
+                }
+            }
+        } catch (...) { /* Preserve native dispatch if inspection fails. */ }
+    }
+    state.motion_dispatch(dispatcher, network, handler, packet_reference);
+}
+
+void trace_velocity_server_packet(Runtime& state, void* handler, std::string_view name) {
+    if (state.stopping || !state.velocity_reply_route_enabled.load(std::memory_order_acquire) ||
+        !state.gameplay.is_client_network_handler(handler)) return;
+    // Observe only. Always preserve native correction/disconnect processing.
+    try { state.report(name); }
+    catch (...) { /* Logging cannot interrupt native packet handling. */ }
+}
+
+void hook_prediction_correction_dispatch(void* dispatcher, void* network, void* handler, void* packet_reference) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    trace_velocity_server_packet(state, handler, "Velocity server: CorrectPlayerMovePrediction received.");
+    state.prediction_correction_dispatch(dispatcher, network, handler, packet_reference);
+}
+
+void hook_disconnect_dispatch(void* dispatcher, void* network, void* handler, void* packet_reference) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    trace_velocity_server_packet(state, handler, "Velocity server: Disconnect received.");
+    state.disconnect_dispatch(dispatcher, network, handler, packet_reference);
+}
+
+void hook_move_player_dispatch(void* dispatcher, void* network, void* handler, void* packet_reference) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    sdk::LocalPlayerMove move;
+    if (!state.stopping && state.velocity_reply_route_enabled.load(std::memory_order_acquire) &&
+        state.gameplay.is_client_network_handler(handler) && state.gameplay.read_player_move(packet_reference, move)) {
+        try {
+            // Preserve reset notices when rendering is busy. This queue owns
+            // only scalars, never the borrowed packet/reference. Remote notices
+            // are filtered against the current local runtime ID when consumed.
+            if (move.mode == 1 || move.mode == 2) {
+                bool overflow = false;
+                {
+                    std::lock_guard resets(state.velocity_reset_mutex);
+                    if (state.velocity_pending_resets.size() == VelocityModule::maximum_pending) {
+                        state.velocity_pending_resets.erase(state.velocity_pending_resets.begin());
+                        overflow = true;
+                    }
+                    state.velocity_pending_resets.push_back(move);
+                }
+                if (overflow) state.report("Velocity reset queue overflow: oldest notification retired.");
+            }
+            // MovePlayer also carries other players' updates. Never wait on
+            // rendering for every remote actor just to inspect a local correction.
+            std::unique_lock render(state.render_mutex, std::try_to_lock);
+            if (render.owns_lock() && state.client) {
+                auto* velocity = dynamic_cast<VelocityModule*>(
+                    state.client->modules().find(VelocityModule::module_id));
+                const auto pending_before = velocity ? velocity->pending_count() : 0;
+                const auto replies_before = velocity ? velocity->pending_reply_count() : 0;
+                if (velocity) apply_velocity_position_resets(state, *velocity);
+                if (state.gameplay.is_local_runtime_id(move.runtime_id)) {
+                    char message[320]{};
+                    std::snprintf(message, sizeof message,
+                        "Velocity server: seq=%llu thread=%lu MovePlayer mode=%u ground=%d position=(%.4f,%.4f,%.4f) "
+                        "kb_pending=%llu replies_pending=%llu",
+                        static_cast<unsigned long long>(state.velocity_trace_sequence.fetch_add(1, std::memory_order_relaxed) + 1),
+                        GetCurrentThreadId(), static_cast<unsigned>(move.mode), move.on_ground,
+                        move.position.x, move.position.y, move.position.z,
+                        static_cast<unsigned long long>(pending_before), static_cast<unsigned long long>(replies_before));
+                    state.report(message);
+                }
+            } else if (!render.owns_lock()) {
+                state.velocity_move_observer_busy.fetch_add(1, std::memory_order_relaxed);
+            }
+        } catch (...) { /* Preserve native correction/teleport processing. */ }
+    }
+    state.move_player_dispatch(dispatcher, network, handler, packet_reference);
+}
+
 void Runtime::connect_chat_feedback() {
     if (!chat_installed && !gameplay_ready.load(std::memory_order_acquire)) return;
     if (tick_registered) {
@@ -2672,6 +3237,33 @@ void Runtime::connect_chat_feedback() {
                 return;
             }
             tick_registered = true;
+            if (const auto motion_target = gameplay.motion_dispatcher_target()) {
+                if (!tick_hooks.create("Velocity incoming motion", reinterpret_cast<void*>(motion_target),
+                        reinterpret_cast<void*>(&hook_motion_dispatch), reinterpret_cast<void**>(&motion_dispatch), error))
+                    report("Velocity hook unavailable: " + error, true);
+                else report("Velocity SetActorMotion dispatcher validated for Minecraft 1.26.52.3.");
+            } else if (gameplay_ready.load(std::memory_order_acquire)) {
+                report("Velocity hook unavailable: SetActorMotion dispatcher identity check failed.", true);
+            }
+            if (const auto target = gameplay.prediction_correction_dispatcher_target()) {
+                if (!tick_hooks.create("Velocity correction observation", reinterpret_cast<void*>(target),
+                        reinterpret_cast<void*>(&hook_prediction_correction_dispatch),
+                        reinterpret_cast<void**>(&prediction_correction_dispatch), error))
+                    report("Velocity correction observation unavailable: " + error, true);
+            }
+            if (const auto target = gameplay.disconnect_dispatcher_target()) {
+                if (!tick_hooks.create("Velocity disconnect observation", reinterpret_cast<void*>(target),
+                        reinterpret_cast<void*>(&hook_disconnect_dispatch), reinterpret_cast<void**>(&disconnect_dispatch), error))
+                    report("Velocity disconnect observation unavailable: " + error, true);
+            }
+            if (const auto target = gameplay.move_player_dispatcher_target()) {
+                if (!tick_hooks.create("Velocity local MovePlayer observation", reinterpret_cast<void*>(target),
+                        reinterpret_cast<void*>(&hook_move_player_dispatch), reinterpret_cast<void**>(&move_player_dispatch), error))
+                    report("Velocity MovePlayer observation unavailable: " + error, true);
+                else report("Velocity MovePlayer dispatcher validated for Minecraft 1.26.52.3.");
+            } else if (gameplay_ready.load(std::memory_order_acquire)) {
+                report("Velocity MovePlayer observation unavailable: dispatcher identity check failed.", true);
+            }
             tick_installed = tick_hooks.enable_all(error);
             if (!tick_installed) report("Native chat feedback hook: " + error, true);
             else report("Minecraft local-player gameplay and chat tick ready.");
@@ -2705,6 +3297,19 @@ void Runtime::connect_chat() {
                 return;
             }
             chat_registered = true;
+            const auto server_target = bedrock_chat.server_send_target();
+            if (server_target == bedrock_chat.send_target()) {
+                send_server_packet = send_packet;
+                gameplay.bind_latency_sender(server_target, send_server_packet);
+                report("Velocity latency route: sendToServer slot 4 shares the general send hook (NSL-route-v2).");
+            } else if (chat_hooks.create("Velocity automatic latency replies", reinterpret_cast<void*>(server_target),
+                    reinterpret_cast<void*>(&hook_send_server_packet), reinterpret_cast<void**>(&send_server_packet), error)) {
+                gameplay.bind_latency_sender(server_target, send_server_packet);
+                report("Velocity latency route: automatic replies intercepted at sendToServer slot 4 (NSL-route-v2).");
+            } else {
+                report("Velocity automatic latency hook unavailable: " + error, true);
+            }
+            gameplay.bind_velocity_trace(&trace_native_velocity, this);
             chat_installed = chat_hooks.enable_all(error);
             if (!chat_installed) { report("Chat hook: " + error, true); return; }
             report("Minecraft native chat commands ready: .bind <module> <key>.");
@@ -3040,6 +3645,24 @@ DWORD WINAPI start_worker(void*) {
         {
             std::lock_guard lock(state.log_mutex);
             if (!state.log.is_open()) state.log.open(default_config.parent_path() / L"inject.log", std::ios::app);
+            // A separate copy beside the injected DLL remains readable when
+            // packaged hosts virtualize LocalAppData to different locations.
+            // Optional diagnostics must never prevent the overlay from starting.
+            try {
+                std::array<wchar_t, 32768> process_path{}, module_path{};
+                HMODULE self{};
+                const auto process_length = GetModuleFileNameW(nullptr, process_path.data(), static_cast<DWORD>(process_path.size()));
+                if (process_length && process_length < process_path.size() &&
+                    _wcsicmp(std::filesystem::path(process_path.data()).filename().c_str(), L"Minecraft.Windows.exe") == 0 &&
+                    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        reinterpret_cast<LPCWSTR>(&start_worker), &self)) {
+                    const auto module_length = GetModuleFileNameW(self, module_path.data(), static_cast<DWORD>(module_path.size()));
+                    if (module_length && module_length < module_path.size() && !state.velocity_log.is_open()) {
+                        state.velocity_log.clear();
+                        state.velocity_log.open(std::filesystem::path(module_path.data()).parent_path() / L"velocity.log", std::ios::app);
+                    }
+                }
+            } catch (...) { /* inject.log remains the primary diagnostic log. */ }
             state.last_error.clear();
         }
         wchar_t override_path[32768]{};
@@ -3047,6 +3670,8 @@ DWORD WINAPI start_worker(void*) {
         state.config_path = length && length < std::size(override_path) ? std::filesystem::path(override_path) : default_config;
         state.report("Starting automatic overlay in process " + std::to_string(GetCurrentProcessId()) + (state.core_version.empty()
             ? std::string(" (DLL injected directly).") : " (Core " + state.core_version + " via MediconLoader)."));
+        state.report("Velocity diagnostics: opaque-nsl-v11; process=" + std::to_string(GetCurrentProcessId()) +
+            "; build=" __DATE__ " " __TIME__ "; optional velocity.log beside DLL.");
         // The first overlay frame starts the intro clock. Resolve every native
         // profile (signature scan, menu PE profile, navigation hook) before
         // Present is hooked, so that frame can already observe the title
@@ -3055,6 +3680,8 @@ DWORD WINAPI start_worker(void*) {
         const auto profile_start = GetTickCount64();
         try { state.connect_navigation(); }
         catch (const std::exception& error) { state.report(std::string("MainMenu navigation unavailable: ") + error.what(), true); }
+        try { state.connect_reconnect(); }
+        catch (const std::exception& error) { state.report(std::string("Reconnect unavailable: ") + error.what(),true); }
         try {
             std::string diagnostic;
             // Publishes the immutable client profile used by menu detection.
@@ -3096,7 +3723,7 @@ DWORD WINAPI start_worker(void*) {
         state.status.compare_exchange_strong(starting, 2);
         state.report("DXGI hooks ready.");
         // Spec 4.4: after Medicon finished initializing, never from DllMain.
-        if (state.social) state.social->start();
+        if (state.social) { state.social->start(); state.connect_auth(); }
         try { state.connect_mouse(); state.connect_chat(); state.connect_chat_feedback(); }
         catch (const std::exception& error) { state.report(std::string("Minecraft native chat SDK unavailable: ") + error.what(), true); }
         // P1 must resolve the shared body-yaw entry before Rotations detours
@@ -3120,6 +3747,8 @@ DWORD WINAPI start_worker(void*) {
     state.model_box.set_options(false,0,1);
     state.navigation_ready.store(false, std::memory_order_release);
     state.navigation.stop();
+    state.reconnect.stop();
+    state.recovery_visible.store(false);
     state.status = 4;
     return 1;
 }
@@ -3144,7 +3773,8 @@ extern "C" int MediconAutoUnloadReady() {
         }
         return -1;
     }
-    const std::array<medicon::HookManager*, 9> managers{
+    const std::array<medicon::HookManager*, 11> managers{
+        &state.auth_hooks, &state.reconnect_hooks,
         &state.model_static_hooks, &state.model_box_hooks, &state.model_hooks, &state.navigation_hooks,
         &state.rotation_hooks, &state.mouse_hooks, &state.tick_hooks, &state.chat_hooks, &state.hooks};
     try {
@@ -3166,6 +3796,7 @@ extern "C" int MediconAutoUnloadReady() {
     {
         std::lock_guard lock(state.log_mutex);
         state.log.close();
+        state.velocity_log.close();
     }
     return 1;
 }
@@ -3273,6 +3904,8 @@ int MediconStopOverlay() {
     state.model_box.set_options(false,0,1);
     state.navigation_ready.store(false, std::memory_order_release);
     state.navigation.stop();
+    state.reconnect.stop();
+    state.recovery_visible.store(false);
     state.publish_menu_visible(false);
     state.gui_open = false;
     state.menu_action_pending = 0;
@@ -3280,6 +3913,7 @@ int MediconStopOverlay() {
         if (WaitForSingleObject(state.worker, 15000) != WAIT_OBJECT_0) { state.report("Overlay bootstrap has not finished.", true); return 0; }
         CloseHandle(state.worker); state.worker = nullptr;
     }
+    if (state.social) state.social->request_stop();
     if (const auto target = state.mouse_window.load(); target && IsWindow(target)) {
         DWORD_PTR restored{};
         if (!SendMessageTimeoutW(target, state.mouse_message, 1, 0,
@@ -3289,6 +3923,8 @@ int MediconStopOverlay() {
         }
     }
     std::string error;
+    if (!state.reconnect_hooks.disable_all(error)) { state.report(error, true); return 0; }
+    if (!state.auth_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.model_static_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.model_box_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.model_hooks.disable_all(error)) { state.report(error, true); return 0; }
@@ -3321,6 +3957,12 @@ int MediconStopOverlay() {
     const auto deadline = GetTickCount64() + 5000;
     while (state.callbacks && GetTickCount64() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if (state.callbacks) { state.report("Overlay callbacks are still in flight; stop can be retried.", true); return 0; }
+    // The alt worker may still be refreshing or authorizing an account. Keep
+    // the DLL and service alive until its network call has returned.
+    if (state.social && !state.social->alt_worker_finished()) {
+        state.report("AltManager: authentication worker is finishing; stop can be retried.");
+        return 0;
+    }
     {
         std::lock_guard lock(state.mouse_mutex);
         state.mouse_capture.reset(false, {});

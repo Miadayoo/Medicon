@@ -7,6 +7,7 @@
 #include <medicon/modules/AimbotModule.hpp>
 #include <medicon/modules/KillauraModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
+#include <medicon/modules/VelocityModule.hpp>
 #include <medicon/gui/GameplayVisuals.hpp>
 #include <medicon/memory/module_view.hpp>
 #include <Windows.h>
@@ -66,6 +67,11 @@ public:
 
     bool attack(std::uintptr_t actor_id) override { return game_.attack(actor_id); }
     bool set_sprinting(bool sprinting) override { return game_.set_sprinting(sprinting); }
+    bool set_velocity(sdk::Vec3 velocity) override { return game_.set_velocity(velocity); }
+    sdk::KnockbackApplyResult apply_knockback(sdk::Vec3 velocity, std::int64_t received_timestamp) override {
+        return game_.apply_knockback(velocity, received_timestamp);
+    }
+    bool send_latency_reply(const sdk::LatencyReply& reply) override { return game_.send_latency_reply(reply); }
     bool swing() override { return game_.swing(); }
     bool place_block(sdk::BlockPos position, bool auto_select) override {
         return game_.place_block(position, auto_select);
@@ -148,6 +154,7 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     const auto* aimbot = dynamic_cast<AimbotModule*>(modules_.find(AimbotModule::module_id));
     const auto* killaura = dynamic_cast<KillauraModule*>(modules_.find(KillauraModule::module_id));
     auto* sprint = dynamic_cast<SprintModule*>(modules_.find(SprintModule::module_id));
+    auto* velocity = dynamic_cast<VelocityModule*>(modules_.find(VelocityModule::module_id));
     const auto* killaura_rotate = killaura ? std::get_if<Choice>(&killaura->rotate.value) : nullptr;
     const bool has_rotation_requester = (derp && derp->enabled()) || (aimbot && aimbot->enabled()) ||
         (killaura && killaura->enabled() && killaura_rotate && killaura_rotate->index == 1);
@@ -161,10 +168,11 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     RotationVariableRoute rotation_route(game, *rotations);
     const bool gameplay_actions_allowed = allow_actions && !capturing_input();
     if (sprint) sprint->update(rotation_route, gameplay_actions_allowed);
+    if (velocity) velocity->update(rotation_route, gameplay_actions_allowed);
     if (gameplay_actions_allowed) {
         for (const auto& module : modules_.all()) {
             if (!module->enabled()) continue;
-            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()); gameplay && gameplay != sprint)
+            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()); gameplay && gameplay != sprint && gameplay != velocity)
                 gameplay->game_tick(rotation_route, seconds);
         }
     }
@@ -176,6 +184,8 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
 }
 
 void Client::clear_gameplay() noexcept {
+    if (auto* velocity = dynamic_cast<VelocityModule*>(modules_.find(VelocityModule::module_id)))
+        velocity->reset_delay();
     if (auto* rotations = dynamic_cast<RotationsModule*>(modules_.find(RotationsModule::module_id)))
         rotations->reset_render();
     gameplay_frame_.ready = false;

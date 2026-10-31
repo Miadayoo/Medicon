@@ -47,6 +47,7 @@ void SocialUi::attach(social::Channel* channel, std::function<void()> play_sound
 void SocialUi::request_screen_glyphs() {
     if (!glyphs_requested_) {
         SocialScreen::request_glyphs(screen_fonts_);
+        AltScreen::request_glyphs(screen_fonts_);
         glyphs_requested_ = true;
     }
     // Events may have arrived before the screen was first opened.
@@ -65,12 +66,27 @@ void SocialUi::request_screen_glyphs() {
 
 void SocialUi::open_screen(SocialView view) {
     request_screen_glyphs();
+    alts_.close();
     screen_.open(view);
 }
 
 void SocialUi::open_news(social::NewsKind kind) {
     request_screen_glyphs();
+    alts_.close();
     screen_.open_news(kind);
+}
+
+void SocialUi::open_alts() {
+    alt_choice_.reset();
+    alt_chosen_.reset();
+    request_screen_glyphs();
+    alts_.open();
+}
+
+void SocialUi::choose_alt(bool reconnect) {
+    alts_.close(); // Retire any result from an earlier selection dialog.
+    open_alts();
+    alt_choice_ = reconnect;
 }
 
 void SocialUi::open_from_toast(const Toast& toast) {
@@ -81,6 +97,7 @@ void SocialUi::open_from_toast(const Toast& toast) {
     case ToastTarget::Friends: open_screen(SocialView::Friends); break;
     case ToastTarget::Dm:
         request_screen_glyphs();
+        alts_.close();
         screen_.open_dm(toast.sender);
         break;
     case ToastTarget::Home: open_screen(SocialView::Home); break;
@@ -122,6 +139,16 @@ void SocialUi::set_texture_host(TextureHost* host) noexcept {
 }
 
 void SocialUi::pump(FontManager& fonts, bool in_menu) {
+    if (alt_channel_ && alt_channel_->events.drain(alt_scratch_)) {
+        for (const auto& event : alt_scratch_) alts_.on_event(event, screen_fonts_);
+        alt_scratch_.clear();
+    }
+    if (const auto result = alts_.consume_use_finished(); result && result->ok && alts_.opened() && alt_choice_) {
+        alt_chosen_ = *alt_choice_;
+        alt_choice_.reset();
+        alts_.close();
+    }
+    if (!alts_.opened()) alt_choice_.reset();
     if (!channel_) return;
     const bool timed = store_.debug_timing();
     const auto start = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -133,14 +160,14 @@ void SocialUi::pump(FontManager& fonts, bool in_menu) {
 }
 
 void SocialUi::render(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo& frame, const PointerInput& pointer,
-                      bool in_menu, bool prefetch) {
+                      bool in_menu, bool prefetch, const std::function<void()>& over_screen) {
     music_.set_enabled(store_.music_enabled());
     music_.update(screen_fonts_);
     const bool timed = store_.debug_timing();
     const auto start = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    prefetch = prefetch && channel_ && !screen_.visible();
-    if (screen_.visible() || !toasts_.empty() || music_.visible() || prefetch)
-        draw(list, shadows, frame, pointer, in_menu, prefetch);
+    prefetch = prefetch && channel_ && !screen_visible();
+    if (screen_visible() || !toasts_.empty() || music_.visible() || prefetch)
+        draw(list, shadows, frame, pointer, in_menu, prefetch, over_screen);
     if (!timed) return;
     add_time(start);
     ++timing_.frames;
@@ -150,27 +177,35 @@ void SocialUi::render(ImDrawList* list, IShadowRenderer& shadows, const FrameInf
 }
 
 void SocialUi::draw(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo& frame, const PointerInput& pointer,
-                    bool in_menu, bool prefetch) {
+                    bool in_menu, bool prefetch, const std::function<void()>& over_screen) {
     const ImVec2 size{frame.client_w, frame.client_h};
     // Later news glyphs are requested as their events arrive (on_event).
     if (prefetch && !glyphs_requested_) request_screen_glyphs();
     screen_fonts_.update(std::min(frame.client_h, frame.client_w * 1080.0F / 1920.0F), texture_host_);
-    if (screen_.visible() || prefetch) {
+    if (screen_visible() || prefetch) {
         background_.update(size, texture_host_);
         background_.update_panel(SocialScreen::content_size(size), SocialScreen::picture_blur(size), texture_host_);
     }
     if (prefetch) SocialScreen::prepare(shadows, size);
     // Toasts take clicks only where the client draws a cursor (spec 4.7).
     const PointerInput toast_pointer = in_menu ? pointer : PointerInput{};
-    if (screen_.visible()) {
-        sync_ime();
+    if (screen_visible()) {
         // A notification drawn over the panel takes the pointer from what lies under it.
         PointerInput screen_pointer = pointer;
         if (toast_pointer.valid && (toasts_.covers(toast_pointer.position) || music_.captures_pointer(toast_pointer)))
             screen_pointer = PointerInput{};
-        SocialScreen::Context context{list, screen_fonts_, background_, shadows, store_, channel_, frame, screen_pointer,
-                                      backdrop_time_};
-        screen_.render(context);
+        if (screen_.visible()) {
+            sync_ime();
+            SocialScreen::Context context{list, screen_fonts_, background_, shadows, store_, channel_, frame, screen_pointer,
+                                          backdrop_time_};
+            screen_.render(context);
+        }
+        if (alts_.visible()) {
+            AltScreen::Context context{list, screen_fonts_, background_, shadows, alt_channel_, frame, screen_pointer,
+                                       backdrop_time_};
+            alts_.render(context);
+        }
+        if (over_screen) over_screen();
     }
     music_.set_enabled(store_.music_enabled()); // Apply a Settings click in this same frame.
     // Toasts wait (timers included) until their face is in the atlas.

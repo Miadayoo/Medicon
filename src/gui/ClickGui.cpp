@@ -3,12 +3,12 @@
 #include <medicon/core/Module.hpp>
 #include <medicon/core/ModuleManager.hpp>
 #include <medicon/gui/Draw.hpp>
-#include <medicon/gui/Glass.hpp>
 #include <medicon/gui/GuiContext.hpp>
 #include <medicon/gui/GuiMath.hpp>
 #include <medicon/gui/KeyNames.hpp>
 #include <medicon/gui/Log.hpp>
 #include <medicon/gui/Theme.hpp>
+#include <medicon/gui/TopNav.hpp>
 #include <medicon/modules/ClientModules.hpp>
 
 #include <imgui.h>
@@ -131,7 +131,7 @@ struct CustomWindow {
 
 int visible_setting_count(const Module& module) {
     int count = 0;
-    for (const auto& setting : module.settings()) count += setting.visible ? 1 : 0;
+    for (const auto& setting : module.settings()) count += module.setting_visible(setting) ? 1 : 0;
     return count;
 }
 
@@ -208,12 +208,15 @@ struct ClickGui::Impl {
     // per panel (scanning all panels + rounding); compute once per render().
     float frame_pitch = mt::panel_wrap_step_y;
     // Social button (physical px, laid out each frame).
+    TopNavItem social = [] {
+        TopNavItem item;
+        item.label = "Social";
+        return item;
+    }();
     bool social_shown = false;
-    bool social_badge = false;
+    bool social_above_screen = false;
+    bool social_armed = false; // pressed over the Social screen, not yet released
     bool social_requested = false;
-    bool social_held = false;
-    float social_hover = 0.0F;
-    ImVec2 social_min{}, social_max{};
 
     // --- State storage (ClickGuiModule settings, or local fallback) ---------
     void resolve_cfg() { cfg = dynamic_cast<ClickGuiModule*>(modules.find(ClickGuiModule::module_id)); }
@@ -573,7 +576,7 @@ struct ClickGui::Impl {
                 };
                 if (!has_renderer(module)) {
                     for (std::size_t i = 0; i < module->settings().size(); ++i) {
-                        if (module->settings()[i].visible) add_row(static_cast<int>(i));
+                        if (module->setting_visible(module->settings()[i])) add_row(static_cast<int>(i));
                     }
                 }
                 add_row(keybind_row);
@@ -592,13 +595,7 @@ struct ClickGui::Impl {
         }
     }
 
-    void layout_social_button() {
-        const float width = px(mt::social_button_width, scale);
-        const float height = px(mt::social_button_height, scale);
-        const float bottom = frame.client_h - px(mt::social_button_bottom, scale);
-        social_min = {std::round((frame.client_w - width) * 0.5F), bottom - height};
-        social_max = {social_min.x + width, bottom};
-    }
+    void layout_social_button() { social.rect = top_nav_rect(0, 1, frame.client_w, scale); }
 
     const ModuleLayout* find_module_layout(int panel, const Module* module) const {
         for (const auto& ml : panels[static_cast<std::size_t>(panel)].layout.modules) {
@@ -718,7 +715,7 @@ struct ClickGui::Impl {
     Hit hit_test(ImVec2 p) {
         if (overlay.kind != OverlayKind::None && inside(p, overlay.x0, overlay.y0, overlay.x1, overlay.y1)) return hit_overlay(p);
         // Drawn above every panel, so it takes the pointer first.
-        if (social_shown && inside(p, social_min.x, social_min.y, social_max.x, social_max.y)) return Hit{HitKind::SocialButton};
+        if (social_shown && social.contains(p)) return Hit{HitKind::SocialButton};
         for (auto it = z_order.rbegin(); it != z_order.rend(); ++it) {
             const int index = *it;
             const auto& L = panels[static_cast<std::size_t>(index)].layout;
@@ -1089,7 +1086,7 @@ struct ClickGui::Impl {
         hovered = Hit{};
         if (press && press->drag == DragKind::Scrollbar) hovered = press->target;
         else if (!press && in.valid && !in.owned_by_imgui) hovered = hit_test(in.position);
-        social_held = press && !press->swallowed && press->target.kind == HitKind::SocialButton &&
+        social.held = press && !press->swallowed && press->target.kind == HitKind::SocialButton &&
                       hit_test(in.position).kind == HitKind::SocialButton;
         if (in.wheel != 0.0F && in.valid && !in.owned_by_imgui) handle_wheel(in);
     }
@@ -1126,7 +1123,10 @@ struct ClickGui::Impl {
         const float overlay_before = overlay.scroll;
         overlay.scroll = follow(overlay.scroll, overlay.scroll_target, dt, tm::scroll_tau);
         note(overlay_before, overlay.scroll);
-        social_hover = tween(social_hover, hovered.kind == HitKind::SocialButton || social_held, dt, tm::hover);
+        if (!social_above_screen) {
+            social.hovered = hovered.kind == HitKind::SocialButton;
+            social.animate(dt);
+        }
         return geometry;
     }
 
@@ -1536,27 +1536,27 @@ struct ClickGui::Impl {
     }
 
     void draw_social_button(float alpha) {
-        if (!social_shown) return;
-        auto* list = ctx->draw_list;
-        auto& fonts = ctx->fonts;
-        const float radius = mt::social_button_radius * scale;
-        // The Main Menu's small centred Social button: no accent line.
-        GlassPlate plate;
-        plate.hover = social_hover;
-        plate.press = social_held ? 1.0F : 0.0F;
-        plate.accent = false;
-        plate.alpha = alpha;
-        draw_glass_plate(list, social_min, social_max, radius, plate);
-        constexpr std::string_view label = "Social";
-        const float x = std::round((social_min.x + social_max.x - fonts.measure(FontRole::Header, label)) * 0.5F);
-        fonts.draw(list, FontRole::Header, x, fonts.centered_baseline(FontRole::Header, social_min.y, social_max.y - social_min.y),
-                   to_u32(theme::social::blue, alpha), label);
-        if (!social_badge) return;
-        // Unread DMs or pending requests: a small dot on the top-right corner.
-        const float dot = std::max(3.0F, radius * 0.42F);
-        const ImVec2 center{social_max.x - radius * 0.55F, social_min.y + radius * 0.55F};
-        list->AddCircleFilled(center, dot + std::max(1.0F, dot * 0.3F), to_u32(theme::white, alpha), 20);
-        list->AddCircleFilled(center, dot, to_u32(theme::social::alert, alpha), 20);
+        if (social_shown) social.draw(ctx->draw_list, ctx->fonts, ctx->shadows, scale, alpha);
+    }
+
+    // The ClickGUI is not drawn under a full Social screen and takes no pointer
+    // under a fading one, so the button handles its own click up there.
+    bool social_input_above_screen(const GuiContext& context) {
+        frame = context.frame;
+        scale = context.frame.ui_scale;
+        layout_social_button();
+        const auto& in = context.pointer;
+        const auto& left = in.buttons[0];
+        const bool over = social_shown && in.valid && !in.owned_by_imgui && social.contains(in.position);
+        if (over && left.pressed) social_armed = true;
+        if (social_armed && !left.down) {
+            if (over && left.released) social_requested = true;
+            social_armed = false;
+        }
+        social.hovered = over;
+        social.held = social_armed && over;
+        social.animate(frame.dt);
+        return over || social_armed;
     }
 
     void on_closed() {
@@ -1564,6 +1564,7 @@ struct ClickGui::Impl {
         capture = nullptr;
         if (press) finish_press(press->origin, false);
         hovered = Hit{};
+        social.held = false;
         write_order();
         request_save();
     }
@@ -1616,7 +1617,7 @@ struct ClickGui::Impl {
         const float alpha = fade.value();
         draw_backdrop(alpha);
         for (const int index : z_order) draw_panel(index, alpha);
-        draw_social_button(alpha);
+        if (!social_above_screen) draw_social_button(alpha);
         draw_overlay(alpha);
 
         if (open_now) {
@@ -1699,11 +1700,23 @@ void ClickGui::set_open(bool value) {
 
 bool ClickGui::capturing_keybind() const noexcept { return impl_->capture != nullptr; }
 
-void ClickGui::set_social(bool shown, bool badge) noexcept {
+void ClickGui::set_social(const SocialButton& state) noexcept {
     auto& d = *impl_;
-    d.social_shown = shown;
-    d.social_badge = shown && badge;
-    if (!shown) d.social_requested = d.social_held = false;
+    d.social_shown = state.shown;
+    d.social.badge = state.shown && state.badge;
+    d.social.selected = state.shown && state.selected;
+    d.social_above_screen = state.above_screen;
+    if (!state.above_screen) d.social_armed = false;
+    if (!state.shown) d.social_requested = d.social.held = false;
+}
+
+bool ClickGui::social_button_input(const gui::GuiContext& context) { return impl_->social_input_above_screen(context); }
+
+void ClickGui::draw_social_button(gui::GuiContext& context) {
+    auto& d = *impl_;
+    d.ctx = &context;
+    d.draw_social_button(d.fade.value());
+    d.ctx = nullptr;
 }
 
 bool ClickGui::consume_social_request() noexcept { return std::exchange(impl_->social_requested, false); }
@@ -1762,7 +1775,7 @@ void ClickGui::apply_theme() {
 void ClickGui::render_settings(Module& module) {
     bool any = false;
     for (auto& setting : module.settings()) {
-        if (!setting.visible) continue;
+        if (!module.setting_visible(setting)) continue;
         any = true;
         ImGui::PushID(setting.id.c_str());
         std::visit([&](auto& value) {
@@ -1872,6 +1885,13 @@ void ClickGui::finish_animations() {
     d.sync_panels();
     d.skip_animations();
 }
+
+ClickGui::PanelRect ClickGui::social_button_rect() const {
+    const auto& r = impl_->social.rect;
+    return {Category::Misc, r.min.x, r.min.y, r.max.x - r.min.x, r.max.y - r.min.y};
+}
+
+float ClickGui::social_selection() const noexcept { return impl_->social.select.value(); }
 
 std::vector<ClickGui::PanelRect> ClickGui::panel_rects() const {
     std::vector<PanelRect> rects;

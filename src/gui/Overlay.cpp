@@ -69,8 +69,14 @@ void Overlay::set_main_menu_active(bool active) noexcept {
 }
 
 bool Overlay::allows_game_movement() const noexcept {
-    return gui_.open() && !main_menu_.active() && !social_.screen_visible() && !social_.screen_open() &&
+    return gui_.open() && !main_menu_.active() && !disconnect_.visible() && !social_.screen_visible() && !social_.screen_open() &&
         !gui_.capturing_keybind() && (!ImGui::GetCurrentContext() || !ImGui::GetIO().WantTextInput);
+}
+
+void Overlay::set_disconnect_state(bool visible,bool available,std::uint64_t generation,std::string error) {
+    if (disconnect_.visible() && (!visible || disconnect_.generation()!=generation)) social_.cancel_alt_choice();
+    if (visible && !disconnect_.visible()) { gui_.set_open(false); modules_.reset_keys(); }
+    disconnect_.set_state(visible,available,generation,std::move(error));
 }
 
 bool Overlay::key_event(int virtual_key, bool down, bool repeat) {
@@ -83,6 +89,7 @@ bool Overlay::key_event(int virtual_key, bool down, bool repeat) {
         if (!down) modules_.key_event(virtual_key, false, repeat);
         return true;
     }
+    if (disconnect_.visible()) return false;
     // Home opens Social in game, over the ClickGUI or without it. A keybind
     // being captured takes Home like any other key.
     if (virtual_key == social_key && down && social_.attached() && !gui_.capturing_keybind()) {
@@ -142,6 +149,7 @@ FontSizes Overlay::font_sizes(const FrameInfo& frame) const {
         const float k = frame.hud_scale * std::clamp(module->scale.get<float>(), 0.75F, 1.5F);
         sizes.watermark = std::round(theme::watermark::font * k);
         sizes.watermark_small = std::round(theme::watermark::font_small * k);
+        if (module->japanese()) sizes.watermark_japanese = std::round(theme::watermark::title_font * k);
     }
     // Prepare the intro and menu together before the first intro render starts
     // its clock. Otherwise the handoff rebuilds the atlas and waits for the GPU
@@ -167,7 +175,8 @@ FontSizes Overlay::font_sizes(const FrameInfo& frame) const {
 void Overlay::collect_text() {
     for (std::size_t i = 0; i < category_count; ++i) fonts_.add_text(category_name(static_cast<Category>(i)));
     fonts_.add_text("Keybind[...]#");
-    fonts_.add_text("Medicon Play Settings Quit Social");
+    fonts_.add_text("Medicon Play Settings Quit Social AltManager");
+    fonts_.add_text("Reconnect Switch Account Switch Account and Reconnect No saved server. Join from Play.");
     fonts_.add_text(watermark_.version());
     fonts_.add_text("0123456789 FPS ms");
     for (const auto& module : modules_.all()) {
@@ -193,6 +202,10 @@ bool Overlay::prepare_frame() {
     // Social events wait in the channel during the intro: their glyphs would
     // rebuild the atlas while the animation plays (see splash_glyphs_sealed_).
     if (!splash) social_.pump(fonts_, in_menu());
+    if (const auto chosen = social_.consume_alt_choice(); chosen) {
+        if (alt_choice_handler_) alt_choice_handler_(*chosen);
+        if (*chosen) disconnect_.reconnect_after_choice();
+    }
     // Collect once up front, then again only after the intro. Walking every
     // module on the later splash frames can grow the atlas and stall Present
     // exactly while the collapse should be on screen.
@@ -229,20 +242,33 @@ void Overlay::render() {
         social_.set_input_animation(settings->input_animation.get<bool>());
     // Nothing under the Social screen takes the pointer while it is up, and a
     // fully open screen covers everything, so the rest is not drawn at all.
-    const bool music_pointer = in_menu() && social_.music().captures_pointer(pointer);
-    const PointerInput below = social_.screen_visible() || music_pointer ? PointerInput{} : pointer;
+    // Notifications and the music widget sit above the ClickGUI, top centre included.
+    const bool notice_pointer = in_menu() && pointer.valid &&
+        (social_.music().captures_pointer(pointer) || social_.toast_covers(pointer.position));
+    const PointerInput below = social_.screen_visible() || notice_pointer ? PointerInput{} : pointer;
     social_.set_backdrop_time(main_menu_.elapsed());
     const bool covered = social_.screen_opaque();
     if (main_menu_.active() || covered) watermark_.hide();
+    // Opened from the ClickGUI, the Social screen keeps its button: it shows as
+    // selected above the screen and closes it. The sign-in gate cannot be closed.
+    const bool button_above_screen = social_.screen_visible() && gui_.open() && !main_menu_.active() &&
+        !disconnect_.visible() && !social_.sign_in_gate_active();
+    gui_.set_social({social_.attached(), social_.badge(), social_.screen_open(), button_above_screen});
     if (main_menu_.active()) {
         main_menu_.set_social(social_.attached(), social_.badge());
+        main_menu_.set_alts(social_.alts_attached());
         if (!covered) main_menu_.render(ImGui::GetForegroundDrawList(), fonts_, {frame_.client_w, frame_.client_h}, below);
         if (main_menu_.consume_social_request()) social_.open_screen();
+        if (main_menu_.consume_alts_request()) social_.open_alts();
+    } else if (disconnect_.visible()) {
+        watermark_.hide();
+        if (!covered) disconnect_.render(ImGui::GetForegroundDrawList(),fonts_,shadows_,frame_,below,social_.alts_attached());
+        if (const auto action=disconnect_.consume_action())
+            social_.choose_alt(*action==DisconnectAction::SwitchAccountAndReconnect);
     } else if (!covered) {
         GuiContext context{modules_, fonts_, shadows_, frame_, below, ImGui::GetBackgroundDrawList()};
         hud_.render(context);
         watermark_.render(context, clock_.elapsed());
-        gui_.set_social(social_.attached(), social_.badge());
         gui_.render(context);
         if (gui_.consume_save_request() && save_) save_();
         if (gui_.consume_social_request()) social_.open_screen();
@@ -252,9 +278,20 @@ void Overlay::render() {
     // from playing yet, so in_menu() treats them as playing (3 s, in-game offset).
     FrameInfo social_frame = frame_;
     social_frame.dt = clock_.elapsed();
+    GuiContext button{modules_, fonts_, shadows_, frame_, notice_pointer ? PointerInput{} : pointer, ImGui::GetForegroundDrawList()};
+    bool button_owns_pointer = false;
+    if (button_above_screen) {
+        button_owns_pointer = gui_.social_button_input(button);
+        if (gui_.consume_social_request()) {
+            if (social_.screen_open()) social_.close_screen();
+            else social_.open_screen();
+        }
+    }
+    const auto draw_button = [&] { gui_.draw_social_button(button); };
     // In a menu the screen's font and blurred backdrop are prepared ahead, on
     // their worker threads, so its first frame is already complete.
-    social_.render(ImGui::GetForegroundDrawList(), shadows_, social_frame, pointer, in_menu(), in_menu());
+    social_.render(ImGui::GetForegroundDrawList(), shadows_, social_frame, button_owns_pointer ? PointerInput{} : pointer,
+                   in_menu(), in_menu(), button_above_screen ? draw_button : std::function<void()>{});
 }
 
 } // namespace medicon::gui

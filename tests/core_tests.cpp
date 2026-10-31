@@ -5,6 +5,7 @@
 #include "medicon/modules/ClientModules.hpp"
 #include "medicon/modules/ExampleModule.hpp"
 #include "medicon/modules/EspModule.hpp"
+#include "medicon/modules/VelocityModule.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -168,6 +169,61 @@ void test_config_round_trip() {
           "A temporary config was left behind");
 }
 
+void test_velocity_config() {
+    TestDirectory directory;
+    const auto path = directory.path / "config.json";
+    ConfigStore store(path);
+    ModuleManager source;
+    auto& velocity = source.add<VelocityModule>();
+    velocity.mode.get<Choice>().index = 1;
+    velocity.horizontal.get<int>() = 25;
+    velocity.vertical.get<int>() = 80;
+    velocity.delay_ms.get<int>() = 9750;
+    velocity.sync_replies.get<bool>() = false;
+    velocity.set_keybind('V');
+    velocity.set_enabled(true);
+    std::string error;
+    check(store.save(source, error), "Velocity config save failed");
+    ModuleManager target;
+    auto& restored = target.add<VelocityModule>();
+    check(store.load(target, error) && restored.enabled() && restored.keybind() == 'V' &&
+          restored.mode.get<Choice>().index == 1 && restored.horizontal.get<int>() == 25 &&
+          restored.vertical.get<int>() == 80 && restored.delay_ms.get<int>() == 9750 &&
+          !restored.sync_replies.get<bool>() && restored.setting_visible(restored.horizontal),
+          "Velocity mode, percentages, keybind or visibility did not persist");
+    const auto valid = read_json(path);
+    for (const char* id : {"horizontal", "vertical"}) {
+        for (int value : {-1, 101}) {
+            auto invalid = valid;
+            invalid["modules"]["velocity"]["settings"][id] = value;
+            write_json(path, invalid);
+            check(!store.load(target, error) && restored.horizontal.get<int>() == 25 && restored.vertical.get<int>() == 80,
+                  "Velocity config accepted percentages outside 0..100");
+        }
+    }
+    for (int value : {-1, 10001}) {
+        auto invalid = valid;
+        invalid["modules"]["velocity"]["settings"]["delay_ms"] = value;
+        write_json(path, invalid);
+        check(!store.load(target, error) && restored.delay_ms.get<int>() == 9750, "Out-of-range Delay was persisted");
+    }
+    auto delayed = valid;
+    delayed["modules"]["velocity"]["settings"]["mode"] = 2;
+    write_json(path, delayed);
+    check(store.load(target, error) && restored.setting_visible(restored.delay_ms) &&
+          !restored.setting_visible(restored.horizontal), "Saved Delay mode did not restore its slider visibility");
+    auto legacy = valid;
+    legacy["modules"]["velocity"]["settings"].erase("delay_ms");
+    legacy["modules"]["velocity"]["settings"].erase("sync_replies");
+    write_json(path, legacy);
+    ModuleManager legacy_target;
+    auto& legacy_velocity = legacy_target.add<VelocityModule>();
+    check(store.load(legacy_target, error) && legacy_velocity.mode.get<Choice>().index == 1 &&
+          legacy_velocity.horizontal.get<int>() == 25 && legacy_velocity.delay_ms.get<int>() == 8000 &&
+          legacy_velocity.sync_replies.get<bool>(),
+          "Existing Full/Percent configs lost their settings or Delay defaults");
+}
+
 void test_config_validation() {
     TestDirectory directory;
     const auto path = directory.path / "config.json";
@@ -324,6 +380,11 @@ void test_watermark_defaults() {
     check(watermark->scale.minimum == 0.75F && watermark->scale.maximum == 1.5F && watermark->opacity.minimum == 0.5F &&
               watermark->opacity.maximum == 1.0F && watermark->opacity.get<float>() == 1.0F,
           "Watermark scale and opacity ranges");
+    check(!watermark->japanese() && watermark->setting_visible(watermark->shadow), "Watermark starts as the plate");
+    watermark->mode.get<Choice>().index = 1;
+    check(watermark->japanese() && !watermark->setting_visible(watermark->shadow) &&
+              watermark->setting_visible(watermark->glow),
+          "Japanese mode has no plate to shadow but keeps the glow");
 }
 
 int main() {
@@ -332,6 +393,7 @@ int main() {
         test_watermark_defaults();
         test_config_round_trip();
         test_config_validation();
+        test_velocity_config();
         test_esp_glow_source_only();
         test_events();
         std::cout << "Core tests passed\n";

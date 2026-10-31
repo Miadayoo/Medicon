@@ -3,6 +3,7 @@
 #include <medicon/sdk/CustomModelProbe.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/modules/RotationsModule.hpp>
+#include <medicon/modules/VelocityModule.hpp>
 #include <Windows.h>
 #include <imgui.h>
 #include <chrono>
@@ -180,6 +181,9 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
         medicon::sdk::GameplayFrame current;
         int rotations = 0;
         int head_body_rotations = 0;
+        int velocity_writes = 0;
+        int knockback_calls = 0;
+        int latency_sends = 0;
         float last_yaw = 0;
         float last_pitch = 0;
         bool sprint_requested = false;
@@ -205,6 +209,16 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
             return true;
         }
         bool set_sprinting(bool requested) override { sprint_requested = requested; return true; }
+        bool set_velocity(medicon::sdk::Vec3 velocity) override {
+            ++velocity_writes;
+            current.local.velocity = velocity;
+            return true;
+        }
+        medicon::sdk::KnockbackApplyResult apply_knockback(medicon::sdk::Vec3 velocity, std::int64_t timestamp) override {
+            ++knockback_calls;
+            return GameplayAccess::apply_knockback(velocity, timestamp);
+        }
+        bool send_latency_reply(const medicon::sdk::LatencyReply&) override { ++latency_sends; return true; }
         bool attack(std::uintptr_t) override { return true; }
         bool place_block(medicon::sdk::BlockPos, bool) override { throw std::runtime_error("Unexpected placement"); }
         bool replaceable(medicon::sdk::BlockPos) const override { return false; }
@@ -215,7 +229,7 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     game.current.local.local = true;
     medicon::Client client(path);
     require(client.start(), "Gameplay client starts");
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "custommodel"})
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "esp", "rotations", "custommodel", "velocity"})
         require(client.modules().find(id) && !client.modules().find(id)->enabled(), "Gameplay module registered disabled");
     client.game_tick(game, 0.05F);
     require(game.rotations == 0 && game.head_body_rotations == 0 && !game.server_rotation,
@@ -279,14 +293,51 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     client.modules().find("sprint")->set_enabled(false);
     require(!render_module->update_render(1, game.current.yaw, game.current.pitch, 0.05F, render_angles),
             "Turning Rotations off did not disable vertical model rendering");
+    auto* velocity = dynamic_cast<medicon::VelocityModule*>(client.modules().find("velocity"));
+    require(velocity != nullptr, "Velocity type is registered");
+    velocity->mode.get<medicon::Choice>().index = 2;
+    velocity->set_enabled(true);
+    game.current.world_identity = 10;
+    const auto received = medicon::VelocityModule::Clock::now() - std::chrono::seconds(9);
+    medicon::sdk::Vec3 knockback{2, 4, -6};
+    const auto queue_hit = [&] {
+        require(velocity->handle_motion(knockback, game.current, received) == medicon::VelocityModule::MotionResult::delayed,
+                "Runtime could not queue delayed knockback");
+    };
+    queue_hit(); queue_hit();
+    medicon::sdk::LatencyReply reply;
+    require(velocity->handle_latency(reply, game.current), "Runtime did not hold the reply behind KB");
+    client.tick(0.01F);
+    require(game.velocity_writes == 0, "Present applied delayed knockback outside the game thread");
+    client.game_tick(game, 0.05F);
+    require(game.velocity_writes == 1 && game.knockback_calls == 1 && velocity->pending_count() == 1 &&
+            game.current.local.velocity.y == 4 && game.latency_sends == 0,
+            "Client did not forward velocity or dispatched Delay twice in one tick");
+    client.game_tick(game, 0.05F, false);
+    require(game.velocity_writes == 1 && velocity->pending_count() == 0 && game.latency_sends == 1 && !velocity->needs_restore(),
+            "Focus loss must discard KB and forward reply cleanup through the Client route");
+    queue_hit();
+    client.gui().set_open(true);
+    client.game_tick(game, 0.05F);
+    require(game.velocity_writes == 1 && velocity->pending_count() == 0, "ClickGUI did not discard pending knockback");
+    client.gui().set_open(false);
+    queue_hit();
+    client.clear_gameplay();
+    require(velocity->pending_count() == 0, "World snapshot reset retained delayed knockback");
+    queue_hit();
     const auto final_rotation_count = game.head_body_rotations;
     game.current.ready = false;
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == final_rotation_count, "Missing world suppresses gameplay actions");
+    require(game.rotations == 0 && game.head_body_rotations == final_rotation_count && velocity->pending_count() == 0 &&
+            game.velocity_writes == 1, "Missing world suppresses gameplay actions and clears delayed knockback");
+    game.current.ready = true;
+    queue_hit();
     require(client.stop(), "Gameplay client stops");
+    require(velocity->pending_count() == 0, "Client stop retained delayed knockback");
     game.current.ready = true;
     client.game_tick(game, 0.05F);
-    require(game.rotations == 0 && game.head_body_rotations == final_rotation_count, "Stopped client cannot mutate the game");
+    require(game.rotations == 0 && game.head_body_rotations == final_rotation_count && game.velocity_writes == 1,
+            "Stopped client cannot mutate the game");
 }
 
 void client_test(const std::filesystem::path& path) {

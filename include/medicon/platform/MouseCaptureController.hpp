@@ -25,9 +25,11 @@ public:
     // An unknown original state is released once but never forces a later grab.
     // Returns false only when a required callback is missing, fails or throws;
     // a deferred restoration while unfocused is successful pending work.
+    // A native UI screen owns its own cursor: cancel any gameplay restoration
+    // and perform no native transition while native_ui_owns_cursor is true.
     bool update(bool open, bool focused, std::optional<bool> grabbed,
                 const std::function<bool()>& release,
-                const std::function<bool()>& grab) noexcept;
+                const std::function<bool()>& grab, bool native_ui_owns_cursor = false) noexcept;
 
     // End management during shutdown. Restore an owed grab only while focused.
     // Unfocused shutdown cancels restoration, so it cannot steal desktop input.

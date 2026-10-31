@@ -7,6 +7,7 @@
 #include <medicon/gui/SocialWidgets.hpp>
 #include <medicon/gui/Theme.hpp>
 #include <medicon/modules/ClientModules.hpp>
+#include <medicon/alt/Alt.hpp>
 #include <medicon/social/Config.hpp>
 #include <medicon/social/Events.hpp>
 
@@ -81,6 +82,41 @@ void timed_captures(ScenarioHost& host, bool capture, const std::function<void()
         host.log(line);
         if (capture) host.capture(suffix);
     }
+}
+
+// The top-centre Social button: idle, hovered, pressed, and selected over the
+// open screen, then the same state with an unread badge.
+void clickgui_social(ScenarioHost& host, bool capture) {
+    static social::Channel channel;
+    base(host);
+    host.overlay().set_social(&channel, {});
+    channel.events.push(social::SettingsLoaded{});
+    channel.events.push(social::SessionStarted{social::UserRef{1, "Preview User"}, 0});
+    channel.events.push(social::StateChanged{social::ConnectionState::Online, {}});
+    settle(host);
+    const auto shot = [&](const char* suffix) {
+        host.frame();
+        if (capture) host.capture(suffix);
+    };
+    const auto wait = [&](float seconds) {
+        for (int i = 0; i < static_cast<int>(std::ceil(seconds / host.dt())); ++i) host.frame();
+    };
+    const auto r = host.overlay().gui().social_button_rect();
+    const LPARAM point = MAKELPARAM(static_cast<WORD>(r.x + r.w * 0.5F), static_cast<WORD>(r.y + r.h * 0.5F));
+    shot("idle");
+    host.send(WM_MOUSEMOVE, 0, point);
+    wait(0.2F);
+    shot("hover");
+    host.send(WM_LBUTTONDOWN, MK_LBUTTON, point);
+    wait(0.15F);
+    shot("pressed");
+    host.send(WM_LBUTTONUP, 0, point);
+    wait(0.1F);
+    shot("selecting");
+    wait(0.5F);
+    host.send(WM_MOUSEMOVE, 0, MAKELPARAM(40, 900));
+    wait(0.2F);
+    shot("selected");
 }
 
 // Social notifications (spec 4.7) fed through a Channel exactly as the DLL's
@@ -447,8 +483,198 @@ void main_menu_social_click(ScenarioHost& host, bool capture) {
     if (capture) host.capture("");
 }
 
+// The AltManager against a mock channel: no service, no window, no sign-in. The
+// Main Menu button opens it, then Microsoft, Cancel and Remove reach the service.
+void alt_manager(ScenarioHost& host, bool capture) {
+    static alt::Channel channel;
+    social_mock(host, true, false);
+    host.overlay().set_alts(&channel);
+    channel.events.push(alt::AccountsChanged{{{"2535412345678901", "Mia Main", 0}, {"2535498765432109", "pastel fox", 0},
+                                              {"2535400011122233", "LongGamertag1234", 0}}, false});
+    for (int i = 0; i < static_cast<int>(std::ceil(0.5F / host.dt())); ++i) host.frame();
+    if (capture) host.capture("menu");
+    const auto layout = gui::evaluate_main_menu({host.width(), host.height()}, 0.0);
+    social_click(host, (layout.alts.min.x + layout.alts.max.x) * 0.5F, (layout.alts.min.y + layout.alts.max.y) * 0.5F);
+    auto& social = host.overlay().social();
+    if (!social.alts().opened() || !social.screen_open()) throw std::runtime_error("the AltManager button did not open the screen");
+    if (host.overlay().main_menu().consume_action()) throw std::runtime_error("the AltManager click reached the game");
+    social_settle(host);
+    if (social.alts().accounts().size() != 3) throw std::runtime_error("the accounts did not arrive");
+    if (capture) host.capture("list");
+
+    const auto centre = [](const gui::SocialRect& rect) { return ImVec2{(rect.min.x + rect.max.x) * 0.5F, (rect.min.y + rect.max.y) * 0.5F}; };
+    const auto take = [&]() {
+        std::optional<alt::Command> command = channel.commands.pop(std::chrono::steady_clock::now());
+        if (!command) throw std::runtime_error("the screen sent no command");
+        return *command;
+    };
+    ImVec2 at = centre(social.alts().microsoft_rect());
+    social_click(host, at.x, at.y);
+    if (!std::holds_alternative<alt::StartSignIn>(take())) throw std::runtime_error("Microsoft did not start a sign-in");
+    channel.events.push(alt::SignInProgress{alt::SignInStage::Waiting, "ABCD1234", true, true});
+    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    if (social.alts().user_code() != "ABCD1234" || !social.alts().code_copied() ||
+        social.alts().code_rect().height() <= 0 || social.alts().copy_code_rect().height() <= 0)
+        throw std::runtime_error("the sign-in code and clipboard status are not displayed");
+    if (capture) host.capture("waiting");
+    at = centre(social.alts().copy_code_rect());
+    social_click(host, at.x, at.y);
+    if (!std::holds_alternative<alt::CopySignInCode>(take())) throw std::runtime_error("Copy code did not reach the service");
+    channel.events.push(alt::SignInProgress{alt::SignInStage::Waiting, "ABCD1234", false, true});
+    host.frame();
+    if (social.alts().code_copied() || social.alts().user_code() != "ABCD1234")
+        throw std::runtime_error("a clipboard failure hid the code or reported a successful copy");
+    if (capture) host.capture("copy_failed");
+    at = centre(social.alts().open_sign_in_rect());
+    social_click(host, at.x, at.y);
+    if (!std::holds_alternative<alt::OpenSignInPage>(take())) throw std::runtime_error("Open Microsoft did not reach the service");
+    at = centre(social.alts().cancel_rect());
+    social_click(host, at.x, at.y);
+    if (!std::holds_alternative<alt::CancelSignIn>(take())) throw std::runtime_error("Cancel did not reach the service");
+    channel.events.push(alt::SignInFinished{false, true, {}, {}});
+    host.frame();
+    if (social.alts().error() != "cancelled" || !social.alts().user_code().empty())
+        throw std::runtime_error("cancellation silently returned to the idle screen");
+    // The same completion events the worker publishes must replace the waiting
+    // card with the linked account's actual row in this frame sequence.
+    auto accounts = social.alts().accounts();
+    accounts.push_back({"2535400012345678", "Linked Alt", 0});
+    channel.events.push(alt::SignInProgress{alt::SignInStage::Finishing, {}});
+    channel.events.push(alt::AccountsChanged{accounts, false});
+    channel.events.push(alt::SignInFinished{true, false, {}, "Linked Alt"});
+    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    if (social.alts().signing_in() || social.alts().accounts().size() != 4 ||
+        social.alts().remove_rect("2535400012345678").height() <= 0)
+        throw std::runtime_error("the linked account did not appear as a visible row after sign-in");
+    if (capture) host.capture("linked");
+    channel.events.push(alt::SessionChanged{{}, {}, false, true, {}, {}});
+    host.frame();
+    at = centre(social.alts().use_rect("2535400012345678"));
+    social_click(host, at.x, at.y);
+    const auto use_command = take();
+    const auto* use = std::get_if<alt::UseAccount>(&use_command);
+    if (!use || use->xuid != "2535400012345678") throw std::runtime_error("Use selected the wrong account");
+    if (!social.alts().active_xuid().empty()) throw std::runtime_error("Use falsely marked an account active before login");
+    channel.events.push(alt::SessionChanged{"2535400012345678", {}, false, true, {}, {}});
+    host.frame();
+    if (!social.alts().active_xuid().empty()) throw std::runtime_error("session preparation falsely marked an account active");
+    if (capture) host.capture("selected");
+    channel.events.push(alt::SessionChanged{"2535400012345678", "2535400012345678", false, true, {}, {}});
+    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    if (social.alts().active_xuid() != "2535400012345678") throw std::runtime_error("the authenticated account was not marked active");
+    if (capture) host.capture("active");
+    channel.events.push(alt::SignInFinished{false, false, "xsts_failed", {}, "Xbox token: HTTP 400, XErr 2148916227"});
+    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    if (social.alts().error() != "xsts_failed" || social.alts().diagnostic() != "Xbox token: HTTP 400, XErr 2148916227")
+        throw std::runtime_error("the Xbox token failure stage and numeric diagnostic did not reach the screen");
+    if (capture) host.capture("error");
+
+    at = centre(social.alts().remove_rect("2535498765432109"));
+    social_click(host, at.x, at.y);
+    if (!social.alts().confirming()) throw std::runtime_error("Remove did not ask first");
+    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    if (capture) host.capture("confirm");
+    at = centre(social.alts().confirm_ok_rect());
+    social_click(host, at.x, at.y);
+    const auto removed = take();
+    const auto* remove = std::get_if<alt::RemoveAccount>(&removed);
+    if (!remove || remove->xuid != "2535498765432109") throw std::runtime_error("Remove named the wrong account");
+
+    channel.events.push(alt::AccountsChanged{});
+    for (int i = 0; i < static_cast<int>(std::ceil(0.3F / host.dt())); ++i) host.frame();
+    if (capture) host.capture("empty");
+    host.send(WM_KEYDOWN, VK_ESCAPE, 0);
+    host.send(WM_KEYUP, VK_ESCAPE, 0);
+    host.frame();
+    if (social.alts().opened()) throw std::runtime_error("Esc did not close the AltManager");
+    for (int i = 0; i < static_cast<int>(std::ceil(0.5F / host.dt())); ++i) host.frame();
+    // A scenario can leave a static channel behind: the overlay goes first.
+    host.overlay().set_alts(nullptr);
+    host.frame();
+}
+
 // The sign-in card's live states: the focused field's glow, then the Sign in
 // button hovered (glow, pink accent) and held (0.98).
+void disconnect_recovery(ScenarioHost& host, bool capture) {
+    static alt::Channel channel;
+    social_mock(host,true,false);
+    auto& overlay=host.overlay();
+    overlay.set_main_menu_active(false);
+    overlay.set_alts(&channel);
+    channel.events.push(alt::AccountsChanged{{{"2535400012345678","Linked Alt",0}},false});
+    channel.events.push(alt::SessionChanged{{},{},false,true,{},{}});
+    overlay.set_disconnect_state(true,true,7);
+    for(int i=0;i<20;++i) host.frame();
+    auto& panel=overlay.disconnect_screen();
+    auto& ui=overlay.social();
+    const auto click=[&](gui::SocialRect r){social_click(host,(r.min.x+r.max.x)*0.5F,(r.min.y+r.max.y)*0.5F);};
+    if (capture) host.capture("buttons");
+    if (capture) {
+        const auto r=panel.button(gui::DisconnectAction::Reconnect);
+        const LPARAM point=MAKELPARAM(static_cast<WORD>((r.min.x+r.max.x)*0.5F),static_cast<WORD>((r.min.y+r.max.y)*0.5F));
+        host.send(WM_MOUSEMOVE,0,point);
+        for(int i=0;i<20;++i) host.frame();
+        host.capture("buttons_hover");
+        host.send(WM_LBUTTONDOWN,MK_LBUTTON,point);
+        for(int i=0;i<8;++i) host.frame();
+        host.capture("buttons_pressed");
+        const LPARAM outside=MAKELPARAM(static_cast<WORD>(host.width()*0.5F),static_cast<WORD>(host.height()*0.3F));
+        host.send(WM_MOUSEMOVE,0,outside);host.frame();
+        host.send(WM_LBUTTONUP,0,outside);host.frame();
+    }
+    const auto bounds=panel.bounds();
+    if (bounds.max.y>host.height() || bounds.min.x<0 || bounds.width()<=0) throw std::runtime_error("disconnect buttons outside viewport");
+    click(panel.button(gui::DisconnectAction::Reconnect));
+    if (panel.consume_reconnect()!=7 || panel.consume_reconnect()) throw std::runtime_error("Reconnect did not issue exactly one request for this screen");
+    const auto choose=[&](gui::DisconnectAction action){
+        click(panel.button(action));
+        social_settle(host);
+        if(!ui.alts().opened()) throw std::runtime_error("account choice did not open");
+        click(ui.alts().use_rect("2535400012345678"));
+        auto command=channel.commands.pop(std::chrono::steady_clock::now());
+        const auto* use=command?std::get_if<alt::UseAccount>(&*command):nullptr;
+        if(!use || !use->request_id) throw std::runtime_error("account choice did not send correlated Use");
+        return *use;
+    };
+    auto use=choose(gui::DisconnectAction::SwitchAccount);
+    channel.events.push(alt::SessionChanged{use.xuid,{},false,true,{},{}});
+    channel.events.push(alt::UseFinished{use.xuid,true,use.request_id});
+    host.frame();
+    if(ui.alts().opened() || panel.consume_reconnect()) throw std::runtime_error("Switch Account unexpectedly reconnected");
+    social_settle(host);
+    use=choose(gui::DisconnectAction::SwitchAccountAndReconnect);
+    channel.events.push(alt::SessionChanged{use.xuid,{},false,true,{},{}});
+    channel.events.push(alt::UseFinished{use.xuid,true,use.request_id+1});
+    host.frame();
+    if(panel.consume_reconnect() || !ui.alts().opened()) throw std::runtime_error("unrelated authentication triggered reconnect");
+    channel.events.push(alt::UseFinished{use.xuid,true,use.request_id});
+    host.frame();
+    if(panel.consume_reconnect()!=7 || ui.alts().opened()) throw std::runtime_error("successful account authentication did not reconnect");
+    social_settle(host);
+    use=choose(gui::DisconnectAction::SwitchAccountAndReconnect);
+    channel.events.push(alt::SessionChanged{use.xuid,{},false,true,"xsts_failed","Xbox token: HTTP 400"});
+    channel.events.push(alt::UseFinished{use.xuid,false,use.request_id});
+    host.frame();
+    if(panel.consume_reconnect() || !ui.alts().opened()) throw std::runtime_error("failed authentication triggered reconnect");
+    if(capture) host.capture("authentication_failed");
+    ui.cancel_alt_choice();social_settle(host);
+    use=choose(gui::DisconnectAction::SwitchAccountAndReconnect);
+    host.send(WM_KEYDOWN,VK_ESCAPE,0);host.send(WM_KEYUP,VK_ESCAPE,0);host.frame();
+    channel.events.push(alt::UseFinished{use.xuid,true,use.request_id});host.frame();
+    if(panel.consume_reconnect()) throw std::runtime_error("cancelled account selection reconnected");
+    social_settle(host);
+    channel.events.push(alt::SessionChanged{use.xuid,{},false,true,{},{}});host.frame();
+    use=choose(gui::DisconnectAction::SwitchAccountAndReconnect);
+    overlay.set_disconnect_state(false,false,8);
+    channel.events.push(alt::UseFinished{use.xuid,true,use.request_id});host.frame();
+    if(panel.consume_reconnect() || ui.alts().opened()) throw std::runtime_error("leaving disconnect screen did not cancel automatic retry");
+    overlay.set_disconnect_state(true,false,9);social_settle(host);
+    click(panel.button(gui::DisconnectAction::Reconnect));
+    if(panel.consume_reconnect()) throw std::runtime_error("missing destination was reconnected");
+    if(capture) host.capture("no_destination");
+    host.log("disconnect recovery: three actions, auth correlation/failure/cancel, stale screen and no destination passed");
+}
+
 void social_login_states(ScenarioHost& host, bool capture) {
     social_mock(host, false);
     social_settle(host);
@@ -1532,9 +1758,22 @@ const std::map<std::string, Runner>& scenarios() {
             h.overlay().set_main_menu_active(false);
             capture_at(h, c, "t", {0, 60, 120, 250});
         }},
+        {"watermark_japanese", [](ScenarioHost& h, bool c) {
+            // Japanese mode with every detail, entrance included.
+            auto* module = dynamic_cast<WatermarkModule*>(h.modules().find(WatermarkModule::module_id));
+            if (module) {
+                module->mode.get<Choice>().index = 1;
+                module->show_fps.get<bool>() = true;
+            }
+            h.overlay().gui().set_open(false);
+            h.overlay().set_main_menu_active(false);
+            capture_at(h, c, "t", {0, 60, 120, 700});
+        }},
         {"main_menu_social", [](ScenarioHost& h, bool c) { main_menu_social(h, c, false); }},
         {"main_menu_social_badge", [](ScenarioHost& h, bool c) { main_menu_social(h, c, true); }},
         {"main_menu_social_click", main_menu_social_click},
+        {"alt_manager", alt_manager},
+        {"disconnect_recovery", disconnect_recovery},
         {"main_menu_idle", [](ScenarioHost& h, bool c) {
             // The menu without Social, for comparing frame times.
             h.overlay().gui().set_open(false);
@@ -1549,6 +1788,7 @@ const std::map<std::string, Runner>& scenarios() {
             log_panels(h);
             if (c) h.capture("");
         }},
+        {"clickgui_social", clickgui_social},
         {"clickgui_reference", [](ScenarioHost& h, bool c) {
             base(h, false);
             set_enabled(h, "arraylist", false);
@@ -1958,6 +2198,39 @@ int run_input_tests(ScenarioHost& host) {
         t.expect(fullbright.keybind() == VK_INSERT && gui.open(), "GUI open key can be assigned without closing the GUI");
         fullbright.set_keybind(original);
     }
+    // The Social button opens the screen, shows it as selected above it and closes it.
+    {
+        t.reset();
+        static social::Channel channel;
+        host.overlay().set_social(&channel, {});
+        auto& ui = host.overlay().social();
+        t.frames();
+        const auto r = gui.social_button_rect();
+        const float x = r.x + r.w * 0.5F, y = r.y + r.h * 0.5F;
+        t.expect(std::abs(r.x + r.w * 0.5F - host.width() * 0.5F) <= 1.0F && r.y > 0.0F && r.y + r.h < host.height() * 0.1F,
+                 "the Social button sits at the top centre");
+        t.expect(gui.panel_rects().front().y >= r.y + r.h, "the Social button clears the default panels");
+        t.left_click(x, y);
+        t.expect(ui.screen_open(), "clicking the Social button opens the screen");
+        for (int i = 0; i < 30; ++i) host.frame();
+        t.expect(ui.screen_opaque() && gui.social_selection() >= 1.0F, "the button is selected once the screen is up");
+        t.left_click(x, y);
+        t.expect(!ui.screen_open() && gui.open(), "clicking it again closes the screen and keeps the ClickGUI");
+        for (int i = 0; i < 30; ++i) host.frame();
+        t.expect(!ui.screen_visible() && gui.social_selection() <= 0.0F, "the selection fades out with the screen");
+        t.left_click(x, y);
+        for (int i = 0; i < 30; ++i) host.frame();
+        t.key(VK_ESCAPE);
+        for (int i = 0; i < 30; ++i) host.frame();
+        t.expect(!ui.screen_open() && gui.open() && gui.social_selection() <= 0.0F, "Esc closes Social and the button follows");
+        t.button(WM_LBUTTONDOWN, x, y, MK_LBUTTON);
+        t.move(x, y + 200.0F);
+        t.button(WM_LBUTTONUP, x, y + 200.0F);
+        t.expect(!ui.screen_open(), "releasing away from the button does nothing");
+        host.overlay().set_social(nullptr, {});
+        t.frames();
+    }
+
     char summary[64];
     std::snprintf(summary, sizeof summary, "input tests: %d failure(s)", t.failures);
     host.log(summary);

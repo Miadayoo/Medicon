@@ -1,5 +1,6 @@
 #pragma once
 
+#include "medicon/gui/AltScreen.hpp"
 #include "medicon/gui/GuiContext.hpp"
 #include "medicon/gui/Ime.hpp"
 #include "medicon/gui/MusicWidget.hpp"
@@ -28,8 +29,20 @@ public:
     void open_screen(SocialView view = SocialView::Home);
     // Home with the News or Change Log tab selected.
     void open_news(social::NewsKind kind);
+    // The AltManager shares this object's fonts, backdrop and modal handling, so
+    // the screen_* queries below cover it as well. channel: owned by the service.
+    void attach_alts(alt::Channel* channel) noexcept { alt_channel_ = channel; }
+    bool alts_attached() const noexcept { return alt_channel_ != nullptr; }
+    void open_alts();
+    void choose_alt(bool reconnect);
+    void cancel_alt_choice() noexcept { alt_choice_.reset(); alt_chosen_.reset(); alts_.close(); }
+    std::optional<bool> consume_alt_choice() noexcept { return std::exchange(alt_chosen_, {}); }
+    const AltScreen& alts() const noexcept { return alts_; }
     // The sign-in gate stays up even when the Main Menu goes away under it.
-    void close_screen() noexcept { if (!gate_) screen_.close(); }
+    void close_screen() noexcept {
+        alts_.close();
+        if (!gate_) screen_.close();
+    }
     // The injected client's startup sign-in: after the inject intro, an account
     // without a working key gets the sign-in panel, which cannot be closed until
     // a key is accepted, and every sign-in greets with "Welcome to {name}".
@@ -41,16 +54,20 @@ public:
     // Once per frame after the intro (Overlay::render).
     void update_sign_in_gate();
     bool sign_in_gate_active() const noexcept { return gate_; }
-    bool screen_open() const noexcept { return screen_.opened(); }
-    bool screen_visible() const noexcept { return screen_.visible(); }
+    bool screen_open() const noexcept { return screen_.opened() || alts_.opened(); }
+    bool screen_visible() const noexcept { return screen_.visible() || alts_.visible(); }
     // Fully open: the backdrop covers everything drawn before it.
-    bool screen_opaque() const noexcept { return screen_.opaque(); }
+    bool screen_opaque() const noexcept { return screen_.opaque() || alts_.opaque(); }
     bool screen_resources_ready(ImVec2 size) const noexcept {
         return background_.ready(size) && background_.panel_ready(SocialScreen::content_size(size)) && screen_fonts_.ready();
     }
     bool screen_fonts_ready() const noexcept { return screen_fonts_.ready(); }
+    bool toast_covers(ImVec2 point) const { return toasts_.covers(point); }
     bool screen_text_ready(SocialText role, std::string_view text) const { return screen_fonts_.has(role, text); }
-    void key_event(int key, bool down) { if (screen_.opened()) screen_.key_event(key, down); }
+    void key_event(int key, bool down) {
+        if (screen_.opened()) screen_.key_event(key, down);
+        else if (alts_.opened()) alts_.key_event(key, down);
+    }
     void char_event(wchar_t character) { if (screen_.opened()) screen_.char_event(character); }
     void set_texture_host(TextureHost* host) noexcept;
     // The host's IME bridge (may be null); Social inputs use it while focused.
@@ -66,8 +83,9 @@ public:
     // Last thing in the frame. Returns at once when no notification is showing
     // and nothing is prefetched. `prefetch` prepares the screen's font and
     // backdrop on their worker threads before it is first opened (menus only).
+    // over_screen draws between the screen and the notifications above it.
     void render(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo& frame, const PointerInput& pointer,
-                bool in_menu, bool prefetch = false);
+                bool in_menu, bool prefetch = false, const std::function<void()>& over_screen = {});
 
     // Social font sizes stay requested once used, so later notifications reuse the glyphs.
     bool wants_fonts() const noexcept { return fonts_requested_; }
@@ -90,7 +108,7 @@ public:
 
 private:
     void draw(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo& frame, const PointerInput& pointer,
-              bool in_menu, bool prefetch);
+              bool in_menu, bool prefetch, const std::function<void()>& over_screen);
     void request_screen_glyphs();
     void request_message_glyphs(const social::ChatMessage& message);
     void sync_ime();
@@ -105,6 +123,10 @@ private:
     ToastManager toasts_;
     MusicWidget music_;
     SocialScreen screen_;
+    AltScreen alts_;
+    std::optional<bool> alt_choice_, alt_chosen_;
+    alt::Channel* alt_channel_ = nullptr;
+    std::vector<alt::Event> alt_scratch_;
     SocialBackground background_;
     SocialFonts screen_fonts_;
     TextureHost* texture_host_ = nullptr;

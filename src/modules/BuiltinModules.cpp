@@ -11,6 +11,7 @@
 #include "medicon/modules/EspModule.hpp"
 #include "medicon/modules/RotationsModule.hpp"
 #include "medicon/modules/SprintModule.hpp"
+#include "medicon/modules/VelocityModule.hpp"
 #include "medicon/modules/CustomModelProbeModule.hpp"
 #include "medicon/core/ModuleManager.hpp"
 
@@ -29,6 +30,7 @@ void register_builtin_modules(ModuleManager& modules) {
     modules.add<EspModule>();
     modules.add<RotationsModule>();
     modules.add<SprintModule>();
+    modules.add<VelocityModule>();
     modules.add<CustomModelProbeModule>();
 }
 

@@ -563,6 +563,7 @@ public:
         social_options.log = [this](std::string_view line) { log(std::string(line)); };
         social_ = std::make_unique<medicon::social::SocialService>(std::move(social_options));
         overlay_.set_social(&social_->channel(), &medicon::social::play_notification_sound);
+        overlay_.set_alts(&social_->alt_channel());
         social_->start();
     }
 

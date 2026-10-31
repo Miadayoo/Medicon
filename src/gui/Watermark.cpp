@@ -9,6 +9,7 @@
 #include <medicon/modules/ClientModules.hpp>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <string>
 
@@ -18,6 +19,108 @@ namespace {
 namespace style = theme::watermark;
 
 constexpr char title[] = "Medicon";
+constexpr char japanese_title[] = "\xE3\x82\x81\xE3\x81\x98\xE3\x81\x93\xE3\x82\x93"; // めじこん
+
+constexpr float pi = 3.14159265358979323846F;
+
+// Offset copies of the letters, outermost and faintest first: they add up to a
+// soft falloff. Radii are reference px, multiplied like the rest of the layout.
+struct GlowRing {
+    float radius;
+    int copies;
+    float opacity;
+};
+constexpr GlowRing glow_rings[]{
+    {11.0F, 22, 0.012F}, {9.0F, 20, 0.020F}, {7.0F, 16, 0.034F}, {5.0F, 14, 0.050F}, {3.0F, 12, 0.070F},
+};
+
+struct JapaneseLayout {
+    float scale;
+    float enter;       // 0 to 1 with the entrance
+    bool settled;
+    bool glow;
+    float opacity;
+    const char* const* details;
+    int detail_count;
+};
+
+void draw_japanese(GuiContext& context, const JapaneseLayout& layout) {
+    auto& fonts = context.fonts;
+    auto* list = context.draw_list;
+    const FontFace face = fonts.face(FontRole::WatermarkJapanese);
+    if (!face.font) return;
+    // Ink bounds rather than the line box: the face's metrics leave the kana
+    // off centre. No glyphs means the atlas has not caught up with the mode yet.
+    ImVec2 ink_min{FLT_MAX, FLT_MAX};
+    ImVec2 ink_max{-FLT_MAX, -FLT_MAX};
+    float pen = 0.0F;
+    for (const ImWchar code : {0x3081, 0x3058, 0x3053, 0x3093}) {
+        const auto* glyph = face.font->FindGlyphNoFallback(code);
+        if (!glyph) return;
+        ink_min = {std::min(ink_min.x, pen + glyph->X0), std::min(ink_min.y, glyph->Y0)};
+        ink_max = {std::max(ink_max.x, pen + glyph->X1), std::max(ink_max.y, glyph->Y1)};
+        pen += glyph->AdvanceX;
+    }
+
+    const float s = layout.scale;
+    const float margin = std::round(style::margin * s);
+    const float rise = layout.settled ? 0.0F : -style::rise * s * (1.0F - layout.enter);
+    const ImVec2 origin{margin - ink_min.x, margin - ink_min.y + rise};
+    const float ink_right = origin.x + ink_max.x;
+    const float ink_middle = origin.y + (ink_min.y + ink_max.y) * 0.5F;
+
+    const ScaleAround scope(list, {(margin + ink_right) * 0.5F, ink_middle},
+                            layout.settled ? 1.0F : style::start_scale + (1.0F - style::start_scale) * layout.enter,
+                            layout.enter * layout.opacity);
+
+    // Built at the origin and moved afterwards, as in the inject title:
+    // ImFont::RenderText truncates positions, which would flatten the rings.
+    const ImVec4 clip(-100000.0F, -100000.0F, 100000.0F, 100000.0F);
+    const auto stamp = [&](ImVec2 offset, ImU32 color) {
+        const int first = list->VtxBuffer.Size;
+        face.font->RenderText(list, face.size, {0.0F, 0.0F}, color, clip, japanese_title, nullptr, 0.0F, false);
+        for (int i = first; i < list->VtxBuffer.Size; ++i) {
+            list->VtxBuffer[i].pos.x += origin.x + offset.x;
+            list->VtxBuffer[i].pos.y += origin.y + offset.y;
+        }
+    };
+    const auto ring = [&](float radius, int copies, ImU32 color) {
+        for (int i = 0; i < copies; ++i) {
+            const float angle = 2.0F * pi * static_cast<float>(i) / static_cast<float>(copies);
+            stamp({std::cos(angle) * radius, std::sin(angle) * radius}, color);
+        }
+    };
+    if (layout.glow) {
+        for (const auto& glow : glow_rings) ring(glow.radius * s, glow.copies, to_u32(style::title_glow, glow.opacity));
+    }
+    const float outline = std::max(1.0F, face.size * style::title_outline_em);
+    ring(outline, 8, to_u32(style::title_outline));
+    stamp({}, to_u32(style::title_fill));
+
+    // Details beside the letters, centred on them, outlined to read over any scene.
+    const float small_cap = fonts.face(FontRole::WatermarkSmall).cap_height;
+    const float baseline = layout.settled ? std::round(ink_middle + small_cap * 0.5F) : ink_middle + small_cap * 0.5F;
+    const float gap = style::gap * s;
+    const ImU32 edge = to_u32(style::title_outline, 0.6F);
+    float x = ink_right + style::title_gap * s;
+    for (int i = 0; i < layout.detail_count; ++i) {
+        if (i > 0) {
+            x += gap * 0.5F;
+            const ImVec2 center{x + style::dot * s * 0.5F, baseline - small_cap * 0.5F};
+            list->AddCircleFilled(center, style::dot * s * 0.5F + 1.0F, edge, 12);
+            list->AddCircleFilled(center, style::dot * s * 0.5F, to_u32(style::title_fill), 12);
+            x += style::dot * s + gap * 0.5F;
+        }
+        for (int k = 0; k < 8; ++k) {
+            const float angle = 2.0F * pi * static_cast<float>(k) / 8.0F;
+            // Fractional even when settled: a whole pixel closes up letters this small.
+            fonts.draw(list, FontRole::WatermarkSmall, x + std::cos(angle) * 0.7F, baseline + std::sin(angle) * 0.7F, edge,
+                       layout.details[i], false);
+        }
+        fonts.draw(list, FontRole::WatermarkSmall, x, baseline, to_u32(style::title_fill), layout.details[i], layout.settled);
+        x += fonts.measure(FontRole::WatermarkSmall, layout.details[i]);
+    }
+}
 
 } // namespace
 
@@ -65,6 +168,11 @@ void Watermark::render(GuiContext& context, float wall_dt) {
     if (module->show_fps.get<bool>() && fps_ > 0) {
         fps_text_ = std::to_string(fps_) + " FPS";
         details[detail_count++] = fps_text_.c_str();
+    }
+    if (module->japanese()) {
+        draw_japanese(context, {s, t, settled, module->glow.get<bool>(),
+                                std::clamp(module->opacity.get<float>(), 0.5F, 1.0F), details, detail_count});
+        return;
     }
     const float gap = style::gap * s;
     const float dot_room = style::dot * s + gap;

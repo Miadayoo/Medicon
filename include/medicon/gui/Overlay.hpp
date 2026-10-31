@@ -3,6 +3,7 @@
 #include "medicon/gui/ArrayList.hpp"
 #include "medicon/gui/ClickGui.hpp"
 #include "medicon/gui/Clock.hpp"
+#include "medicon/gui/DisconnectScreen.hpp"
 #include "medicon/gui/Fonts.hpp"
 #include "medicon/gui/GuiContext.hpp"
 #include "medicon/gui/InjectSplash.hpp"
@@ -36,6 +37,9 @@ public:
     void set_main_menu_active(bool active) noexcept;
     MainMenu& main_menu() noexcept { return main_menu_; }
     const MainMenu& main_menu() const noexcept { return main_menu_; }
+    DisconnectScreen& disconnect_screen() noexcept { return disconnect_; }
+    const DisconnectScreen& disconnect_screen() const noexcept { return disconnect_; }
+    void set_disconnect_state(bool visible,bool available,std::uint64_t generation,std::string error = {});
     // Opens the Social screen in game (VK_HOME).
     static constexpr int social_key = 0x24;
     // Routes a Win32 virtual-key event: GUI first (open key, Esc, keybind capture),
@@ -56,13 +60,16 @@ public:
     const FrameInfo& frame() const noexcept { return frame_; }
     // The client draws its own cursor: the Medicon menu, the ClickGUI or the
     // Social screen is open. Everything else counts as playing for Social (see SocialUi).
-    bool in_menu() const noexcept { return main_menu_.active() || gui_.open() || social_.screen_open(); }
+    bool in_menu() const noexcept { return main_menu_.active() || disconnect_.visible() || gui_.open() || social_.screen_open(); }
 
     void set_save_handler(std::function<void()> handler) { save_ = std::move(handler); }
     // Connects Social. The channel belongs to the network service and must outlive this overlay.
     void set_social(social::Channel* channel, std::function<void()> play_sound) {
         social_.attach(channel, std::move(play_sound));
     }
+    // Connects the AltManager. The channel must outlive this overlay.
+    void set_alts(alt::Channel* channel) noexcept { social_.attach_alts(channel); }
+    void set_alt_choice_handler(std::function<void(bool)> handler) { alt_choice_handler_=std::move(handler); }
     void set_texture_host(TextureHost* host) noexcept { social_.set_texture_host(host); }
     // The host's IME bridge for Social text inputs (may be null). Must outlive this overlay.
     void set_ime(ImeBridge* ime) noexcept { social_.set_ime(ime); }
@@ -86,6 +93,7 @@ private:
     FrameClock clock_;
     InjectSplash splash_;
     MainMenu main_menu_;
+    DisconnectScreen disconnect_;
     SocialUi social_;
     FrameInfo frame_{};
     FontSizes prepared_sizes_{};
@@ -95,6 +103,7 @@ private:
     // appears mid-intro must not rebuild the atlas while the last frames play.
     bool splash_glyphs_sealed_ = false;
     std::function<void()> save_;
+    std::function<void(bool)> alt_choice_handler_;
 };
 
 } // namespace medicon::gui

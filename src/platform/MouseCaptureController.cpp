@@ -21,7 +21,11 @@ bool MouseSyncSchedule::update(bool open, bool active, std::uint64_t millisecond
 
 bool MouseCaptureController::update(bool open, bool focused, std::optional<bool> grabbed,
                                     const std::function<bool()>& release,
-                                    const std::function<bool()>& grab) noexcept {
+                                    const std::function<bool()>& grab, bool native_ui_owns_cursor) noexcept {
+    // A disconnect screen has already left gameplay and released its cursor.
+    // Retire any gameplay restoration from before disconnect when the overlaid
+    // account picker closes after authentication.
+    if (native_ui_owns_cursor) return reset(false, {});
     if (open) {
         if (!open_) {
             // Preserve an outstanding restore across close/reopen while focus

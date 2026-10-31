@@ -44,6 +44,9 @@ public:
 
     State locate(std::string& diagnostic);
     [[nodiscard]] std::uintptr_t send_target() const noexcept { return send_target_; }
+    // Native automatic latency echoes call sendToServer (slot 4) directly,
+    // bypassing the chat/general send entry (slot 2).
+    [[nodiscard]] std::uintptr_t server_send_target() const noexcept { return server_send_target_; }
     bool consume(void* packet, const std::function<void(std::string)>& enqueue) const noexcept;
     [[nodiscard]] std::uintptr_t tick_target(std::string& diagnostic, bool require_feedback = true) const noexcept;
     [[nodiscard]] bool is_local_player(void* actor) const noexcept;
@@ -83,6 +86,7 @@ private:
     bool scanned_ = false;
     std::uintptr_t game_global_ = 0;
     std::uintptr_t send_target_ = 0;
+    std::uintptr_t server_send_target_ = 0;
     std::uintptr_t display_target_ = 0;
     std::uintptr_t verified_client_ = 0;
     // mouse_grabbed() is polled while the ClickGUI is open. Re-reading the

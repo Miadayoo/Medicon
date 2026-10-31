@@ -1,0 +1,176 @@
+{
+  "version_directory": "1.26.52.03",
+  "imagebase": "0x140000000",
+  "sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+  "file_size": 311218032,
+  "binary_modified_by_launcher": true,
+  "analysis_method": "PE/Capstone analysis followed by IDA MCP input SHA-256, function-boundary, byte-mask, cross-reference, and Hex-Rays verification",
+  "functions": [
+    {
+      "name": "ConnectionRequest_create",
+      "va": "0x140479280",
+      "rva": "0x479280",
+      "end_va": "0x140479e50",
+      "pattern": "55 41 57 41 56 56 57 53 48 81 EC B8 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 30 01 00 00 FE FF FF FF 4C 89 CB 4C 89 C7",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x140479280"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "ConnectionAuthInfo_toJson",
+      "va": "0x14046add0",
+      "rva": "0x46add0",
+      "end_va": "0x14046ae65",
+      "pattern": "55 56 57 48 83 EC 40 48 8D 6C 24 40 48 C7 45 F8 FE FF FF FF 48 89 D6 48 89 4D F0 31 D2 E8 ?? ?? ?? ?? 48 8D 56 10 48 8D 4D E0",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x14046add0"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "Social_UserImpl_create",
+      "va": "0x140e47780",
+      "rva": "0xe47780",
+      "end_va": "0x140e496ef",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 0A 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 40 0A 00 00 48 C7 85 38 0A 00 00 FE FF FF FF 4C 89 C7",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x140e47780"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "XboxLiveIdentity_getAuthToken",
+      "va": "0x1413c92f0",
+      "rva": "0x13c92f0",
+      "end_va": "0x1413c951f",
+      "pattern": "55 41 56 56 57 53 48 81 EC 40 01 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 B0 00 00 00 48 C7 85 A8 00 00 00 FE FF FF FF 48 89 D6 F6 81 F9 01 00 00 01",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x1413c92f0"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "Xal_getTokenAndSignature_helper",
+      "va": "0x141392740",
+      "rva": "0x1392740",
+      "end_va": "0x141392d80",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 01 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 40 01 00 00 48 C7 85 38 01 00 00 FE FF FF FF 4C 89 C7 48 89 CE",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x141392740"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "Xal_getTokenAndSignature_result_helper",
+      "va": "0x1413bdd80",
+      "rva": "0x13bdd80",
+      "end_va": "0x1413be220",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 28 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 A0 00 00 00 FE FF FF FF 48 89 CE 48 8B 4A 10",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x1413bdd80"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "PlayerAuthentication_getGlobalToken",
+      "va": "0x146175c30",
+      "rva": "0x6175c30",
+      "end_va": "0x1461764c6",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 02 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 80 01 00 00 48 C7 85 78 01 00 00 FE FF FF FF 48 89 D6 48 89 CF",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x146175c30"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "XboxLiveIdentity_updateProfile_continuation",
+      "va": "0x1413d5fa0",
+      "rva": "0x13d5fa0",
+      "end_va": "0x1413d675a",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 10 01 00 00 FE FF FF FF 48 89 4D E0",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x1413d5fa0"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    },
+    {
+      "name": "AuthServiceApi_startMultiplayerSession",
+      "va": "0x144282e30",
+      "rva": "0x4282e30",
+      "end_va": "0x1442842f2",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 68 02 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 D0 01 00 00 48 C7 85 C8 01 00 00 FE FF FF FF 4C 89 85 70 01 00 00 48 89 55 A8",
+      "matches_in_text": 1,
+      "matched_vas": [
+        "0x144282e30"
+      ],
+      "abi_status": "static_reconstruction_with_ida_confirmation; runtime_not_tested",
+      "runtime_validated": false,
+      "ida_bytes_verified": true,
+      "ida_function_boundary_verified": true
+    }
+  ],
+  "evidence": {
+    "ConnectionAuthInfo": {
+      "key_pointer": "0x00",
+      "authentication_type_i32": "0x08",
+      "token_msvc_string": "0x10",
+      "observed_size": "0x30"
+    },
+    "Social_UserImpl": {
+      "vtable_va": "0x14e791410",
+      "identities_pointer": "0x218",
+      "getIdentity_vtable_byte_offset": "0xe8",
+      "getIdentity_abi": "RCX=this, RDX=shared_ptr output, R8D=identity type"
+    },
+    "XboxLiveIdentity": {
+      "identity_type": 1,
+      "vtable_va": "0x14e7b4a00",
+      "xuid_decimal_msvc_string": "0x30",
+      "xbox_live_user_pointer": "0x1c8",
+      "gamertag_msvc_string": "0x1d8"
+    },
+    "game_server_token": {
+      "type": "RawGameServerToken",
+      "audience_literal": "api://auth-minecraft-services/multiplayer",
+      "audience_literal_va": "0x14ec00b19",
+      "issuer_response_key": "signedToken",
+      "issuer_response_key_va": "0x14ec2c917",
+      "setup_game_type_for_nonempty_global_token": 0,
+      "setup_game_type_for_legacy_fallback": 2
+    }
+  },
+  "ida_mcp_verified": true
+}

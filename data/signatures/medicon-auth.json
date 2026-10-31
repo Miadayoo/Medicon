@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "medicon:docs/alt-manager-1.26.52.03-signatures.json",
+    "commit": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+    "path": "1.26.52.03/Minecraft.Windows.exe",
+    "license_status": "project_research"
+  },
+  "compatibility": "Static reconstruction with IDA confirmation of 1.26.52.03 (LeviLauncher image). runtime_validated=false: not confirmed against the running game. See docs/alt-manager-sdk-validation.md.",
+  "signatures": [
+    {
+      "name": "ConnectionRequest_create",
+      "pattern": "55 41 57 41 56 56 57 53 48 81 EC B8 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 30 01 00 00 FE FF FF FF 4C 89 CB 4C 89 C7",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 14,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "ConnectionAuthInfo_toJson",
+      "pattern": "55 56 57 48 83 EC 40 48 8D 6C 24 40 48 C7 45 F8 FE FF FF FF 48 89 D6 48 89 4D F0 31 D2 E8 ?? ?? ?? ?? 48 8D 56 10 48 8D 4D E0",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 29,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "Social_UserImpl_create",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 0A 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 40 0A 00 00 48 C7 85 38 0A 00 00 FE FF FF FF 4C 89 C7",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 44,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "XboxLiveIdentity_getAuthToken",
+      "pattern": "55 41 56 56 57 53 48 81 EC 40 01 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 B0 00 00 00 48 C7 85 A8 00 00 00 FE FF FF FF 48 89 D6 F6 81 F9 01 00 00 01",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 59,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "Xal_getTokenAndSignature_helper",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 01 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 40 01 00 00 48 C7 85 38 01 00 00 FE FF FF FF 4C 89 C7 48 89 CE",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 74,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "Xal_getTokenAndSignature_result_helper",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 28 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 A0 00 00 00 FE FF FF FF 48 89 CE 48 8B 4A 10",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 89,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "PlayerAuthentication_getGlobalToken",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 02 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 80 01 00 00 48 C7 85 78 01 00 00 FE FF FF FF 48 89 D6 48 89 CF",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 104,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "XboxLiveIdentity_updateProfile_continuation",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 10 01 00 00 FE FF FF FF 48 89 4D E0",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 119,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    },
+    {
+      "name": "AuthServiceApi_startMultiplayerSession",
+      "pattern": "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 68 02 00 00 48 8D AC 24 80 00 00 00 0F 29 B5 D0 01 00 00 48 C7 85 C8 01 00 00 FE FF FF FF 4C 89 85 70 01 00 00 48 89 55 A8",
+      "resolution": "direct",
+      "displacement_offset": 0,
+      "source_line": 134,
+      "upstream_version_hint": "1.26.52.03",
+      "upstream_uncertain": true
+    }
+  ]
+}

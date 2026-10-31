@@ -16,6 +16,7 @@ include(FetchContent)
 option(MEDICON_BUILD_WINDOWS "Build the Windows x64 DLL and GUI preview" ${WIN32})
 set(MEDICON_SOCIAL_SERVER_URL "https://medicon.auau1000.com" CACHE STRING "Social server URL embedded in the client")
 set(MEDICON_UPDATE_HOST "medicon.auau1000.com" CACHE STRING "Host MediconLoader downloads Core releases from")
+set(MEDICON_MSA_CLIENT_ID "" CACHE STRING "Application (client) ID of your Microsoft Entra app for AltManager sign-in; see docs/alt-manager.md")
 
 # Immutable revisions; downloaded only during configure, never at client startup.
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
@@ -77,11 +78,14 @@ medicon_target(medicon_music_core)
 
 # Social protocol, settings and render-thread state: no WinHTTP, no ImGui.
 add_library(medicon_social_core STATIC
+    src/alt/Auth.cpp
+    src/alt/Session.cpp
     src/social/Config.cpp
     src/social/Protocol.cpp
     src/social/Store.cpp)
 medicon_target(medicon_social_core)
-target_compile_definitions(medicon_social_core PUBLIC MEDICON_SOCIAL_SERVER_URL="${MEDICON_SOCIAL_SERVER_URL}")
+target_compile_definitions(medicon_social_core PUBLIC MEDICON_SOCIAL_SERVER_URL="${MEDICON_SOCIAL_SERVER_URL}"
+    MEDICON_MSA_CLIENT_ID="${MEDICON_MSA_CLIENT_ID}")
 target_link_libraries(medicon_social_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(BUILD_TESTING)
@@ -117,6 +121,10 @@ if(BUILD_TESTING)
     medicon_target(medicon_social_tests)
     target_link_libraries(medicon_social_tests PRIVATE medicon_social_core)
     add_test(NAME social COMMAND medicon_social_tests)
+    add_executable(medicon_alt_tests tests/alt_tests.cpp)
+    medicon_target(medicon_alt_tests)
+    target_link_libraries(medicon_alt_tests PRIVATE medicon_social_core)
+    add_test(NAME alt COMMAND medicon_alt_tests)
 endif()
 
 if(MEDICON_BUILD_WINDOWS)
@@ -180,6 +188,8 @@ if(MEDICON_BUILD_WINDOWS)
 
     # Shared by the DLL and the Preview: no host-specific code or #ifdefs here.
     add_library(medicon_gui STATIC
+        src/gui/AltScreen.cpp
+        src/gui/DisconnectScreen.cpp
         src/gui/ArrayList.cpp
         src/gui/ArrayListAnimator.cpp
         src/gui/ClickGui.cpp
@@ -205,6 +215,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/SocialWidgets.cpp
         src/gui/Textures.cpp
         src/gui/Toasts.cpp
+        src/gui/TopNav.cpp
         src/gui/Watermark.cpp)
     medicon_target(medicon_gui)
     target_include_directories(medicon_gui PRIVATE "${MEDICON_EMBEDDED_FONTS_DIR}")
@@ -214,6 +225,7 @@ if(MEDICON_BUILD_WINDOWS)
 
     # Social networking (spec 4.2): WinHTTP REST/WebSocket, DPAPI license, notification sound.
     add_library(medicon_social_net STATIC
+        src/alt/AltService.cpp
         src/social/Files.cpp
         src/social/LicenseStore.cpp
         src/social/Service.cpp
@@ -224,7 +236,7 @@ if(MEDICON_BUILD_WINDOWS)
     medicon_target(medicon_social_net)
     target_link_libraries(medicon_social_net PUBLIC medicon_social_core winhttp crypt32 winmm shell32 ole32)
 
-    add_library(medicon_bedrock STATIC src/sdk/BedrockChat.cpp src/sdk/BedrockInput.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp src/sdk/Gameplay.cpp src/sdk/CustomModelProbe.cpp src/sdk/CustomModelBox.cpp src/sdk/CustomModelStatic.cpp src/sdk/CustomModelAnimation.cpp src/sdk/CustomModelView.cpp)
+    add_library(medicon_bedrock STATIC src/sdk/BedrockReconnect.cpp src/sdk/BedrockAuth.cpp src/sdk/BedrockChat.cpp src/sdk/BedrockInput.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp src/sdk/Gameplay.cpp src/sdk/CustomModelProbe.cpp src/sdk/CustomModelBox.cpp src/sdk/CustomModelStatic.cpp src/sdk/CustomModelAnimation.cpp src/sdk/CustomModelView.cpp)
     medicon_target(medicon_bedrock)
     target_link_libraries(medicon_bedrock PUBLIC medicon_memory medicon_model_asset version)
 
@@ -282,6 +294,10 @@ if(MEDICON_BUILD_WINDOWS)
     target_link_libraries(medicon_shadow_reference PRIVATE windowscodecs ole32)
 
     if(BUILD_TESTING)
+        add_executable(medicon_alt_clipboard_tests tests/alt_clipboard_tests.cpp)
+        medicon_target(medicon_alt_clipboard_tests)
+        target_link_libraries(medicon_alt_clipboard_tests PRIVATE user32)
+        add_test(NAME alt_clipboard COMMAND medicon_alt_clipboard_tests)
         add_executable(medicon_custom_model_animation_tests tests/custom_model_animation_tests.cpp)
         medicon_target(medicon_custom_model_animation_tests)
         target_link_libraries(medicon_custom_model_animation_tests PRIVATE medicon_bedrock)
@@ -302,6 +318,10 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_bedrock_chat_tests)
         target_link_libraries(medicon_bedrock_chat_tests PRIVATE medicon_bedrock)
         add_test(NAME bedrock_chat COMMAND medicon_bedrock_chat_tests)
+        add_executable(medicon_bedrock_auth_tests tests/bedrock_auth_tests.cpp)
+        medicon_target(medicon_bedrock_auth_tests)
+        target_link_libraries(medicon_bedrock_auth_tests PRIVATE medicon_bedrock)
+        add_test(NAME bedrock_auth COMMAND medicon_bedrock_auth_tests)
         add_executable(medicon_bedrock_input_tests tests/bedrock_input_tests.cpp)
         medicon_target(medicon_bedrock_input_tests)
         target_link_libraries(medicon_bedrock_input_tests PRIVATE medicon_runtime)
@@ -314,6 +334,10 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_bedrock_menu_tests)
         target_link_libraries(medicon_bedrock_menu_tests PRIVATE medicon_bedrock)
         add_test(NAME bedrock_menu COMMAND medicon_bedrock_menu_tests)
+        add_executable(medicon_bedrock_reconnect_tests tests/bedrock_reconnect_tests.cpp)
+        medicon_target(medicon_bedrock_reconnect_tests)
+        target_link_libraries(medicon_bedrock_reconnect_tests PRIVATE medicon_bedrock)
+        add_test(NAME bedrock_reconnect COMMAND medicon_bedrock_reconnect_tests)
         add_executable(medicon_vanilla_navigation_tests tests/vanilla_navigation_tests.cpp)
         medicon_target(medicon_vanilla_navigation_tests)
         target_link_libraries(medicon_vanilla_navigation_tests PRIVATE medicon_bedrock)
@@ -408,9 +432,13 @@ if(MEDICON_BUILD_WINDOWS)
         add_test(NAME preview_social_update_notice COMMAND MediconPreview --scenario social_update_notice --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_admin_dll COMMAND MediconPreview --scenario social_admin_dll --size 1280x720 --fixed-dt 0.016666667)
         add_test(NAME preview_social_changelog_marks COMMAND MediconPreview --scenario social_changelog_marks --size 1280x720 --fixed-dt 0.016666667)
+        add_test(NAME preview_alt_manager COMMAND MediconPreview --scenario alt_manager --size 1280x720 --fixed-dt 0.016666667)
+        add_test(NAME preview_disconnect_recovery COMMAND MediconPreview --scenario disconnect_recovery --size 1280x720 --fixed-dt 0.016666667)
+        set_tests_properties(preview_disconnect_recovery PROPERTIES TIMEOUT 40)
         set_tests_properties(preview_social_global preview_social_dm preview_social_friends preview_social_friend_remove
                              preview_social_admin preview_social_admin_focus preview_social_admin_dll
-                             preview_social_sign_in_gate preview_social_update_notice preview_social_changelog_marks PROPERTIES TIMEOUT 30)
+                             preview_social_sign_in_gate preview_social_update_notice preview_social_changelog_marks
+                             preview_alt_manager PROPERTIES TIMEOUT 30)
         set_tests_properties(preview_social_home preview_social_device_recreate preview_social_changelog
                              preview_social_main_menu_click preview_social_toast_click preview_social_typing PROPERTIES TIMEOUT 30)
         add_test(NAME preview_main_menu_device_recreate COMMAND MediconPreview --main-menu-time 1.5 --size 1280x720 --simulate-device-lost 0)

@@ -6,3 +6,4 @@
 #include "medicon/modules/KillauraModule.hpp"
 #include "medicon/modules/ScaffoldModule.hpp"
 #include "medicon/modules/SprintModule.hpp"
+#include "medicon/modules/VelocityModule.hpp"

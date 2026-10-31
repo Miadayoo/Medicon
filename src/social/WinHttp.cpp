@@ -143,7 +143,7 @@ HttpClient::HttpClient(std::string_view client_version) {
 }
 
 HttpResponse HttpClient::request(const Endpoint& endpoint, const wchar_t* method, std::string_view path,
-                                 std::string_view json_body, std::string_view bearer) const {
+                                 std::string_view json_body, std::string_view bearer, std::string_view extra_headers) const {
     HttpResponse response;
     if (!session_) {
         response.error = ERROR_INVALID_HANDLE;
@@ -161,7 +161,7 @@ HttpResponse HttpClient::request(const Endpoint& endpoint, const wchar_t* method
         response.error = GetLastError();
         return response;
     }
-    const std::wstring headers = headers_for(bearer, !json_body.empty());
+    const std::wstring headers = headers_for(bearer, !json_body.empty()) + widen(extra_headers);
     void* body = json_body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(json_body.data());
     const auto length = static_cast<DWORD>(json_body.size());
     if (!WinHttpSendRequest(request.get(), headers.c_str(), static_cast<DWORD>(-1), body, length, length, 0) ||

@@ -10,7 +10,8 @@ namespace medicon::gui {
 
 // "Medicon" on a Main Menu glass plate at the top left, drawn only while
 // playing (spec: Watermark). Fades, rises 5 px and grows from 0.97 when it
-// appears; the same in reverse when the module is turned off.
+// appears; the same in reverse when the module is turned off. Japanese mode
+// replaces the plate with めじこん in the inject title's style, with the same motion.
 class Watermark {
 public:
     Watermark();

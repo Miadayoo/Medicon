@@ -9,7 +9,7 @@
 
 namespace medicon::sdk {
 
-enum class MenuScreenState { unknown, main_menu, other };
+enum class MenuScreenState { unknown, main_menu, other, disconnected };
 
 // Read-only identity of one successfully inspected menu. These values are
 // comparison tokens, never retained as native call targets or ownership.

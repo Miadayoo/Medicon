@@ -1,0 +1,38 @@
+{
+  "date_jst": "2026-10-31",
+  "game_version": "1.26.52.03",
+  "implementation": "native multiplayer/NetherNet login bridge v2",
+  "game_image_sha256": "47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942",
+  "game_pe_timestamp": "0x6AB54E37",
+  "game_image_size": "0x12C02000",
+  "hooks_exercised": [
+    "libHttpClient.GDK.dll!HCHttpCallPerformAsync",
+    "libHttpClient.GDK.dll!HCHttpCallResponseGetStatusCode",
+    "Minecraft.Windows.exe+0x46ADD0 ConnectionAuthInfo_toJson"
+  ],
+  "native_log_evidence_jst": [
+    "15:13:06 native multiplayer/NetherNet login bridge ready (v2)",
+    "15:13:22 native multiplayer token request uses selected session (NetherNet/login shared)",
+    "15:13:22 native multiplayer token HTTP 200",
+    "15:13:23 server login serialized with the authenticated account"
+  ],
+  "standalone_live_test": {
+    "transport": "game's libHttpClient.GDK.dll and native async callback",
+    "original_public_key_body_preserved": true,
+    "selected_authorization_header_applied": true,
+    "http_status": 200,
+    "response_xuid_and_public_key_match": true,
+    "login_preserves_native_token": true
+  },
+  "user_confirmed": {
+    "server": "Hive",
+    "selected_account_can_join": true,
+    "nethernet_error_resolved": true,
+    "disconnectionscreen_notauthenticated_resolved": true
+  },
+  "limits": [
+    "Native Xbox profile/friends identity is not changed by this bridge.",
+    "Other research functions in the static signature catalog have not all been exercised.",
+    "No account identifiers, credentials, request/response bodies, or private keys are recorded here."
+  ]
+}

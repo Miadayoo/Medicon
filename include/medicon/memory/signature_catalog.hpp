@@ -28,4 +28,9 @@ struct SignatureSource {
 [[nodiscard]] std::span<const SignatureDefinition> solstice_signatures() noexcept;
 [[nodiscard]] const SignatureSource& solstice_signature_source() noexcept;
 
+// Medicon's own auth-flow signatures for 1.26.52.03 (docs/alt-manager-*). These
+// are not verified against a running game; every entry is upstream_uncertain.
+[[nodiscard]] std::span<const SignatureDefinition> medicon_auth_signatures() noexcept;
+[[nodiscard]] const SignatureSource& medicon_auth_signature_source() noexcept;
+
 } // namespace medicon::memory

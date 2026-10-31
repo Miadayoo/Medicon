@@ -31,6 +31,7 @@ public:
 
     std::deque<Setting>& settings() noexcept { return settings_; }
     const std::deque<Setting>& settings() const noexcept { return settings_; }
+    [[nodiscard]] virtual bool setting_visible(const Setting& setting) const noexcept { return setting.visible; }
 
     // HUD metadata. Client infrastructure modules hide themselves from the ArrayList.
     bool show_in_arraylist() const noexcept { return show_in_arraylist_; }

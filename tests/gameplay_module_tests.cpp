@@ -3,6 +3,7 @@
 #include "medicon/sdk/Gameplay.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <set>
@@ -44,6 +45,14 @@ public:
     std::vector<std::pair<float, float>> rotations;
     std::vector<float> head_body_rotations;
     std::vector<bool> sprint_requests;
+    std::vector<Vec3> velocity_requests;
+    bool velocity_result = true;
+    bool throw_velocity = false;
+    bool native_prediction = false, prediction_available = true;
+    std::vector<std::pair<Vec3, std::int64_t>> prediction_requests;
+    std::vector<LatencyReply> latency_replies;
+    std::vector<char> velocity_events;
+    bool latency_result = true;
     bool sprint_result = true;
     std::vector<std::uintptr_t> attacks;
     std::vector<std::pair<BlockPos, bool>> placements;
@@ -82,6 +91,23 @@ public:
         sprint_requests.push_back(sprinting);
         return sprint_result;
     }
+    bool set_velocity(Vec3 velocity) override {
+        if (throw_velocity) throw std::runtime_error("velocity");
+        velocity_requests.push_back(velocity);
+        if (velocity_result) { state.local.velocity = velocity; velocity_events.push_back('v'); }
+        return velocity_result;
+    }
+    KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp) override {
+        if (!native_prediction) return GameplayAccess::apply_knockback(velocity, received_timestamp);
+        prediction_requests.emplace_back(velocity, received_timestamp);
+        if (!prediction_available) return KnockbackApplyResult::failed;
+        velocity_events.push_back('p');
+        return KnockbackApplyResult::predicted;
+    }
+    bool send_latency_reply(const LatencyReply& reply) override {
+        if (latency_result) { latency_replies.push_back(reply); velocity_events.push_back('a'); }
+        return latency_result;
+    }
     bool place_block(BlockPos position, bool auto_select) override {
         if (throw_place) throw std::runtime_error("place");
         placements.emplace_back(position, auto_select);
@@ -107,6 +133,428 @@ public:
         return actor;
     }
 };
+
+void test_velocity_motion() {
+    VelocityModule velocity;
+    Vec3 motion{2.0F, 4.0F, -6.0F};
+    using Result = VelocityModule::MotionResult;
+    check(!velocity.enabled() && velocity.category() == Category::Movement &&
+          velocity.process_motion(motion) == Result::ignored && near(motion.x, 2),
+          "Disabled Velocity changed incoming motion");
+    check(!velocity.setting_visible(velocity.horizontal) && !velocity.setting_visible(velocity.vertical),
+          "Full mode showed Percent sliders");
+    velocity.set_enabled(true);
+    check(velocity.process_motion(motion) == Result::cancelled && near(motion.y, 4),
+          "Full mode must cancel the packet without zeroing the player's existing movement");
+    velocity.mode.get<Choice>().index = 1;
+    check(velocity.setting_visible(velocity.horizontal) && velocity.setting_visible(velocity.vertical),
+          "Percent sliders did not appear on mode change while enabled");
+    velocity.horizontal.get<int>() = 25;
+    velocity.vertical.get<int>() = 75;
+    check(velocity.process_motion(motion) == Result::scaled && near(motion.x, 0.5F) &&
+          near(motion.y, 3) && near(motion.z, -1.5F), "Percent did not scale X/Z separately from Y");
+    velocity.horizontal.get<int>() = 100;
+    velocity.vertical.get<int>() = 100;
+    check(velocity.process_motion(motion) == Result::ignored && near(motion.x, 0.5F),
+          "100 percent did not preserve incoming motion");
+    velocity.horizontal.get<int>() = 0;
+    velocity.vertical.get<int>() = 100;
+    check(velocity.process_motion(motion) == Result::scaled && motion.x == 0 && motion.z == 0 && near(motion.y, 3),
+          "Zero horizontal percent affected vertical motion");
+    velocity.vertical.get<int>() = 0;
+    check(velocity.process_motion(motion) == Result::scaled && motion.y == 0, "Zero percent retained knockback");
+    motion = {2, 4, -6};
+    velocity.horizontal.get<int>() = -10;
+    velocity.vertical.get<int>() = 120;
+    check(velocity.process_motion(motion) == Result::scaled && motion.x == 0 && near(motion.y, 4) && motion.z == 0,
+          "Percent values escaped 0..100 bounds");
+    motion.x = std::numeric_limits<float>::quiet_NaN();
+    check(velocity.process_motion(motion) == Result::ignored, "Non-finite motion was processed");
+    velocity.set_enabled(false);
+    check(velocity.setting_visible(velocity.horizontal), "Disabled Percent mode hid its settings");
+}
+
+void test_velocity_delay_timing() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using Result = VelocityModule::MotionResult;
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    Vec3 first{2, 4, -6}, second{-1, 0.5F, 3};
+    check(velocity.delay_ms.get<int>() == 8000 && velocity.setting_visible(velocity.delay_ms) &&
+          !velocity.setting_visible(velocity.horizontal) && !velocity.setting_visible(velocity.vertical),
+          "Delay must default to 8000 ms and expose only its delay slider");
+    check(velocity.handle_motion(first, game.state, start) == Result::delayed && near(first.x, 2) &&
+          near(first.y, 4) && near(first.z, -6), "Delay changed the received knockback vector");
+    check(velocity.handle_motion(second, game.state, start + 1s) == Result::delayed && velocity.pending_count() == 2,
+          "A second hit replaced the first delayed knockback");
+    velocity.update(game, true, start + 7999ms);
+    check(game.velocity_requests.empty(), "Delayed knockback was applied before eight seconds");
+    velocity.update(game, true, start + 8s);
+    check(game.velocity_requests.size() == 1 && near(game.state.local.velocity.x, 2) &&
+          near(game.state.local.velocity.y, 4) && near(game.state.local.velocity.z, -6) && velocity.pending_count() == 1,
+          "A later hit reset the first hit's deadline or altered its motion");
+    velocity.update(game, true, start + 8999ms);
+    check(game.velocity_requests.size() == 1, "Second knockback did not keep its own deadline");
+    velocity.update(game, true, start + 9s);
+    check(game.velocity_requests.size() == 2 && near(game.state.local.velocity.x, -1) &&
+          near(game.state.local.velocity.y, 0.5F) && velocity.pending_count() == 0,
+          "Second delayed knockback was not applied unchanged");
+
+    velocity.delay_ms.get<int>() = 1000;
+    check(velocity.handle_motion(first, game.state, start + 10s) == Result::delayed, "Delay did not queue a hit");
+    velocity.delay_ms.get<int>() = 50;
+    check(velocity.handle_motion(second, game.state, start + 10100ms) == Result::delayed, "Shortened delay did not queue");
+    velocity.update(game, true, start + 10200ms);
+    check(game.velocity_requests.size() == 2, "A shortened delay overtook an earlier hit");
+    velocity.update(game, true, start + 12s);
+    check(game.velocity_requests.size() == 3 && near(game.state.local.velocity.x, 2) && velocity.pending_count() == 1,
+          "Overdue knockbacks were drained in a burst");
+    velocity.update(game, true, start + 12050ms);
+    check(game.velocity_requests.size() == 4 && near(game.state.local.velocity.x, -1), "FIFO replay order changed");
+
+    velocity.delay_ms.get<int>() = 0;
+    check(velocity.handle_motion(first, game.state, start + 13s) == Result::ignored && velocity.pending_count() == 0,
+          "Zero delay must use native dispatch immediately");
+}
+
+void test_velocity_delay_reset_and_failures() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using Result = VelocityModule::MotionResult;
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    Vec3 motion{2, 4, -6};
+    const auto queue = [&] {
+        check(velocity.handle_motion(motion, game.state, start) == Result::delayed && velocity.pending_count() == 1,
+              "Could not queue delayed knockback");
+    };
+    const auto reset = [&](bool allow_actions = true) {
+        velocity.update(game, allow_actions, start + 9s);
+        check(velocity.pending_count() == 0 && game.velocity_requests.empty(),
+              "Stale or blocked delayed knockback was applied");
+    };
+    queue(); velocity.set_enabled(false);
+    check(velocity.pending_count() == 0, "Disable retained delayed knockback");
+    velocity.set_enabled(true);
+    queue(); velocity.mode.get<Choice>().index = 0; reset();
+    velocity.mode.get<Choice>().index = 2;
+    queue(); reset(false);
+    queue(); game.state.ready = false; reset(); game.state.ready = true;
+    queue(); game.state.local.alive = false; reset(); game.state.local.alive = true;
+    queue(); ++game.state.world_identity; reset();
+    queue(); ++game.state.local.id; reset();
+    queue(); ++game.state.local.unique_id; reset();
+    queue(); velocity.reset_delay(); reset();
+    game.state.world_identity = 0;
+    check(velocity.handle_motion(motion, game.state, start) == Result::ignored, "Missing world identity queued a hit");
+    game.state.world_identity = 10;
+    Vec3 invalid{0, std::numeric_limits<float>::infinity(), 0};
+    check(velocity.handle_motion(invalid, game.state, start) == Result::ignored, "Non-finite motion entered the queue");
+    queue();
+    game.velocity_result = false;
+    velocity.update(game, true, start + 8s);
+    check(velocity.pending_count() == 1 && game.state.local.velocity.x == 0, "A failed native write lost the queued hit");
+    game.velocity_result = true;
+    velocity.update(game, true, start + 8050ms);
+    check(velocity.pending_count() == 0 && near(game.state.local.velocity.x, 2), "Failed write did not retry next tick");
+    queue(); game.throw_velocity = true;
+    velocity.update(game, true, start + 9s);
+    check(velocity.pending_count() == 0, "Throwing native action retained a stale queue");
+}
+
+void test_velocity_delay_capacity() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using Result = VelocityModule::MotionResult;
+    Vec3 motion{1, 2, 3};
+    const VelocityModule::TimePoint start{};
+    for (std::size_t i = 0; i < VelocityModule::maximum_pending; ++i)
+        check(velocity.handle_motion(motion, game.state, start) == Result::delayed, "Delay queue filled too early");
+    check(velocity.handle_motion(motion, game.state, start) == Result::ignored &&
+          velocity.pending_count() == VelocityModule::maximum_pending,
+          "Overflow must pass through without growing or replacing the queue");
+    velocity.update(game, true, start + std::chrono::seconds(30));
+    check(game.velocity_requests.size() == 1 && velocity.pending_count() == VelocityModule::maximum_pending - 1,
+          "A stalled tick replayed every overdue hit at once");
+}
+
+void test_velocity_zero_motion_is_immediate() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using Result = VelocityModule::MotionResult;
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    LatencyReply reply;
+    reply.bytes[0x30] = std::byte{7};
+    Vec3 motion{1, 2, 3};
+    check(velocity.handle_motion(motion, game.state, start) == Result::delayed &&
+          velocity.handle_latency(reply, game.state) && velocity.pending_count() == 1,
+          "Zero-motion fixture could not queue a hit and its acknowledgment");
+    // A zero SetActorMotion is a server velocity stop, not a knockback. It has
+    // to reach the native handler immediately and retire older delayed hits.
+    Vec3 stop{};
+    check(velocity.handle_motion(stop, game.state, start + 1s) == Result::ignored &&
+          velocity.pending_count() == 0 && velocity.pending_reply_count() == 1 &&
+          velocity.diagnostics().zero_motion_stops == 1 &&
+          velocity.diagnostics().invalidated_motion == 1,
+          "Zero motion was delayed or did not retire the older knockback");
+    velocity.update(game, true, start + 2s);
+    check(game.velocity_requests.empty() && game.latency_replies.size() == 1 &&
+          game.latency_replies[0].bytes == reply.bytes && !velocity.needs_restore(),
+          "Zero-motion cleanup lost or reordered the held acknowledgment");
+    // Repeated stops are still immediate and never become queued hits.
+    check(velocity.handle_motion(stop, game.state, start + 3s) == Result::ignored &&
+          velocity.pending_count() == 0 && velocity.diagnostics().zero_motion_stops == 2,
+          "A stop without pending knockback entered the delay queue");
+    Vec3 nearly_zero{1.0e-7F, -1.0e-7F, 0};
+    check(velocity.handle_motion(nearly_zero, game.state, start + 4s) == Result::ignored &&
+          velocity.pending_count() == 0 && velocity.diagnostics().zero_motion_stops == 3,
+          "Near-zero motion was treated as knockback");
+    Vec3 tiny{1.0e-4F, 0, 0};
+    check(velocity.handle_motion(tiny, game.state, start + 5s) == Result::delayed &&
+          velocity.pending_count() == 1,
+          "A small but non-zero impulse was discarded as a stop");
+}
+
+void test_velocity_latency_ordering() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    LatencyReply first, second, third;
+    // Opaque, non-monotonic server IDs must survive holding and send retries.
+    const std::uint64_t first_id = 0xFEDCBA9876543210ULL, second_id = 1000, third_id = UINT64_MAX;
+    std::memcpy(first.bytes.data() + 0x30, &first_id, sizeof first_id);
+    std::memcpy(second.bytes.data() + 0x30, &second_id, sizeof second_id);
+    std::memcpy(third.bytes.data() + 0x30, &third_id, sizeof third_id);
+    Vec3 motion{1, 2, 3};
+    check(!velocity.handle_latency(first, game.state), "Unrelated latency was delayed before a hit");
+    std::uint64_t passed_id{};
+    std::memcpy(&passed_id, first.bytes.data() + 0x30, sizeof passed_id);
+    check(passed_id == first_id && velocity.pending_reply_count() == 0 && game.latency_replies.empty(),
+          "Enabling Delay changed or generated an unrelated latency reply before any KB");
+    check(velocity.handle_motion(motion, game.state, start) == VelocityModule::MotionResult::delayed,
+          "Could not queue the first KB");
+    check(velocity.handle_latency(first, game.state), "Latency following KB was passed through");
+    check(velocity.handle_motion(motion, game.state, start + 2s) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(second, game.state), "Second KB and its acknowledgment were not queued");
+    velocity.update(game, true, start + 7999ms);
+    check(game.latency_replies.empty(), "An acknowledgment overtook held KB");
+    velocity.update(game, true, start + 8s);
+    check(game.velocity_requests.size() == 1 && game.latency_replies.size() == 1 &&
+          game.velocity_events == std::vector<char>{'v', 'a'},
+          "The applied KB was left unconfirmed across the next movement report");
+    velocity.update(game, true, start + 8050ms);
+    check(game.latency_replies.size() == 1 && game.latency_replies[0].bytes == first.bytes &&
+          velocity.pending_reply_count() == 1, "Replies lost their identity or confirmed the second KB early");
+    game.latency_result = false;
+    velocity.update(game, true, start + 10s);
+    check(game.latency_replies.size() == 1 && velocity.pending_count() == 0,
+          "Failed confirmation send changed pending KB or lost reply identity");
+    velocity.sync_replies.get<bool>() = false;
+    check(velocity.handle_latency(third, game.state), "Turning Sync Replies OFF let a new reply overtake the last held reply");
+    game.latency_result = true;
+    velocity.update(game, true, start + 10050ms);
+    check(game.latency_replies.size() == 3 && game.latency_replies[1].bytes == second.bytes &&
+          game.latency_replies[2].bytes == third.bytes && !velocity.needs_restore() &&
+          game.velocity_events == std::vector<char>{'v', 'a', 'v', 'a', 'a'}, "Latency FIFO replay failed");
+    check(velocity.diagnostics().queued == 2 && velocity.diagnostics().applied == 2 &&
+          velocity.diagnostics().latency_seen == 4 && velocity.diagnostics().latency_sent == 3,
+          "Velocity diagnostics lost queue or acknowledgment events");
+}
+
+void test_velocity_latency_cleanup_and_retry() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    LatencyReply reply;
+    Vec3 motion{1, 2, 3};
+    const auto queue = [&] {
+        check(velocity.handle_motion(motion, game.state, start) == VelocityModule::MotionResult::delayed &&
+              velocity.handle_latency(reply, game.state), "Could not queue KB plus its reply");
+    };
+    queue();
+    game.velocity_result = false;
+    velocity.update(game, true, start + 8s);
+    check(game.latency_replies.empty() && velocity.pending_reply_count() == 1, "Failed KB write confirmed receipt");
+    game.velocity_result = true;
+    game.latency_result = false;
+    velocity.update(game, true, start + 8050ms);
+    check(velocity.needs_restore() && velocity.diagnostics().send_failures == 1, "Failed send lost a held reply");
+    game.latency_result = true;
+    velocity.update(game, true, start + 8150ms);
+    check(!velocity.needs_restore() && game.latency_replies.size() == 1, "Held reply send was not retried");
+    queue();
+    velocity.set_enabled(false);
+    check(velocity.pending_count() == 0 && velocity.needs_restore(), "OFF discarded network cleanup");
+    check(velocity.handle_latency(reply, game.state), "A new reply overtook cleanup after OFF");
+    velocity.update(game, false, start + 1ms);
+    check(!velocity.needs_restore() && game.latency_replies.size() == 3,
+          "OFF/input capture did not flush replies on the game thread");
+    velocity.set_enabled(true);
+    queue();
+    velocity.set_enabled(false);
+    velocity.set_enabled(true);
+    velocity.update(game, true, start + 1ms);
+    check(!velocity.needs_restore(), "Fast OFF/ON stranded replies for cancelled KB");
+    queue();
+    ++game.state.world_identity;
+    velocity.update(game, true, start + 9s);
+    check(!velocity.needs_restore() && velocity.pending_count() == 0 && game.latency_replies.size() == 4,
+          "Replies from an old world were replayed in a new context");
+    velocity.sync_replies.get<bool>() = false;
+    check(velocity.handle_motion(motion, game.state, start) == VelocityModule::MotionResult::delayed &&
+          !velocity.handle_latency(reply, game.state), "Sync Replies OFF still held latency");
+}
+
+void test_velocity_position_reset_retires_old_hits() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    Vec3 a{0.1F, 0.4F, 0.3F}, b{0.2F, 0.4F, 0.2F}, c{0.3F, 0.4F, 0.1F}, fresh{-0.4F, 0.4F, 0};
+    LatencyReply first, second, third, fourth;
+    first.bytes[0x30] = std::byte{1};
+    second.bytes[0x30] = std::byte{2};
+    third.bytes[0x30] = std::byte{3};
+    fourth.bytes[0x30] = std::byte{4};
+    check(velocity.handle_motion(a, game.state, start) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(first, game.state) &&
+          velocity.handle_motion(b, game.state, start + 1s) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(second, game.state) &&
+          velocity.handle_motion(c, game.state, start + 2s) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(third, game.state), "Position-reset fixture did not queue three hits");
+    velocity.update(game, true, start + 8s);
+    check(game.velocity_requests.size() == 1 && game.latency_replies.size() == 1,
+          "First hit did not precede the simulated server setback");
+    check(velocity.handle_position_reset(0) == 0 && velocity.handle_position_reset(3) == 0 &&
+          velocity.handle_position_reset(255) == 0 && velocity.pending_count() == 2 &&
+          velocity.diagnostics().position_resets == 0, "Normal/head-only/unknown modes cancelled delayed hits");
+    check(velocity.handle_position_reset(2) == 2 && velocity.pending_count() == 0 &&
+          velocity.pending_reply_count() == 2 && velocity.needs_restore(),
+          "Teleport retained stale hits or discarded confirmations needed for cleanup");
+    // A setback in the same world and actor must invalidate old hits without
+    // clearing a new hit received after the native teleport.
+    game.state.local.position = {10, 70, 20};
+    check(velocity.handle_motion(fresh, game.state, start + 8100ms) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(fourth, game.state), "Post-teleport hit did not queue");
+    game.latency_result = false;
+    velocity.update(game, true, start + 8200ms);
+    check(game.velocity_requests.size() == 1 && velocity.pending_reply_count() == 3,
+          "Failed cleanup send applied an old hit or lost a held reply");
+    game.latency_result = true;
+    velocity.update(game, true, start + 8250ms);
+    check(game.latency_replies.size() == 3 && game.latency_replies[1].bytes == second.bytes &&
+          game.latency_replies[2].bytes == third.bytes && velocity.pending_reply_count() == 1,
+          "Reset cleanup reordered old replies or confirmed a new hit too early");
+    velocity.update(game, true, start + 16099ms);
+    check(game.velocity_requests.size() == 1 && game.latency_replies.size() == 3,
+          "A pre-teleport hit was replayed or a fresh hit was released early");
+    velocity.update(game, true, start + 16100ms);
+    check(game.velocity_requests.size() == 2 && near(game.velocity_requests.back().x, fresh.x) &&
+          game.latency_replies.size() == 4 && game.latency_replies.back().bytes == fourth.bytes,
+          "Fresh KB/confirmation did not survive the reset of an older burst");
+    check(velocity.handle_motion(a, game.state, start + 17s) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(first, game.state) && velocity.handle_position_reset(1) == 1,
+          "Respawn did not invalidate its old hit");
+    velocity.set_enabled(false);
+    velocity.update(game, false, start + 17100ms);
+    check(game.velocity_requests.size() == 2 && game.latency_replies.size() == 5 && !velocity.needs_restore() &&
+          velocity.diagnostics().position_resets == 2 && velocity.diagnostics().invalidated_motion == 3,
+          "Reset cleanup after OFF replayed old KB, stranded replies or lost diagnostics");
+}
+
+void test_velocity_simultaneous_release() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    LatencyReply first, second;
+    first.bytes[0x30] = std::byte{1};
+    second.bytes[0x30] = std::byte{2};
+    Vec3 first_motion{1, 2, 3}, second_motion{4, 5, 6};
+    check(velocity.handle_motion(first_motion, game.state, start) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(first, game.state) &&
+          velocity.handle_motion(second_motion, game.state, start) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(second, game.state), "Could not queue simultaneous KB confirmations");
+    velocity.update(game, true, start + 8s);
+    check(game.velocity_requests.size() == 1 && game.latency_replies.size() == 1 &&
+          near(game.state.local.velocity.x, 1) && game.latency_replies[0].bytes == first.bytes &&
+          velocity.pending_count() == 1 && velocity.pending_reply_count() == 1,
+          "Same-deadline KB overwrote the first impulse or acknowledged the second early");
+    velocity.update(game, true, start + 8050ms);
+    check(game.velocity_requests.size() == 2 && game.latency_replies.size() == 2 &&
+          near(game.state.local.velocity.x, 4) && game.latency_replies[1].bytes == second.bytes &&
+          game.velocity_events == std::vector<char>{'v', 'a', 'v', 'a'},
+          "Consecutive KB applications were separated from their confirmations");
+}
+
+void test_velocity_prediction_timestamps() {
+    MockGame game;
+    game.state.world_identity = 10;
+    game.native_prediction = true;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    using namespace std::chrono_literals;
+    const VelocityModule::TimePoint start{};
+    LatencyReply first, second;
+    first.bytes[0x30] = std::byte{1};
+    second.bytes[0x30] = std::byte{2};
+    Vec3 a{1, 0.4F, 2}, b{-1, 0.4F, 3};
+    check(velocity.handle_motion(a, game.state, start, 1000000000000LL) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(first, game.state) &&
+          velocity.handle_motion(b, game.state, start + 2s, 1002000000000LL) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(second, game.state), "Native timestamp KB setup failed");
+    game.prediction_available = false;
+    velocity.update(game, true, start + 8s);
+    check(game.prediction_requests.size() == 1 && game.prediction_requests[0].second == 1008000000000LL &&
+          game.latency_replies.empty() && game.velocity_requests.empty(),
+          "Prediction failure wrote StateVector, returned confirmation, or retained the old arrival timestamp");
+    game.prediction_available = true;
+    velocity.update(game, true, start + 8050ms);
+    check(game.prediction_requests.size() == 2 && game.prediction_requests[1].second == 1008050000000LL &&
+          game.latency_replies.size() == 1 && velocity.pending_count() == 1,
+          "A retry reused a stale prediction timestamp or confirmed a later hit");
+    velocity.update(game, true, start + 10s);
+    check(game.prediction_requests.size() == 3 && game.prediction_requests[2].second == 1010000000000LL &&
+          near(game.prediction_requests[2].first.x, -1) && game.velocity_requests.empty() &&
+          game.velocity_events == std::vector<char>{'p', 'a', 'p', 'a'} &&
+          velocity.diagnostics().predicted == 2 && velocity.diagnostics().direct == 0,
+          "Native prediction was replaced with direct writes or lost per-hit timing/confirmation order");
+    velocity.reset_delay();
+    check(velocity.handle_motion(a, game.state, start, (std::numeric_limits<std::int64_t>::max)() - 1) ==
+          VelocityModule::MotionResult::delayed, "Timestamp overflow fixture setup failed");
+    velocity.update(game, true, start + 8s);
+    check(game.prediction_requests.size() == 3 && velocity.pending_count() == 1 &&
+          velocity.diagnostics().write_failures == 2, "Overflowing native timestamp reached prediction");
+}
 
 void test_disabled_and_unavailable() {
     MockGame game;
@@ -400,10 +848,10 @@ void test_sprint_input_and_release() {
           "Sprint failed to start from rest on forward input");
     game.state.move_input = {1, 0};
     sprint.update(game, true);
-    check(game.sprint_requests.back(), "Strike failed on strafe input");
+    check(game.sprint_requests.back(), "Rage failed on strafe input");
     game.state.move_input = {0, -1};
     sprint.update(game, true);
-    check(game.sprint_requests.back(), "Strike failed on backward input");
+    check(game.sprint_requests.back(), "Rage failed on backward input");
     sprint.mode.get<Choice>().index = 1;
     sprint.update(game, true);
     check(!game.sprint_requests.back(), "Legit sprinted on backward input");
@@ -580,6 +1028,16 @@ void test_scaffold_level_and_support() {
 int main() {
     try {
         test_disabled_and_unavailable();
+        test_velocity_motion();
+        test_velocity_delay_timing();
+        test_velocity_delay_reset_and_failures();
+        test_velocity_delay_capacity();
+        test_velocity_zero_motion_is_immediate();
+        test_velocity_latency_ordering();
+        test_velocity_latency_cleanup_and_retry();
+        test_velocity_position_reset_retires_old_hits();
+        test_velocity_simultaneous_release();
+        test_velocity_prediction_timestamps();
         test_derp_spin_and_reset();
         test_aimbot_selection_and_cone();
         test_aimbot_yaw_wrap_and_bounds_range();

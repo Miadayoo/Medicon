@@ -41,6 +41,10 @@ struct MainMenuFrame {
     MainMenuRect social{};
     bool show_social = false;
     bool social_badge = false;
+    // AltManager: the Social row, right of the Social button. Laid out always;
+    // drawn and clickable only when show_alts is set.
+    MainMenuRect alts{};
+    bool show_alts = false;
     ImVec2 logo_center{};
     float logo_size = 0.0F, button_text_size = 0.0F;
     float corner_radius = 0.0F;
@@ -79,14 +83,22 @@ public:
     bool social_shown() const noexcept { return social_shown_; }
     // True once per click on the Social button. Handled by the overlay, not the game.
     bool consume_social_request() noexcept;
+    // The AltManager button, shown only while an alt service is attached.
+    void set_alts(bool shown) noexcept;
+    bool alts_shown() const noexcept { return alts_shown_; }
+    // True once per click on AltManager. Handled by the overlay, not the game.
+    bool consume_alts_request() noexcept;
 
     static constexpr int social_button = 3; // hover/press index of the Social button
+    static constexpr int alts_button = 4;   // hover/press index of the AltManager button
 
 private:
     bool active_ = false;
     bool social_shown_ = false;
     bool social_badge_ = false;
     bool social_requested_ = false;
+    bool alts_shown_ = false;
+    bool alts_requested_ = false;
     bool pointer_armed_ = false;
     int pressed_button_ = -1;
     double last_action_time_ = -1.0;

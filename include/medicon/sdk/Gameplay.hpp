@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -13,6 +14,12 @@ struct Vec2 { float x = 0, y = 0; };
 struct Vec3 { float x = 0, y = 0, z = 0; };
 struct Bounds { Vec3 min, max; };
 struct BlockPos { int x = 0, y = 0, z = 0; };
+
+// Copied 1.26.52.3 NetworkStackLatency packet. The inspected class contains
+// scalar data and static native vtable/dispatcher pointers, with no owned heap
+// fields. Native adapters validate identity before borrowing this copy to send.
+struct alignas(8) LatencyReply { std::array<std::byte, 0x48> bytes{}; };
+enum class KnockbackApplyResult { failed, direct, predicted };
 
 [[nodiscard]] inline float interpolate_yaw(float previous, float current, float alpha) noexcept {
     if (!std::isfinite(previous) || !std::isfinite(current) || !std::isfinite(alpha)) return current;
@@ -100,6 +107,15 @@ public:
     // Requests sprint through native movement input so the game applies its
     // normal sprint transition, movement speed and eligibility checks.
     virtual bool set_sprinting(bool sprinting) { (void)sprinting; return false; }
+    // Write velocity directly on the local game thread.
+    virtual bool set_velocity(Vec3 velocity) { (void)velocity; return false; }
+    // Admit a fresh impulse through the host's movement prediction, when present.
+    // received_timestamp is the copied native arrival clock, advanced by time held.
+    virtual KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp = 0) {
+        (void)received_timestamp;
+        return set_velocity(velocity) ? KnockbackApplyResult::direct : KnockbackApplyResult::failed;
+    }
+    virtual bool send_latency_reply(const LatencyReply& reply) { (void)reply; return false; }
     // Starts the local player's native Attack swing, including the game's
     // normal animation notification path when the host supports it.
     virtual bool swing() { return false; }

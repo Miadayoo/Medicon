@@ -219,7 +219,8 @@ MenuScreenState BedrockMenu::poll(void* current_client, std::string& diagnostic,
             return fail("Main Menu top scene's screen definition is unavailable.");
         const auto name = read_msvc_string(reinterpret_cast<void*>(definition + 0x20), 96);
         if (!name || name->empty()) return fail("Main Menu screen name could not be read safely.");
-        if (*name != "start_screen") return MenuScreenState::other;
+        const bool disconnected = *name == "disconnect_screen" || *name == "realms_disconnect_screen";
+        if (*name != "start_screen" && !disconnected) return MenuScreenState::other;
         // The effective native name is raw definition name + controller's
         // virtual-27 suffix (view_name_rva + 0xAC, concatenation at +0x1B9).
         // Accept only the two observed pure empty-string implementations. Stateful
@@ -261,7 +262,7 @@ MenuScreenState BedrockMenu::poll(void* current_client, std::string& diagnostic,
             return fail("Main Menu screen changed during inspection; frame withheld.");
         if (session) *session = {client, game, factory, factory_control, stack, stack_control,
                                  top, view, definition_owner, definition, controller};
-        return MenuScreenState::main_menu;
+        return disconnected ? MenuScreenState::disconnected : MenuScreenState::main_menu;
     } catch (...) {
         try { diagnostic = "Main Menu screen inspection failed; feature disabled for this frame."; } catch (...) {}
         return MenuScreenState::unknown;

@@ -118,6 +118,13 @@ inline constexpr float start_scale = 0.97F;
 inline constexpr float fade = 0.250F;                   // seconds, ease-out cubic
 inline constexpr float width_tau = 0.060F;              // width follows a changed detail
 inline constexpr float fps_window = 0.5F;               // seconds per FPS reading
+// Japanese mode: the inject animation's title, without a plate.
+inline constexpr Color title_fill = rgb(0xFFFFFF);
+inline constexpr Color title_outline = rgb(0x9C6BB8);   // the title's outline in the inject animation
+inline constexpr Color title_glow = rgb(0xE6BDFF);
+inline constexpr float title_font = 30.0F;
+inline constexpr float title_outline_em = 0.0208F;      // same ratio to the size as the inject title
+inline constexpr float title_gap = 9.0F;                // between the letters and the details
 } // namespace watermark
 
 // Social (spec 4.6 / 4.7), styled after the Main Menu alone: the pastel blue,
@@ -301,6 +308,43 @@ inline constexpr float caret_blink = 0.53F;
 } // namespace timing
 } // namespace social
 
+// Top-centre icon buttons (TopNav.hpp): matte and quiet, without glow. Sizes are
+// rpx and times are seconds. The idle icon is pale for the dimmed game; the
+// selected one is deeper because it stands on the pastel Social screen.
+namespace top_nav {
+inline constexpr Color icon = rgb(0xDDE6F1);
+inline constexpr Color icon_hover = rgb(0xFFFFFF);
+inline constexpr Color icon_selected = rgb(0x4F93D6);
+inline constexpr Color icon_edge = rgb(0x10141C);
+inline constexpr float icon_edge_opacity = 0.42F;
+inline constexpr Color plate = rgb(0xFFFFFF);
+inline constexpr float plate_hover = 0.08F;
+inline constexpr float plate_selected = 0.36F;
+inline constexpr Color shadow_tint = rgb(0x5C86B4);
+inline constexpr float shadow_opacity = 0.10F;
+inline constexpr float shadow_blur = 10.0F;
+inline constexpr float shadow_offset_y = 2.0F;
+inline constexpr float top = 12.0F;        // gap below the window's top edge
+inline constexpr float width = 44.0F;      // the click area, and the plate
+inline constexpr float height = 38.0F;
+inline constexpr float gap = 6.0F;         // between buttons
+inline constexpr float radius = 11.0F;
+inline constexpr float icon_size = 18.0F;
+inline constexpr float icon_y = 17.0F;     // icon centre, from the top of the button
+inline constexpr float indicator_width = 12.0F;
+inline constexpr float indicator_start_width = 4.0F;
+inline constexpr float indicator_height = 2.0F;
+inline constexpr float indicator_y = 30.0F; // from the top of the button
+inline constexpr float indicator_rise = 3.0F; // slides up this far as it appears
+inline constexpr float badge_radius = 3.0F;
+inline constexpr float label_gap = 3.0F;   // between the button and its hover label
+inline constexpr float hover_lift = 1.5F;
+inline constexpr float press_shrink = 0.04F;
+inline constexpr float hover_seconds = 0.120F;
+inline constexpr float press_seconds = 0.080F;
+inline constexpr float select_seconds = 0.200F;
+} // namespace top_nav
+
 namespace metrics {
 inline constexpr float reference_width = 1920.0F;
 inline constexpr float reference_height = 1080.0F;
@@ -374,12 +418,6 @@ inline constexpr float picker_bar = 10.0F;
 inline constexpr float picker_spacing = 6.0F;
 inline constexpr float picker_hex_line = 16.0F;
 inline constexpr float control_gap = 6.0F;
-
-// Social button, bottom centre: the Main Menu's glass plate at ClickGUI size.
-inline constexpr float social_button_width = 128.0F;
-inline constexpr float social_button_height = 34.0F;
-inline constexpr float social_button_radius = 8.0F;
-inline constexpr float social_button_bottom = 16.0F; // gap above the window's bottom edge
 
 // Input (physical px).
 inline constexpr float click_slop_px = 3.0F;

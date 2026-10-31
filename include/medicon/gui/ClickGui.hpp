@@ -41,9 +41,20 @@ public:
     [[nodiscard]] bool open() const noexcept;
     void set_open(bool open);
     [[nodiscard]] bool capturing_keybind() const noexcept;
-    /// The Social button at the bottom centre, like the Main Menu's. Hidden
-    /// without a Social service; `badge` marks unread DMs or pending requests.
-    void set_social(bool shown, bool badge) noexcept;
+    /// The Social button at the top centre. Hidden without a Social service;
+    /// `badge` marks unread DMs or pending requests, `selected` an open Social
+    /// screen. `above_screen`: the screen is up, so the Overlay drives the button
+    /// over it with the two calls below instead of render().
+    struct SocialButton {
+        bool shown = false;
+        bool badge = false;
+        bool selected = false;
+        bool above_screen = false;
+    };
+    void set_social(const SocialButton& state) noexcept;
+    /// Reads the pointer; true while the button owns it.
+    bool social_button_input(const gui::GuiContext& context);
+    void draw_social_button(gui::GuiContext& context);
     /// True once after the Social button was clicked.
     [[nodiscard]] bool consume_social_request() noexcept;
 
@@ -73,6 +84,8 @@ public:
         float x, y, w, h; // physical px, as last drawn
     };
     [[nodiscard]] std::vector<PanelRect> panel_rects() const;
+    [[nodiscard]] PanelRect social_button_rect() const;
+    [[nodiscard]] float social_selection() const noexcept;
     [[nodiscard]] float ui_scale() const noexcept;
     [[nodiscard]] bool overlay_open() const noexcept;
     [[nodiscard]] float panel_scroll_target(Category category) const noexcept;
