@@ -3,6 +3,7 @@
 #include <medicon/custom_model/PlayerName.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
 #include <medicon/memory/module_view.hpp>
+#include <medicon/memory/signature_registry.hpp>
 
 #include <Windows.h>
 #include <winver.h>
@@ -38,6 +39,9 @@ constexpr std::uint32_t type_hash = 0x4F6BA419;
 constexpr std::uint32_t owner_hash = 0x85B93800, dead_hash = 0x710A62C4;
 constexpr std::uint32_t head_hash = 0xBABE7211, body_hash = 0xD7F64BBA;
 constexpr std::uint32_t render_position_hash = 0xE53C7221;
+constexpr std::uint32_t attributes_hash = 0xFD3B0613;
+// SharedAttributes::HEALTH: constructed at 0x31BD2F1, id at +4, name at +0x10.
+constexpr std::size_t health_attribute_rva = 0x11DC54F0;
 constexpr std::uint32_t runtime_id_hash = 0xFC0DBBB5;
 constexpr std::uint32_t predicted_movement_hash = 0x18513471;
 // PlayerAuthInputPacket/InputData values in the 1.26.50 protocol profile.
@@ -67,10 +71,13 @@ constexpr std::size_t player_auth_input_interact_rotation_offset = 0x6C;
 // InputData's reserved upper 62 bits are checked before changing any bit, so
 // an unknown layout is passed through unchanged.
 constexpr std::size_t player_auth_input_flags_offset = 0x88;
+constexpr std::uint32_t invisible_flag = 5; // ActorFlags::Invisible
 constexpr std::uint32_t sprinting_input_bit = 20;
 constexpr std::uint32_t start_sprinting_input_bit = 25;
 constexpr std::uint32_t stop_sprinting_input_bit = 26;
 constexpr std::uint32_t entity_mask = 0x3FFFF;
+// Item's std::string identifier, assigned by its constructor at 0x24B19CB.
+constexpr std::size_t item_identifier_offset = 0xD8;
 constexpr std::size_t maximum_entities = 65536;
 
 bool copy_bytes(std::uintptr_t address, void* output, std::size_t count) noexcept {
@@ -160,29 +167,61 @@ bool supported_version(std::string& diagnostic) {
     return true;
 }
 
-bool try_item_description_getter(std::uintptr_t target, std::uintptr_t item,
-                                 std::uintptr_t& string_object) noexcept {
-    if (!target || !item) return false;
-    using GetDescription = const std::string*(__fastcall*)(void*);
-#if defined(_MSC_VER)
-    __try {
-        const auto* result = reinterpret_cast<GetDescription>(target)(reinterpret_cast<void*>(item));
-        string_object = reinterpret_cast<std::uintptr_t>(result);
-        return string_object != 0;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        string_object = 0;
-        return false;
-    }
-#else
-    const auto* result = reinterpret_cast<GetDescription>(target)(reinterpret_cast<void*>(item));
-    string_object = reinterpret_cast<std::uintptr_t>(result);
-    return string_object != 0;
-#endif
-}
-
 } // namespace
 
 namespace detail {
+
+bool send_gameplay_inventory_packet(void** transaction, void* sender, const NativeInventoryPacketCalls& calls) {
+    if (!transaction || !*transaction || !sender || !calls.construct_payload || !calls.construct_packet ||
+        !calls.destroy_packet || !calls.send) return false;
+    alignas(8) std::array<std::byte, 0x150> payload;
+    alignas(8) std::array<std::byte, 0x188> packet;
+    calls.construct_payload(payload.data(), transaction, false);
+    // This move constructor also destroys its moved-from payload argument.
+    calls.construct_packet(packet.data(), payload.data());
+    struct Cleanup {
+        void* packet;
+        const NativeInventoryPacketCalls& calls;
+        ~Cleanup() { calls.destroy_packet(packet, 0); }
+    } cleanup{packet.data(), calls};
+    calls.send(sender, packet.data());
+    return true;
+}
+
+bool send_gameplay_inventory_changes(const std::array<NativeInventoryChange, 2>& changes,
+    void* context, const NativeInventoryCalls& calls) {
+    static_assert(sizeof(NativeInventorySource) == 12 && offsetof(NativeInventorySource, flags) == 8);
+    if (!context || !calls.construct || !calls.destroy || !calls.add_action || !calls.create_transaction ||
+        !calls.destroy_transaction || !calls.send_transaction) return false;
+    if (changes[0].source.type != 0 || changes[0].source.container != 0 || changes[0].slot >= 36) return false;
+    for (const auto& change : changes) {
+        if (!change.from || !change.to || change.source.flags != 0) return false;
+        if (change.source.type == 0 && change.source.container == 0 && change.slot < 36) continue;
+        if (change.source.type == 0 && change.source.container == 120 && change.slot < 4) continue;
+        if (change.source.type == 2 && change.source.container == 0 && change.slot == 0) continue;
+        return false;
+    }
+    void* transaction = calls.create_transaction(context);
+    if (!transaction) return false;
+    struct Cleanup {
+        void*& transaction;
+        void* context;
+        const NativeInventoryCalls& calls;
+        ~Cleanup() { if (transaction) calls.destroy_transaction(context, transaction); }
+    } cleanup{transaction, context, calls};
+    for (const auto& change : changes) {
+        alignas(16) std::array<std::byte, 0x200> action;
+        calls.construct(action.data(), &change.source, change.slot, change.from, change.to);
+        struct DestroyAction {
+            void* action;
+            const NativeInventoryCalls& calls;
+            ~DestroyAction() { calls.destroy(action); }
+        } destroy{action.data(), calls};
+        calls.add_action(static_cast<std::byte*>(transaction) + 0x10, action.data(), false);
+    }
+    const bool sent = calls.send_transaction(context, &transaction);
+    return sent && transaction == nullptr;
+}
 
 bool read_gameplay_motion(std::uintptr_t packet, std::uint64_t local_runtime_id, Vec3& motion) noexcept {
     std::uint64_t runtime_id{};
@@ -245,6 +284,39 @@ bool enqueue_gameplay_knockback(void* component, void* controller, Vec3 velocity
     enqueue(controller, argument.data(), &timestamp);
     update(component);
     return true;
+}
+
+bool read_gameplay_stack_item(std::uintptr_t stack, std::uintptr_t& item, std::uint8_t& count) noexcept {
+    item = 0;
+    count = 0;
+    std::uintptr_t reference{}, candidate{};
+    std::uint8_t copies{};
+    if (!read_at(stack, 8, reference) || !read_at(stack, 0x22, copies)) return false;
+    if (reference && !read_at(reference, 0, candidate)) return false;
+    if (candidate && copies) { item = candidate; count = copies; }
+    return true;
+}
+
+bool read_gameplay_attribute(std::uintptr_t component, std::uint32_t attribute_id, float& value) noexcept {
+    constexpr std::size_t instance_size = 0x88, maximum_attributes = 64;
+    ForeignVector ids{}, instances{};
+    if (!attribute_id || !vector_at(component, 0, ids, 4, maximum_attributes) ||
+        !vector_at(component, 0x18, instances, instance_size, maximum_attributes)) return false;
+    const auto count = (ids.end - ids.begin) / 4;
+    std::array<std::uint32_t, maximum_attributes> known{};
+    if (count != (instances.end - instances.begin) / instance_size ||
+        (count && !copy_bytes(ids.begin, known.data(), count * 4))) return false;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (known[i] != attribute_id) continue;
+        float maximum{}, current{};
+        if (!read_at(instances.begin, i * instance_size + 0x78, maximum) ||
+            !read_at(instances.begin, i * instance_size + 0x7C, current) ||
+            !std::isfinite(maximum) || !std::isfinite(current) ||
+            maximum <= 0.0F || current < 0.0F || current > maximum) return false;
+        value = current;
+        return true;
+    }
+    return false;
 }
 
 bool read_gameplay_pools(std::uintptr_t registry, std::vector<GameplayPool>& output) noexcept {
@@ -517,6 +589,9 @@ struct BedrockGameplay::Impl {
     std::vector<memory::AddressRange> executable_regions;
     std::vector<detail::GameplayPool> pools;
     std::string diagnostic;
+    mutable InventoryDiagnostic inventory_diagnostic;
+    std::uintptr_t inventory_add_action{}, inventory_transaction_vtable{};
+    std::uint32_t health_attribute = 0;
 
     void trace_velocity(VelocityTracePhase phase, const char* path, KnockbackApplyResult result,
                         std::uint64_t latency_id = 0) const noexcept {
@@ -630,9 +705,18 @@ struct BedrockGameplay::Impl {
         std::uintptr_t actor_data{};
         if (result.player && model_name_getter && read_at(actor, 0x128, actor_data) && actor_data &&
             read_at(component(entity, 0x18F957AF, 8), 0, result.unique_id)) {
-            if (const auto name = read_msvc_string(model_name_getter(reinterpret_cast<void*>(actor)), 512))
+            if (const auto name = read_msvc_string(model_name_getter(reinterpret_cast<void*>(actor)), 512)) {
                 result.model_name = medicon::custom_model::model_player_name(*name);
+                result.multiline_name = name->find('\n') != std::string::npos;
+            }
         }
+        std::uint64_t flags{};
+        result.invisible = read_at(component(entity, actor_data_flag_hash, detail::actor_data_flags_size), 0, flags) &&
+            (flags & (std::uint64_t{1} << invisible_flag)) != 0;
+        if (result.player && actor != player) result.armor_pieces = worn_armor_pieces(entity);
+        if (float health{}; detail::read_gameplay_attribute(
+                component(entity, attributes_hash, detail::attributes_component_size), health_attribute, health))
+            result.health = health;
         // A teleport is not motion to draw between.
         if (valid_position(state.old_position) && distance_squared(state.old_position, state.position) <= 8 * 8) {
             result.previous_position = state.old_position;
@@ -652,6 +736,15 @@ struct BedrockGameplay::Impl {
         const bool survival = table == image.address + 0xE827600;
         if (!base && !survival) return 0;
         return mode;
+    }
+
+    void resolve_health_attribute() noexcept {
+        if (health_attribute) return;
+        try {
+            const auto attribute = image.address + health_attribute_rva;
+            const auto name = read_msvc_string(reinterpret_cast<const void*>(attribute + 0x10), 32);
+            if (name && *name == "minecraft:health") (void)read_at(attribute, 4, health_attribute);
+        } catch (...) {}
     }
 
     void forget_switch() noexcept { switch_supplies = 0; switch_from = switch_to = -1; }
@@ -676,6 +769,240 @@ struct BedrockGameplay::Impl {
         if (!local_target || reinterpret_cast<void*(__fastcall*)(void*)>(local_target)(
             reinterpret_cast<void*>(client)) != reinterpret_cast<void*>(player)) return false;
         return context(player, entity) && entity == local_entity;
+    }
+
+    // The current local player, from a host thread that may not be baseTick:
+    // screen ticks arrive outside the capture window.
+    bool local_player_current() const noexcept {
+        if (!supported || !frame.ready) return false;
+        const auto local_target = method(client, 31);
+        return local_target && reinterpret_cast<std::uintptr_t(__fastcall*)(void*)>(local_target)(
+            reinterpret_cast<void*>(client)) == player;
+    }
+
+    // Player's shared_ptr<ContainerManagerModel>: assigned at 0x1EEE80, locked
+    // by the client network handlers at +0x5A0/+0x5A8. Type at +0x51, read by
+    // the model's getContainerType (0xA3AF50).
+    bool container_model(std::uintptr_t& model, std::int8_t& type) const noexcept {
+        model = 0;
+        return read_at(player, 0x5A0, model) && model && method(model, 0) && read_at(model, 0x51, type);
+    }
+
+    std::uintptr_t inventory_container() const noexcept {
+        std::uintptr_t supplies{}, container{};
+        if (!read_at(player, 0x5B8, supplies) || !read_at(supplies, 0xB8, container)) {
+            inventory_diagnostic.stage = "inventory-container-unreadable";
+            return 0;
+        }
+        std::uintptr_t table{}, owner{};
+        (void)read_at(container, 0, table);
+        const auto get = method(container, 7), set = method(container, 12);
+        inventory_diagnostic.container_vtable_rva = image.contains(table) ? table - image.address : 0;
+        inventory_diagnostic.getter_rva = image.contains(get) ? get - image.address : 0;
+        inventory_diagnostic.setter_rva = image.contains(set) ? set - image.address : 0;
+        // Inventory is not FillingContainer nor the transaction manager's
+        // cloned working container. Its vector starts at +0x198, not +0x1A0.
+        constexpr std::array<unsigned char, 16> get_prefix{
+            0x48,0x8D,0x05,0x49,0x0C,0x7C,0x0F,0x85,0xD2,0x78,0x2E,0x4C,0x8B,0x81,0x98,0x01};
+        if (table != image.address + 0xE6AFE10 || !native_identity(get, 0x25A5100, get_prefix) ||
+            !read_at(container, 0x1B0, owner) || owner != player) {
+            inventory_diagnostic.stage = "inventory-type-or-owner-rejected";
+            return 0;
+        }
+        return container;
+    }
+
+    std::uintptr_t inventory_stack(std::uintptr_t container, int slot) const noexcept {
+        const auto get_item = method(container, 7);
+        return get_item ? reinterpret_cast<std::uintptr_t(__fastcall*)(void*, int)>(get_item)(
+            reinterpret_cast<void*>(container), slot) : 0;
+    }
+
+    // ActorEquipmentComponent {hand, armor}: 16 bytes per entity, and the second
+    // container is the one constructed with ContainerType Armor (0x253BCB4).
+    std::uintptr_t armor_container(std::uint32_t entity) const noexcept {
+        constexpr std::uint32_t equipment_hash = 0xB06141A9;
+        std::uintptr_t container{};
+        return read_at(component(entity, equipment_hash, 16), 8, container) ? container : 0;
+    }
+    std::uintptr_t armor_container() const noexcept { return armor_container(local_entity); }
+
+    std::int8_t worn_armor_pieces(std::uint32_t entity) const noexcept {
+        const auto container = armor_container(entity);
+        std::int8_t pieces = 0;
+        for (int slot = 0; slot < 4; ++slot) {
+            const auto stack = inventory_stack(container, slot);
+            std::uintptr_t item{};
+            std::uint8_t count{};
+            if (!stack || !detail::read_gameplay_stack_item(stack, item, count)) return -1;
+            if (item) ++pieces;
+        }
+        return pieces;
+    }
+
+    // ItemStack::EMPTY_ITEM, returned by getSlot for out-of-range slots (0x3440D19).
+    std::uintptr_t empty_stack() const noexcept {
+        const auto stack = image.address + 0x11D65D50;
+        std::uintptr_t table{};
+        return read_at(stack, 0, table) && table == image.address + 0xE6D6CD0 ? stack : 0;
+    }
+
+    int enchant_level(std::uint8_t enchant, std::uintptr_t stack) const noexcept {
+        // EnchantUtils::getEnchantLevel; a stack with no tag returns 0 before any allocation.
+        constexpr std::uintptr_t rva = 0x3260390;
+        constexpr std::array<unsigned char, 16> prefix{
+            0x56,0x57,0x53,0x48,0x81,0xEC,0x80,0,0,0,0x89,0xCB,0x48,0x8B,0x4A,0x10};
+        const auto target = image.address + rva;
+        if (!native_identity(target, rva, prefix)) return 0;
+        return reinterpret_cast<int(__fastcall*)(std::uint32_t, std::uintptr_t)>(target)(enchant, stack);
+    }
+
+    void describe_item(std::uintptr_t stack, std::uintptr_t item, std::uint8_t count, InventoryItemInfo& info) const noexcept {
+        try {
+            const auto name = read_msvc_string(reinterpret_cast<const void*>(item + item_identifier_offset), 128);
+            info = name ? classify_inventory_item(*name, count) : InventoryItemInfo{InventoryItemKind::other, 0.0F, count};
+        } catch (...) { info = {InventoryItemKind::other, 0.0F, count}; return; }
+        (void)read_at(item, 0xAA, info.id);
+        // Solstice's ItemUtils::getItemValue: armor below diamond ignores enchantments.
+        constexpr std::uint8_t protection = 0, fire_protection = 1, sharpness = 9, efficiency = 15;
+        using Kind = InventoryItemKind;
+        if (info.kind == Kind::sword) info.value += static_cast<float>(enchant_level(sharpness, stack));
+        else if (info.kind == Kind::pickaxe || info.kind == Kind::axe || info.kind == Kind::shovel)
+            info.value += static_cast<float>(enchant_level(efficiency, stack));
+        else if (info.kind >= Kind::helmet && info.value >= 4.0F)
+            info.value += static_cast<float>(enchant_level(protection, stack) + enchant_level(fire_protection, stack));
+    }
+
+    // InventorySource {type, container id, flags}; the default is the player's
+    // inventory. Layouts follow the native builders at 0x1F8E88 and 0x23FE39.
+    using InventoryChange = detail::NativeInventoryChange;
+
+    bool send_inventory_transaction(const std::array<InventoryChange, 2>& changes) const noexcept {
+        using Calls = detail::NativeInventoryCalls;
+        auto& trace = inventory_diagnostic;
+        ++trace.attempts;
+        trace.stage = "native-profile-rejected";
+        const auto base = image.address;
+        constexpr std::array<unsigned char, 16> action_construct_prefix{
+            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x83,0xEC,0x50,0x48,0x8D,0x6C,0x24,0x50,0x48};
+        constexpr std::array<unsigned char, 16> action_destroy_prefix{
+            0x56,0x57,0x53,0x48,0x83,0xEC,0x30,0x48,0x89,0xCE,0x48,0x8D,0xB9,0x68,0x01,0};
+        constexpr std::array<unsigned char, 16> transaction_construct_prefix{
+            0x55,0x56,0x57,0x53,0x48,0x83,0xEC,0x58,0x48,0x8D,0x6C,0x24,0x50,0x0F,0x29,0x75};
+        constexpr std::array<unsigned char, 16> add_action_prefix{
+            0x55,0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x60,0x02,0};
+        constexpr std::array<unsigned char, 16> payload_construct_prefix{
+            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x80,0x01,0,0,0x48,0x8D,0xAC};
+        constexpr std::array<unsigned char, 16> packet_construct_prefix{
+            0x55,0x56,0x48,0x83,0xEC,0x48,0x48,0x8D,0x6C,0x24,0x40,0x48,0xC7,0x45,0,0xFE};
+        constexpr std::array<unsigned char, 16> packet_destroy_prefix{
+            0x56,0x57,0x48,0x83,0xEC,0x28,0x89,0xD7,0x48,0x89,0xCE,0x48,0x8D,0x05,0x8E,0x33};
+        std::uintptr_t transaction_destroy{}, packet_destroy{}, sender{};
+        if (!native_identity(base + 0x1D4AD0, 0x1D4AD0, action_construct_prefix) ||
+            !native_identity(base + 0x1D4C70, 0x1D4C70, action_destroy_prefix) ||
+            !native_identity(base + 0x23FB00, 0x23FB00, transaction_construct_prefix) ||
+            !native_identity(inventory_add_action, 0x266EE40, add_action_prefix) ||
+            inventory_transaction_vtable != base + 0xE6D6C00 ||
+            !read_at(inventory_transaction_vtable, 0, transaction_destroy) || transaction_destroy != base + 0x23FA10 ||
+            !native_identity(base + 0x2732240, 0x2732240, payload_construct_prefix) ||
+            !native_identity(base + 0x272C430, 0x272C430, packet_construct_prefix) ||
+            !read_at(base + 0xE6D5FD0, 0, packet_destroy) ||
+            !native_identity(packet_destroy, 0x222C30, packet_destroy_prefix)) return false;
+        trace.stage = "packet-sender-unavailable";
+        if (!read_at(client, 0x1D0, sender)) return false;
+        const auto send_target = method(sender, 4);
+        if (!send_target) return false;
+        const auto send = send_target == packet_send_target && packet_send_original ? packet_send_original
+            : reinterpret_cast<void(*)(void*, void*)>(send_target);
+        struct Context { const Impl& state; void* sender; void(*send)(void*, void*); } context{*this, reinterpret_cast<void*>(sender), send};
+        const Calls calls{
+            reinterpret_cast<decltype(Calls::construct)>(base + 0x1D4AD0),
+            reinterpret_cast<decltype(Calls::destroy)>(base + 0x1D4C70),
+            reinterpret_cast<decltype(Calls::add_action)>(inventory_add_action),
+            [](void* opaque) -> void* {
+                const auto& state = static_cast<Context*>(opaque)->state;
+                auto* transaction = state.native_allocate(0x68);
+                if (!transaction) return nullptr;
+                std::memset(transaction, 0, 0x68);
+                const auto table = state.inventory_transaction_vtable;
+                std::memcpy(transaction, &table, sizeof(table));
+                const std::uint32_t seed = 0;
+                const std::uint8_t allocator_tag = 0;
+                reinterpret_cast<void(*)(void*, const std::uint32_t*, const std::uint8_t*)>(state.image.address + 0x23FB00)(
+                    static_cast<std::byte*>(transaction) + 0x10, &seed, &allocator_tag);
+                return transaction;
+            },
+            [](void* opaque, void* transaction) {
+                const auto& state = static_cast<Context*>(opaque)->state;
+                reinterpret_cast<void(*)(void*, unsigned)>(state.image.address + 0x23FA10)(transaction, 1);
+            },
+            [](void* opaque, void** transaction) {
+                const auto& context = *static_cast<Context*>(opaque);
+                const auto base = context.state.image.address;
+                using PacketCalls = detail::NativeInventoryPacketCalls;
+                return detail::send_gameplay_inventory_packet(transaction, context.sender, {
+                    reinterpret_cast<decltype(PacketCalls::construct_payload)>(base + 0x2732240),
+                    reinterpret_cast<decltype(PacketCalls::construct_packet)>(base + 0x272C430),
+                    reinterpret_cast<decltype(PacketCalls::destroy_packet)>(base + 0x222C30), context.send});
+            }};
+        trace.stage = "transaction-allocation-or-send-failed";
+        if (!detail::send_gameplay_inventory_changes(changes, &context, calls)) return false;
+        ++trace.sent;
+        trace.stage = "sent-solstice-normal";
+        return true;
+    }
+
+    // Container::setItem (Inventory vtable slot 12, forwards to slot 13 with
+    // force=false). The server does not resend slots for these moves until the
+    // screen closes, so without this the client keeps showing what it gave away.
+    bool set_inventory_slot(std::uintptr_t container, int slot, std::uintptr_t stack) const noexcept {
+        constexpr std::array<unsigned char, 16> prefix{
+            0x48,0x8B,0x01,0x48,0x8B,0x40,0x68,0x4C,0x8B,0x15,0x4A,0x69,0xF2,0x0E,0x45,0x31};
+        const auto set = method(container, 12);
+        if (!stack || !native_identity(set, 0x1D5150, prefix)) return false;
+        reinterpret_cast<void(__fastcall*)(std::uintptr_t, int, std::uintptr_t)>(set)(container, slot, stack);
+        return true;
+    }
+
+    // Actor::setArmor, the local half of Player's own armor setter (0x20A5B4),
+    // which skips the InventoryTransactionManager action that the packet replaces.
+    bool set_armor_slot(int slot, std::uintptr_t stack) const noexcept {
+        constexpr std::uintptr_t rva = 0x1A0B8E0;
+        constexpr std::array<unsigned char, 16> prefix{
+            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x18};
+        const auto target = image.address + rva;
+        if (!stack || !native_identity(target, rva, prefix)) return false;
+        reinterpret_cast<void(__fastcall*)(std::uintptr_t, int, std::uintptr_t)>(target)(player, slot, stack);
+        return true;
+    }
+
+    // Writing one slot changes what the other side's pointer reads, so both
+    // writes use the owned copies of a native InventoryAction (+0xD0 and +0x168).
+    // Only call after send_inventory_transaction validated these natives.
+    template<class Write>
+    bool exchange_local(std::uintptr_t first, std::uintptr_t second, Write write) const noexcept {
+        using Calls = detail::NativeInventoryCalls;
+        alignas(16) std::array<std::byte, 0x200> action;
+        const detail::NativeInventorySource source{};
+        reinterpret_cast<decltype(Calls::construct)>(image.address + 0x1D4AD0)(action.data(), &source, 0, first, second);
+        const auto copies = reinterpret_cast<std::uintptr_t>(action.data());
+        const bool written = write(copies + 0x168, copies + 0xD0);
+        reinterpret_cast<decltype(Calls::destroy)>(image.address + 0x1D4C70)(action.data());
+        return written;
+    }
+
+    void note_local_update(bool updated) const noexcept {
+        inventory_diagnostic.stage = updated ? "sent-local-updated" : "sent-local-update-failed";
+    }
+
+    // Native allocation for objects the game later frees itself. The pointer
+    // at 0x11805230 is what every inline operator new in the image reads.
+    void* native_allocate(std::size_t size) const noexcept {
+        std::uintptr_t allocator{};
+        if (!read_at(image.address, 0x11805230, allocator)) return nullptr;
+        const auto allocate = method(allocator, 1);
+        return allocate ? reinterpret_cast<void*(__fastcall*)(void*, std::size_t)>(allocate)(
+            reinterpret_cast<void*>(allocator), size) : nullptr;
     }
 
     struct Block { std::uint16_t id; bool solid; };
@@ -846,6 +1173,18 @@ bool BedrockGameplay::locate(std::string& diagnostic) {
                 for (const auto& region : module->executable_regions)
                     state.executable_regions.push_back({region.address, region.bytes.size()});
                 state.supported = true;
+                std::vector<memory::SignatureDefinition> inventory_signatures;
+                for (const auto& definition : memory::solstice_signatures())
+                    if (definition.name == "InventoryTransaction_addAction" || definition.name == "ComplexInventoryTransaction_vtable")
+                        inventory_signatures.push_back(definition);
+                memory::SignatureRegistry inventory_registry;
+                inventory_registry.scan(inventory_signatures, module->executable_regions, module->image);
+                state.inventory_add_action = inventory_registry.address("InventoryTransaction_addAction").value_or(0);
+                state.inventory_transaction_vtable = inventory_registry.address("ComplexInventoryTransaction_vtable").value_or(0);
+                state.inventory_diagnostic.add_action_rva = state.inventory_add_action ? state.inventory_add_action - state.image.address : 0;
+                state.inventory_diagnostic.transaction_vtable_rva = state.inventory_transaction_vtable ? state.inventory_transaction_vtable - state.image.address : 0;
+                state.inventory_diagnostic.stage = state.inventory_add_action && state.inventory_transaction_vtable
+                    ? "solstice-signatures-ready" : "solstice-signatures-unavailable";
                 // Actor_getNameTag 1.26.52.3: borrowed MSVC string result.
                 // The bounded body reads SynchedActorData +0x128 and returns
                 // its type-4 string; no DLL STL object crosses this ABI.
@@ -864,6 +1203,7 @@ bool BedrockGameplay::locate(std::string& diagnostic) {
 }
 
 const std::string& BedrockGameplay::diagnostic() const noexcept { return impl_->diagnostic; }
+InventoryDiagnostic BedrockGameplay::inventory_diagnostic() const noexcept { return impl_->inventory_diagnostic; }
 
 void BedrockGameplay::clear() noexcept {
     impl_->server_rotation.store(no_server_rotation, std::memory_order_release);
@@ -1452,6 +1792,7 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         clear();
         return false;
     }
+    state.resolve_health_attribute();
     if (!state.snapshot(state.player, state.frame.local) || !state.frame.local.player || !state.frame.local.alive) {
         state.diagnostic = "Gameplay SDK: waiting for a living player with valid owner, state and bounds components.";
         clear();
@@ -2081,10 +2422,9 @@ bool BedrockGameplay::advance_destroy_block(BlockPos position, std::uint8_t face
     return true;
 }
 
-bool BedrockGameplay::should_switch_before_destroy(float destroy_time_scale) const {
+bool BedrockGameplay::should_switch_before_destroy() const {
     const auto& state = *impl_;
-    if (!state.on_tick() || !state.destroy_active || state.game_mode() != state.destroy_mode ||
-        !std::isfinite(destroy_time_scale)) return false;
+    if (!state.on_tick() || !state.destroy_active || state.game_mode() != state.destroy_mode) return false;
     const auto mode = state.destroy_mode;
     constexpr std::size_t old_progress_offset = 0x20;
     constexpr std::size_t destroy_progress_offset = 0x24;
@@ -2095,8 +2435,8 @@ bool BedrockGameplay::should_switch_before_destroy(float destroy_time_scale) con
         !read_at(mode, old_progress_offset, previous) || !read_at(mode, destroy_progress_offset, current) ||
         !std::isfinite(previous) || !std::isfinite(current) || previous < -0.01F || current < 0.0F ||
         current > 1.01F || current <= previous) return false;
-    const float scale = std::clamp(destroy_time_scale, 0.01F, 1.0F);
-    return current + (current - previous) / scale >= 1.0F;
+    // The progress hook already scaled what the GameMode accumulated.
+    return current + (current - previous) >= 1.0F;
 }
 
 bool BedrockGameplay::prepare_durability_safe_finish() {
@@ -2128,47 +2468,18 @@ bool BedrockGameplay::hotbar_item(int slot, BlockPos target, HotbarItemInfo& inf
     auto& state = *impl_;
     info = {};
     if (!state.on_tick() || slot < 0 || slot > 8) return false;
-    std::uintptr_t supplies{}, container{};
-    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0xB8, container)) return false;
-    const auto get_item = state.method(container, 7);
-    if (!get_item) return false;
-    using GetItem = std::uintptr_t(__fastcall*)(void*, int);
-    const auto stack = reinterpret_cast<GetItem>(get_item)(reinterpret_cast<void*>(container), slot);
+    const auto stack = state.inventory_stack(state.inventory_container(), slot);
     std::uintptr_t item{};
     std::uint8_t count{};
-    if (!stack || !read_at(stack, 0x18, item) || !read_at(stack, 0x22, count)) return false;
-    if (!item || count == 0) { info.occupied = false; return true; }
-    // The checked Item::getDescriptionId virtual is the primary source; if a
-    // derived item traps or does not return an item key, try the pinned object
-    // fields and require the exact item-key shape before accepting them.
-    constexpr std::size_t description_id_offset = 0xB0;
+    if (!stack || !detail::read_gameplay_stack_item(stack, item, count)) return false;
+    if (!item) return true;
     constexpr std::size_t item_id_offset = 0xAA;
     constexpr std::size_t max_damage_offset = 0x150;
-    std::optional<std::string> name;
-    const auto try_description = [&](std::size_t offset) {
-        if (offset > UINTPTR_MAX - item) return std::optional<std::string>{};
-        auto candidate = read_msvc_string(reinterpret_cast<const void*>(item + offset), 128);
-        if (candidate && candidate->starts_with("item.") && candidate->ends_with(".name")) return candidate;
-        return std::optional<std::string>{};
-    };
-    if (const auto get_name = state.method(item, 4)) {
-        std::uintptr_t string_object{};
-        if (try_item_description_getter(get_name, item, string_object))
-            name = read_msvc_string(reinterpret_cast<const void*>(string_object), 128);
-        if (name && (!name->starts_with("item.") || !name->ends_with(".name"))) name.reset();
-    }
-    if (!name) name = try_description(description_id_offset);
-    if (!name) {
-        for (std::size_t offset = 0x08; offset <= 0x200; offset += 8) {
-            if (offset == description_id_offset) continue;
-            name = try_description(offset);
-            if (name) break;
-        }
-    }
+    const auto name = read_msvc_string(reinterpret_cast<const void*>(item + item_identifier_offset), 128);
     std::int16_t item_id{}, max_damage{};
     const bool item_id_read = read_at(item, item_id_offset, item_id);
     const bool max_damage_read = read_at(item, max_damage_offset, max_damage) && max_damage >= 0;
-    const bool named_pickaxe = name && name->find("pickaxe") != std::string::npos;
+    const auto classified = name ? classify_inventory_item(*name, count) : InventoryItemInfo{};
     const auto pickaxe_rank = [](std::int16_t id) noexcept -> float {
         switch (id) {
         case 621: case 607: return 5.0F; // Netherite
@@ -2184,23 +2495,11 @@ bool BedrockGameplay::hotbar_item(int slot, BlockPos target, HotbarItemInfo& inf
     if (!name && id_rank == 0.0F) return false;
     info.occupied = true;
     info.item_id = item_id_read ? item_id : 0;
-    info.pickaxe = named_pickaxe || id_rank > 0.0F;
+    info.pickaxe = classified.kind == InventoryItemKind::pickaxe || id_rank > 0.0F;
     info.damageable = max_damage_read ? max_damage > 0 : info.pickaxe;
-    if (info.pickaxe) {
-        // Tier ranking is only for choosing between known vanilla pickaxes;
-        // actual break progress still comes from the game's native GameMode.
-        float name_rank = 0.0F;
-        if (name) {
-            if (name->find("netherite") != std::string::npos) name_rank = 5.0F;
-            else if (name->find("diamond") != std::string::npos) name_rank = 4.0F;
-            else if (name->find("iron") != std::string::npos) name_rank = 3.0F;
-            else if (name->find("gold") != std::string::npos || name->find("golden") != std::string::npos)
-                name_rank = 2.0F;
-            else if (name->find("stone") != std::string::npos) name_rank = 1.0F;
-            else if (name->find("wooden") != std::string::npos) name_rank = 0.5F;
-        }
-        info.destroy_speed = std::max(name_rank, id_rank);
-    }
+    // Tier ranking is only for choosing between known vanilla pickaxes;
+    // actual break progress still comes from the game's native GameMode.
+    if (info.pickaxe) info.destroy_speed = std::max(classified.value, id_rank);
     return true;
 }
 
@@ -2214,6 +2513,158 @@ bool BedrockGameplay::select_hotbar_slot(int slot) {
     if (selected == slot) return true;
     if (!write_at(supplies, 0x10, slot)) return false;
     state.switched_this_tick = true;
+    return true;
+}
+
+bool BedrockGameplay::inventory_item(int slot, InventoryItemInfo& info) const {
+    const auto& state = *impl_;
+    info = {};
+    if (!state.on_tick() || slot < 0 || slot > 35) return false;
+    const auto container = state.inventory_container();
+    if (!container) return false;
+    const auto stack = state.inventory_stack(container, slot);
+    std::uintptr_t item{};
+    std::uint8_t count{};
+    if (!stack || !detail::read_gameplay_stack_item(stack, item, count)) {
+        state.inventory_diagnostic.stage = "inventory-stack-unreadable";
+        return false;
+    }
+    if (!item) return true;
+    // Same rule as Scaffold's block slots: only solid block items count.
+    std::uintptr_t block{}, legacy{};
+    std::uint8_t flags{};
+    if (read_at(stack, 0x18, block) && block && read_at(block, 0x68, legacy) && state.method(legacy, 0) &&
+        read_at(legacy, 0x164, flags) && (flags & 2) != 0) {
+        info = {InventoryItemKind::block, 0.0F, count};
+        (void)read_at(item, 0xAA, info.id);
+        return true;
+    }
+    state.describe_item(stack, item, count, info);
+    return true;
+}
+
+bool BedrockGameplay::armor_item(int slot, InventoryItemInfo& info) const {
+    const auto& state = *impl_;
+    info = {};
+    if (!state.on_tick() || slot < 0 || slot > 3) return false;
+    const auto stack = state.inventory_stack(state.armor_container(), slot);
+    std::uintptr_t item{};
+    std::uint8_t count{};
+    if (!stack || !detail::read_gameplay_stack_item(stack, item, count)) return false;
+    if (item) state.describe_item(stack, item, count, info);
+    return true;
+}
+
+bool BedrockGameplay::inventory_screen_open() const {
+    const auto& state = *impl_;
+    std::uintptr_t model{};
+    std::int8_t type{};
+    return state.on_tick() && state.container_model(model, type) && type == -1;
+}
+
+bool BedrockGameplay::swap_inventory_slots(int first, int second) {
+    auto& state = *impl_;
+    if (!state.on_tick() || first == second || first < 0 || first > 35 || second < 0 || second > 35) return false;
+    const auto container = state.inventory_container();
+    const auto first_stack = state.inventory_stack(container, first);
+    const auto second_stack = state.inventory_stack(container, second);
+    if (!first_stack || !second_stack || !state.send_inventory_transaction({{
+        {{}, static_cast<std::uint32_t>(first), first_stack, second_stack},
+        {{}, static_cast<std::uint32_t>(second), second_stack, first_stack}}})) return false;
+    state.note_local_update(state.exchange_local(first_stack, second_stack, [&](std::uintptr_t for_first, std::uintptr_t for_second) {
+        return state.set_inventory_slot(container, first, for_first) && state.set_inventory_slot(container, second, for_second);
+    }));
+    return true;
+}
+
+bool BedrockGameplay::equip_armor(int inventory_slot, int armor_slot) {
+    auto& state = *impl_;
+    if (!state.on_tick() || inventory_slot < 0 || inventory_slot > 35 || armor_slot < 0 || armor_slot > 3) return false;
+    const auto container = state.inventory_container();
+    const auto stack = state.inventory_stack(container, inventory_slot);
+    const auto worn = state.inventory_stack(state.armor_container(), armor_slot);
+    constexpr std::int8_t armor_container_id = 120;
+    if (!stack || !worn || !state.send_inventory_transaction({{
+        {{}, static_cast<std::uint32_t>(inventory_slot), stack, worn},
+        {{0, armor_container_id}, static_cast<std::uint32_t>(armor_slot), worn, stack}}})) return false;
+    state.note_local_update(state.exchange_local(stack, worn, [&](std::uintptr_t for_inventory, std::uintptr_t for_armor) {
+        return state.set_inventory_slot(container, inventory_slot, for_inventory) && state.set_armor_slot(armor_slot, for_armor);
+    }));
+    return true;
+}
+
+bool BedrockGameplay::drop_inventory_slot(int slot) {
+    auto& state = *impl_;
+    if (!state.on_tick() || slot < 0 || slot > 35) return false;
+    const auto container = state.inventory_container();
+    const auto stack = state.inventory_stack(container, slot);
+    const auto empty = state.empty_stack();
+    constexpr std::int32_t world_interaction = 2;
+    if (!stack || !empty || !state.send_inventory_transaction({{
+        {{}, static_cast<std::uint32_t>(slot), stack, empty},
+        {{world_interaction, 0}, 0, empty, stack}}})) return false;
+    state.note_local_update(state.set_inventory_slot(container, slot, empty));
+    return true;
+}
+
+std::uintptr_t BedrockGameplay::container_screen_tick_target() const noexcept {
+    constexpr std::uintptr_t rva = 0x4DF8350;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0xC8};
+    const auto& state = *impl_;
+    const auto target = state.image.address + rva;
+    return state.supported && state.native_identity(target, rva, prefix) ? target : 0;
+}
+
+bool BedrockGameplay::container_is_chest() const noexcept {
+    const auto& state = *impl_;
+    std::uintptr_t model{};
+    std::int8_t type{};
+    return state.local_player_current() && state.container_model(model, type) && type == 0;
+}
+
+bool BedrockGameplay::container_slot_occupied(int slot) const noexcept {
+    const auto& state = *impl_;
+    std::uintptr_t model{}, item{};
+    std::int8_t type{};
+    std::uint8_t count{};
+    if (slot < 0 || slot >= ContainerScreen::slot_limit || !state.container_model(model, type)) return false;
+    // ContainerManagerModel slot 9 is getSlot; out-of-range slots return a shared empty stack.
+    const auto get_slot = state.method(model, 9);
+    const auto stack = get_slot ? reinterpret_cast<std::uintptr_t(__fastcall*)(void*, int)>(get_slot)(
+        reinterpret_cast<void*>(model), slot) : 0;
+    return stack && detail::read_gameplay_stack_item(stack, item, count) && item;
+}
+
+bool BedrockGameplay::take_container_slot(void* controller, int slot) noexcept {
+    constexpr std::uintptr_t rva = 0x4DFB4D0;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x48};
+    constexpr std::string_view collection = "container_items";
+    const auto& state = *impl_;
+    const auto target = state.image.address + rva;
+    if (!controller || slot < 0 || slot >= ContainerScreen::slot_limit ||
+        !state.native_identity(target, rva, prefix)) return false;
+    static_assert(sizeof(detail::NativeSmallString) == detail::native_small_string_size);
+    static_assert(collection.size() <= 15);
+    detail::NativeSmallString name;
+    std::memcpy(name.text, collection.data(), collection.size());
+    name.size = collection.size();
+    // handleAutoPlace(controller, 0x7FFFFFFF, const std::string&, slot); the
+    // name is copied before the call returns.
+    using AutoPlace = void(__fastcall*)(void*, int, const void*, int);
+    reinterpret_cast<AutoPlace>(target)(controller, 0x7FFFFFFF, &name, slot);
+    return true;
+}
+
+bool BedrockGameplay::close_container_screen(void* controller) noexcept {
+    constexpr std::uintptr_t rva = 0x2240F40;
+    constexpr std::array<unsigned char, 16> prefix{
+        0x55,0x56,0x57,0x48,0x81,0xEC,0xE0,0,0,0,0x48,0x8D,0xAC,0x24,0x80,0};
+    const auto& state = *impl_;
+    const auto target = state.method(reinterpret_cast<std::uintptr_t>(controller), 12);
+    if (!target || !state.native_identity(target, rva, prefix)) return false;
+    reinterpret_cast<void*(__fastcall*)(void*)>(target)(controller);
     return true;
 }
 

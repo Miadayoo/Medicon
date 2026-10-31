@@ -15,6 +15,9 @@ public:
     using Clock = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
     static constexpr std::size_t maximum_pending = 256;
+    // Delay2 cancels this many hits, passes the next one through natively and
+    // starts over.
+    static constexpr int delay2_ignored = 3;
 
     VelocityModule();
     // Called only for a validated incoming motion packet targeting the local player.
@@ -51,11 +54,13 @@ public:
     Setting& sync_replies;
 
 protected:
-    void on_disable() noexcept override { cancel_motion(); }
+    void on_disable() noexcept override { cancel_motion(); delay2_hits_ = 0; }
     void on_tick(float) noexcept override;
 
 private:
     [[nodiscard]] bool delay_enabled() const noexcept;
+    [[nodiscard]] bool delay2_enabled() const noexcept;
+    [[nodiscard]] MotionResult handle_delay2(sdk::Vec3& motion, const sdk::GameplayFrame& frame) noexcept;
     [[nodiscard]] bool sync_context(const sdk::GameplayFrame& frame) noexcept;
     void cancel_motion() noexcept;
     void flush_replies(sdk::GameplayAccess& game, bool force) noexcept;
@@ -71,6 +76,7 @@ private:
     std::deque<PendingReply> replies_;
     Diagnostics diagnostics_;
     std::uint64_t sequence_{}, applied_sequence_{}, cancelled_sequence_{};
+    int delay2_hits_{};
     std::uint64_t world_identity_{};
     std::uintptr_t local_id_{};
     std::int64_t unique_id_{};

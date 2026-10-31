@@ -188,6 +188,9 @@ void test_filters_and_projection() {
     frame.actors[0].local = true;
     check(render(modules, frame).vertices.empty(), "local actor is excluded");
     frame = sample_frame();
+    frame.actors[0].bot = true;
+    check(render(modules, frame).vertices.empty(), "AntiBot bots are excluded");
+    frame = sample_frame();
     frame.actors[0].player = false;
     check(render(modules, frame).vertices.empty(), "Players Only excludes nonplayers");
     esp.players_only.get<bool>() = false;

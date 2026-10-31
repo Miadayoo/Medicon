@@ -103,6 +103,13 @@ struct DestroyModeDiagnostic {
     float accumulated_progress = 0.0F;
 };
 
+struct InventoryDiagnostic {
+    const char* stage = "not-attempted";
+    std::uint64_t attempts{}, sent{};
+    std::uintptr_t container_vtable_rva{}, getter_rva{}, setter_rva{};
+    std::uintptr_t add_action_rva{}, transaction_vtable_rva{};
+};
+
 // Native calls and ECS reads are confined to the local-player baseTick thread.
 // Call capture() with the client/player validated by BedrockChat, dispatch
 // gameplay modules synchronously, then end_tick(). Present consumes copies.
@@ -115,6 +122,7 @@ public:
 
     bool locate(std::string& diagnostic);
     [[nodiscard]] const std::string& diagnostic() const noexcept;
+    [[nodiscard]] InventoryDiagnostic inventory_diagnostic() const noexcept;
     bool capture(void* client, void* local_actor, bool check_visibility = true);
     void end_tick() noexcept;
     // Present-thread safe: rereads only the camera fields and the local render
@@ -191,17 +199,43 @@ public:
     [[nodiscard]] bool can_see_block(BlockPos position) const override;
     bool advance_destroy_block(BlockPos position, std::uint8_t face, float destroy_time_scale,
                                float& progress, bool& destroyed) override;
-    [[nodiscard]] bool should_switch_before_destroy(float destroy_time_scale) const override;
+    [[nodiscard]] bool should_switch_before_destroy() const override;
     bool prepare_durability_safe_finish() override;
     void stop_destroy_block() noexcept override;
     [[nodiscard]] int selected_hotbar_slot() const noexcept override;
     [[nodiscard]] bool hotbar_item(int slot, BlockPos target, HotbarItemInfo& info) const override;
     bool select_hotbar_slot(int slot) override;
+    [[nodiscard]] bool inventory_item(int slot, InventoryItemInfo& info) const override;
+    [[nodiscard]] bool inventory_screen_open() const override;
+    bool swap_inventory_slots(int first, int second) override;
+    [[nodiscard]] bool armor_item(int slot, InventoryItemInfo& info) const override;
+    bool equip_armor(int inventory_slot, int armor_slot) override;
+    bool drop_inventory_slot(int slot) override;
+    [[nodiscard]] std::uintptr_t container_screen_tick_target() const noexcept;
+    // Called from the screen's own tick, which owns `controller` for the call.
+    [[nodiscard]] bool container_is_chest() const noexcept;
+    [[nodiscard]] bool container_slot_occupied(int slot) const noexcept;
+    bool take_container_slot(void* controller, int slot) noexcept;
+    bool close_container_screen(void* controller) noexcept;
 
 private:
     struct Impl;
     bool swing_with_source(std::uint8_t source);
     std::unique_ptr<Impl> impl_;
+};
+
+class BedrockContainerScreen final : public ContainerScreen {
+public:
+    BedrockContainerScreen(BedrockGameplay& game, void* controller) noexcept
+        : game_(game), controller_(controller) {}
+    [[nodiscard]] bool chest() const override { return game_.container_is_chest(); }
+    [[nodiscard]] bool slot_occupied(int slot) const override { return game_.container_slot_occupied(slot); }
+    bool take(int slot) override { return game_.take_container_slot(controller_, slot); }
+    bool close() override { return game_.close_container_screen(controller_); }
+
+private:
+    BedrockGameplay& game_;
+    void* controller_;
 };
 
 } // namespace medicon::sdk

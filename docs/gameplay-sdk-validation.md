@@ -358,6 +358,65 @@ analog move `+0x5C`、move `+0x64`、**interact rot `+0x6C`**、camera orientati
 メモリ fixture に interact rotation の更新と不正値の拒否を追加した。ゲーム実行ファイルでの interact rotation 位置の
 逆アセンブル照合と、実サーバーでの受理確認は未実施。
 
+## ChestStealer / InvManager（2026-10-31）
+
+同じローカル `1.26.52.3` PE で照合した。実ゲーム・実サーバーでの動作は未確認。
+
+| 項目 | 確認結果 |
+| --- | --- |
+| ItemStackBase | Item の WeakPtr `+8`（参照先の先頭が Item*）、Block* `+0x18`、aux `+0x20`、count `+0x22`。`handleAutoPlace` `0x4DFB54F..0x4DFB579` と copy `0x2481C90` で確認 |
+| Item 識別子 | std::string `+0xD8`。constructor `0x24B19CB` |
+| ContainerManagerModel | shared_ptr が player `+0x5A0`。setter `0x1EEE80`、network handler の weak lock `0x1327C54` 等 |
+| Model の仮想関数 | slot 3 getContainerType `0xA3AF50`（`+0x51` を読むだけなので直接読む）、slot 9 getSlot（派生例 `0x3440C50`、範囲外は共有の空 stack） |
+| 画面 | ContainerScreenController tick `0x4DF8350`（vtable slot 2）、handleAutoPlace `0x4DFB4D0`、tryExit はslot 12 `0x2240F40`。`container_items` は実行ファイルに存在 |
+| Transaction | ComplexInventoryTransaction `0x68` bytes、vtable `0xE6D6C00`、type `+8`、data `+0x10`。data constructor `0x23FB00`、addAction `0x266EE40` |
+| InventoryAction | `0x200` bytes。constructor `0x1D4AD0`（this, source, slot, from, to）、destructor `0x1D4C70` |
+| 取引管理 | player `+0xA70` の InventoryTransactionManager（先頭の owner を照合）。addAction `0x266FD10` が収支の揃った transaction を通常の経路で送信する |
+| ローカル更新 | Inventory（vtable `0xE6AFE10`）の slot 12 は `0x1D5150`（Container::setItem、slot 13 `0x1D5170` へ force=false で転送）。`0x25A7060` は vector が `+0x1A0` の別クラスで、この Inventory の setter ではない。防具は Player 実装 `0x20A4F0` が末尾 `0x20A5B4` で呼ぶ `0x1A0B8E0`（Actor::setArmor）。LocalPlayer の slot 71 `0x476C290` は armor action も登録するため使わない |
+| Allocator | `0x11805230` の pointer の vtable slot 1。image 内の inline operator new と同じ経路 |
+
+ChestStealer の hook は tick 内で controller を借用するだけで保持しない。`container_items` は
+15文字なので、MSVC std::string の small-buffer 配置を DLL 側の stack に作り、同期呼び出しの間だけ貸す。
+
+InvManager は Solstice と同じ独立した Normal transaction（`mIsClientSide=false`）を送り、
+InventoryTransactionManager には登録しない。packet 送信だけでは、クライアント側の予測更新を
+前提とするサーバーから画面を開いている間 slot の再送が来ず、捨てた item が表示に残るうえ、
+確認待ちの timeout で動作も止まっていた。そのため送信成功後に native setter でローカル slot も更新する。
+元と先の ItemStack はコンテナ内のポインターなので、InventoryAction（`0x200` bytes）を
+native constructor で作り、その所有 copy（from `+0xD0`、to `+0x168`。constructor `0x1D4B79` 以降と
+destructor `0x1D4C70` で確認）から書き込んで、処理後に native destructor で解放する。
+サーバーが拒否して slot を戻した場合、同じ操作の再計画を検出して5秒待つ。server-authoritative
+inventory を要求するサーバー（legacy の移動を受け付けないもの）には対応していない。
+Solstice 由来の経路が使えるのは Hive を想定した記録のみで、現行 Hive での受理も未確認。
+ItemStackRequest の経路は Solstice でも未実装のため採用していない。
+
+防具は ActorEquipmentComponent（hash `B06141A9`、16 bytes）の `+8` のコンテナ。`0x253BCB4` で
+ContainerType Armor（`0x12`）として構築される。エンチャントは EnchantUtils::getEnchantLevel
+`0x3260390`（cl が種類、rdx が stack）。ドロップの相手は ItemStack::EMPTY_ITEM `0x11D65D50`
+（`0x3440D19` の参照先、vtable `0xE6D6CD0` を実行時に確認）。装備とドロップは swap と同じ
+transaction 経路で、source だけが Armor（id 120）/ WorldInteraction（type 2）になる。
+WorldInteraction は native drop `0x202CD4..0x202D08` と同じ container id `-1`、slot 0、
+空 stack → 投棄 stack。逆向きの pickup は slot 1（`0x1F743A..0x1F747C`）。
+
+回帰テストは、操作と無関係な slot 更新、swap/装備の片側だけの更新、装備読み取り失敗、
+投棄拒否、Delay 0 の native 失敗、world 変更、同強度の設定済み hotbar 装備を検査する。
+ABI fixture は native action のコピー前にコンテナを書き換えないこと、両端の stack と tag の保存、
+投棄の収支、古い防具の返却、armor action の重複防止と一時 action の破棄を確認する。
+これらと DLL ビルドの成功は、実ゲーム・実サーバーでの受理を確認した証拠ではない。
+
+`hotbar_item` は以前 `+0x18`（Block*）を Item として読み、ブロック以外を空として扱っていた。
+`+8` の Item を読むよう修正し、未検証の Item virtual slot 4 の呼び出しも撤去した。
+`+0x150` の max damage は constructor `0x24B184E` で0に初期化される16-bitだが、値の意味は
+実機で未確認（Regen の Infinity Durability が依存する）。
+
+## Killaura の Health 優先（2026-10-31）
+
+`ActorSnapshot::health` は AttributesComponent（hash `FD3B0613`、entt 型名 `AttributesComponent` の FNV-1a と一致）から読む。pool の要素幅 `0x50` は `0x1DE4C8` の `(i & 0x7F) * 5 << 4`、昇順 id 配列 `+0` と平行な instance 配列 `+0x18` は `0x31A1050` / `0x31A12A0` の二分探索、instance 幅 `0x88` は `0x1F0771` の走査で確認した（pinned Solstice の定義とも一致）。現在値 `+0x7C`・最大値 `+0x78` は `0x1EF38F` の全回復処理と一致する。
+
+attribute id は実行時の連番なので固定しない。`SharedAttributes::HEALTH`（RVA `0x11DC54F0`、`0x31BD2F1` で構築）の name `+0x10` が `minecraft:health` であることを確認してから id `+4` を読み、読めない・範囲外の値は「不明」（負値）として距離優先に戻す。
+
+以上は静的照合のみで、実ゲームでの読み取りは未確認。サーバーが他プレイヤーの体力を同期しない場合、値は既定値のままになる可能性がある。
+
 ## 攻撃・設置
 
 | 対象 | 確認結果 |

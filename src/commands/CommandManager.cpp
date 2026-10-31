@@ -1,10 +1,13 @@
 #include <medicon/commands/CommandManager.hpp>
 
+#include <medicon/core/ConfigStore.hpp>
 #include <medicon/core/ModuleManager.hpp>
 #include <medicon/modules/ClientModules.hpp>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -14,6 +17,31 @@ namespace {
 constexpr std::string_view usage =
     "Usage: .bind <module> [key], .bind list, .bind reset, or .unbind <module>. "
     "Quote module names containing spaces.";
+constexpr std::string_view config_usage =
+    "Usage: .config save [name] [overwrite], .config load <name>, "
+    ".config delete <name>, or .config list. Short forms: .c s [name], .c l <name>. "
+    "Without a name, save updates the current config.";
+constexpr std::string_view help_usage = "Usage: .help [command].";
+
+struct CommandInfo {
+    std::string_view name;
+    std::string_view alias;
+    std::string_view description;
+    std::string_view usage;
+};
+
+constexpr auto command_infos = std::to_array<CommandInfo>({
+    {"bind", "", "Bind a key to a module.", usage},
+    {"unbind", "", "Remove a module's key.", usage},
+    {"config", "c", "Save and load named configs.", config_usage},
+    {"help", "", "Show the available commands.", help_usage}
+});
+
+std::string command_label(const CommandInfo& command) {
+    auto label = "." + std::string(command.name);
+    if (!command.alias.empty()) label += " (." + std::string(command.alias) + ")";
+    return label;
+}
 
 bool whitespace(char value) {
     return value == ' ' || value == '\t' || value == '\r' ||
@@ -83,6 +111,114 @@ CommandResult success(std::string message, bool changed = false) {
     return {true, changed, true, std::move(message)};
 }
 
+CommandResult not_found(std::string_view command) {
+    return failure(std::string(command) + " was not found. Try using .help to see the available commands.");
+}
+
+CommandResult run_help(const std::vector<Token>& tokens) {
+    if (tokens.size() > 2) return failure(std::string(help_usage));
+    if (tokens.size() == 2) {
+        std::string_view name = tokens[1].text;
+        if (!name.empty() && name.front() == '.') name.remove_prefix(1);
+        for (const auto& command : command_infos) {
+            if (!equal_name(command.name, name) && (command.alias.empty() || !equal_name(command.alias, name))) continue;
+            return success(command_label(command) + " - " + std::string(command.description) +
+                "\n" + std::string(command.usage));
+        }
+        return not_found(tokens[1].text);
+    }
+    std::string message = "Commands:";
+    for (const auto& command : command_infos)
+        message += "\n" + command_label(command) + " - " + std::string(command.description);
+    return success(message + "\nUse .help <command> for details.");
+}
+
+// Names become file names, so stay ASCII and avoid Windows device names.
+bool valid_config_name(std::string_view name) {
+    if (name.empty() || name.size() > 64) return false;
+    for (const char value : name) {
+        const char letter = lowercase(value);
+        if (!(letter >= 'a' && letter <= 'z') && !(value >= '0' && value <= '9') &&
+                value != '-' && value != '_') return false;
+    }
+    for (const std::string_view device : {"con", "prn", "aux", "nul"})
+        if (equal_name(name, device)) return false;
+    const bool port = name.size() == 4 && (equal_name(name.substr(0, 3), "com") || equal_name(name.substr(0, 3), "lpt"));
+    return !port || name[3] < '0' || name[3] > '9';
+}
+
+CommandResult list_configs(const std::filesystem::path& directory, bool show_usage) {
+    std::vector<std::string> names;
+    std::error_code error;
+    const auto status = std::filesystem::status(directory, error);
+    if (!std::filesystem::status_known(status)) return failure("Could not read configs: " + error.message());
+    error.clear(); // A missing directory is an empty list.
+    if (std::filesystem::is_directory(status)) {
+        for (std::filesystem::directory_iterator entry(directory, error), end; !error && entry != end; entry.increment(error)) {
+            if (entry->path().extension() != ".json") continue;
+            const auto stem = entry->path().stem().u8string();
+            std::string name(stem.begin(), stem.end());
+            if (valid_config_name(name)) names.push_back(std::move(name));
+        }
+    }
+    if (error) return failure("Could not read configs: " + error.message());
+    std::sort(names.begin(), names.end());
+    std::string message = "Configs:";
+    if (names.empty()) message += " no configs are saved.";
+    for (const auto& name : names) message += "\n" + name;
+    if (show_usage) message += "\n" + std::string(config_usage);
+    return success(std::move(message));
+}
+
+CommandResult run_config(ModuleManager& modules, const std::filesystem::path& directory,
+                         std::string& current, const std::vector<Token>& tokens) {
+    if (directory.empty()) return failure("Configs are not available in this host.");
+    const auto action = [&](std::string_view name) {
+        return tokens.size() > 1 && !tokens[1].quoted && equal_name(tokens[1].text, name);
+    };
+    if (tokens.size() == 1 || (tokens.size() == 2 && action("list")))
+        return list_configs(directory, tokens.size() == 1);
+    const bool save = action("save") || action("s");
+    const bool load = action("load") || action("l");
+    const bool remove = action("delete");
+    const bool overwrite = save && tokens.size() == 4 && !tokens[3].quoted && equal_name(tokens[3].text, "overwrite");
+    if ((!save && !load && !remove) || (!save && tokens.size() < 3) || tokens.size() > (overwrite ? 4U : 3U))
+        return failure(std::string(config_usage));
+    if (tokens.size() < 3 && current.empty())
+        return failure("No config is loaded. Use .config save <name> or .config load <name>.");
+
+    const std::string name = tokens.size() < 3 ? current : tokens[2].text;
+    if (!valid_config_name(name))
+        return failure("Invalid config name '" + name + "'. Use up to 64 letters, digits, '-' or '_'.");
+    const ConfigStore store(directory / (name + ".json"));
+    std::error_code file_error;
+    const auto status = std::filesystem::status(store.path(), file_error);
+    if (!std::filesystem::status_known(status))
+        return failure("Could not read config '" + name + "': " + file_error.message());
+    const bool exists = std::filesystem::is_regular_file(status);
+    if (save) {
+        if (exists && !overwrite && !equal_name(name, current))
+            return failure("Config '" + name + "' already exists. Use .config save " + name + " overwrite to replace it.");
+        std::string error;
+        if (!store.save(modules, error)) return failure("Could not save config '" + name + "': " + error);
+        current = name;
+        return success("Saved config '" + name + "'.");
+    }
+    if (!exists) return failure("Config '" + name + "' does not exist. Use .config list to see saved configs.");
+    if (remove) {
+        std::filesystem::remove(store.path(), file_error);
+        if (file_error) return failure("Could not delete config '" + name + "': " + file_error.message());
+        if (equal_name(name, current)) current.clear();
+        return success("Deleted config '" + name + "'.");
+    }
+    std::string error;
+    if (!store.load(modules, error)) return failure("Could not load config '" + name + "': " + error);
+    current = name;
+    auto result = success("Loaded config '" + name + "'.", true);
+    result.config_loaded = true;
+    return result;
+}
+
 struct KeyName { std::string_view name; int code; };
 
 // Platform-independent numeric Win32 virtual-key values, matching Module's
@@ -111,7 +247,8 @@ constexpr auto key_names = std::to_array<KeyName>({
 
 } // namespace
 
-CommandManager::CommandManager(ModuleManager& modules) : modules_(modules) {}
+CommandManager::CommandManager(ModuleManager& modules, std::filesystem::path config_directory)
+    : modules_(modules), config_directory_(std::move(config_directory)) {}
 
 std::optional<int> CommandManager::parse_key(std::string_view input) {
     input = trim(input);
@@ -188,9 +325,12 @@ CommandResult CommandManager::execute(std::string_view input) {
     std::vector<Token> tokens;
     std::string error;
     if (!tokenize(input, tokens, error)) return failure(std::move(error));
+    if (equal_name(tokens.front().text, ".help")) return run_help(tokens);
+    if (equal_name(tokens.front().text, ".config") || equal_name(tokens.front().text, ".c"))
+        return run_config(modules_, config_directory_, current_config_, tokens);
     const bool bind = equal_name(tokens.front().text, ".bind");
     const bool unbind = equal_name(tokens.front().text, ".unbind");
-    if (!bind && !unbind) return failure("Unknown local command: " + tokens.front().text + ". " + std::string(usage));
+    if (!bind && !unbind) return not_found(tokens.front().text);
 
     const bool list = bind && (tokens.size() == 1 ||
         (tokens.size() == 2 && !tokens[1].quoted && equal_name(tokens[1].text, "list")));

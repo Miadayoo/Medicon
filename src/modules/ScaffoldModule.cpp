@@ -7,6 +7,23 @@
 #include <cmath>
 
 namespace medicon {
+namespace {
+
+// Auto Select reaches the whole hotbar; without it only the held stack places.
+bool placeable_blocks(const sdk::GameplayAccess& game, bool auto_select, int& total) {
+    const int held = game.selected_hotbar_slot();
+    int blocks = 0;
+    for (int slot = 0; slot < 9; ++slot) {
+        if (!auto_select && slot != held) continue;
+        sdk::InventoryItemInfo item{};
+        if (!game.inventory_item(slot, item)) return false;
+        if (item.kind == sdk::InventoryItemKind::block) blocks += item.count;
+    }
+    total = blocks;
+    return true;
+}
+
+} // namespace
 
 ScaffoldModule::ScaffoldModule()
     : GameplayModule(module_id, "Scaffold", "Place blocks below your feet and extend in your movement direction.", Category::Movement),
@@ -21,6 +38,7 @@ void ScaffoldModule::on_enable() noexcept {
     rotation_hold_remaining_ = 0.0F;
     rotation_hold_active_ = false;
     rotation_hold_block_valid_ = false;
+    block_count_ = -1;
 }
 void ScaffoldModule::on_disable() noexcept { on_enable(); }
 
@@ -29,6 +47,10 @@ void ScaffoldModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) n
     try {
         const auto& frame = game.frame();
         if (!gameplay_detail::ready(frame)) { on_enable(); return; }
+        // Ahead of the cooldown: the count must follow pickups between placements.
+        // A slot that cannot be read this tick keeps the last known count.
+        (void)placeable_blocks(game, auto_select.get<bool>(), block_count_);
+        view_yaw_ = frame.yaw;
         if (local_id_ != frame.local.id) {
             local_id_ = frame.local.id;
             cooldown_ = 0.0F;

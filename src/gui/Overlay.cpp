@@ -151,6 +151,9 @@ FontSizes Overlay::font_sizes(const FrameInfo& frame) const {
         sizes.watermark_small = std::round(theme::watermark::font_small * k);
         if (module->japanese()) sizes.watermark_japanese = std::round(theme::watermark::title_font * k);
     }
+    // Always in the atlas: a rebuild waits for the GPU, and Scaffold is turned on
+    // in the middle of a jump.
+    sizes.block_count = std::round(32.0F * frame.hud_scale);
     // Prepare the intro and menu together before the first intro render starts
     // its clock. Otherwise the handoff rebuilds the atlas and waits for the GPU
     // while the last animation frames should be presented.
@@ -269,6 +272,7 @@ void Overlay::render() {
         GuiContext context{modules_, fonts_, shadows_, frame_, below, ImGui::GetBackgroundDrawList()};
         hud_.render(context);
         watermark_.render(context, clock_.elapsed());
+        block_count_.render(context);
         gui_.render(context);
         if (gui_.consume_save_request() && save_) save_();
         if (gui_.consume_social_request()) social_.open_screen();

@@ -7,6 +7,8 @@
 #include <medicon/gui/SocialWidgets.hpp>
 #include <medicon/gui/Theme.hpp>
 #include <medicon/modules/ClientModules.hpp>
+#include <medicon/modules/ScaffoldModule.hpp>
+#include <medicon/sdk/Gameplay.hpp>
 #include <medicon/alt/Alt.hpp>
 #include <medicon/social/Config.hpp>
 #include <medicon/social/Events.hpp>
@@ -443,6 +445,59 @@ void capture_at(ScenarioHost& host, bool capture, const char* prefix, std::initi
         host.log(line);
         if (capture) host.capture(suffix);
     }
+}
+
+// Only what Scaffold reads to count its blocks. Nothing can be placed.
+class HotbarGame final : public sdk::GameplayAccess {
+public:
+    HotbarGame() {
+        frame_.ready = true;
+        frame_.local.id = 1;
+        frame_.local.alive = true;
+    }
+    int blocks = 0;
+    float yaw = 0.0F;
+    const sdk::GameplayFrame& frame() const noexcept override { return frame_; }
+    bool rotate(float, float) override { return false; }
+    bool rotate_head_and_body(float) override { return false; }
+    bool attack(std::uintptr_t) override { return false; }
+    bool place_block(sdk::BlockPos, bool) override { return false; }
+    bool replaceable(sdk::BlockPos) const override { return false; }
+    bool inventory_item(int slot, sdk::InventoryItemInfo& info) const override {
+        const int stack = std::clamp(blocks - slot * 64, 0, 64);
+        info = {};
+        if (stack > 0) { info.kind = sdk::InventoryItemKind::block; info.count = static_cast<std::uint8_t>(stack); }
+        return true;
+    }
+    void tick(ScaffoldModule& scaffold) {
+        frame_.yaw = yaw;
+        scaffold.game_tick(*this, 0.05F);
+    }
+
+private:
+    sdk::GameplayFrame frame_;
+};
+
+// The glass counter losing a digit. Run with --fixed-dt 0.01.
+void block_count(ScenarioHost& host, bool capture) {
+    host.overlay().gui().set_open(false);
+    host.overlay().set_main_menu_active(false);
+    auto* scaffold = dynamic_cast<ScaffoldModule*>(host.modules().find(ScaffoldModule::module_id));
+    if (!scaffold) throw std::runtime_error("Scaffold is not registered");
+    scaffold->set_enabled(true);
+    HotbarGame game;
+    game.blocks = 100;
+    game.tick(*scaffold);
+    capture_at(host, capture, "enter", {40, 80, 160, 1200});
+    game.blocks = 99;
+    game.tick(*scaffold);
+    capture_at(host, capture, "drop", {30, 60, 100, 140, 200, 280, 400, 1200});
+    game.blocks = 512;
+    game.yaw = 90.0F;
+    game.tick(*scaffold);
+    capture_at(host, capture, "grow", {60, 160, 1200});
+    scaffold->set_enabled(false);
+    capture_at(host, capture, "leave", {60, 160, 800});
 }
 
 // 220 ms to open (0.96 -> 1, fading in, shadow and glow with it), 140 ms to close.
@@ -1752,6 +1807,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"toasts_click", toasts_click},
         {"toasts_morph", toasts_morph},
         {"music", music_widget},
+        {"block_count", block_count},
         {"watermark", [](ScenarioHost& h, bool c) {
             // The in-game Watermark, entrance included (capture after 250 ms).
             h.overlay().gui().set_open(false);

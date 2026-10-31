@@ -16,6 +16,7 @@
 #include <medicon/modules/RegenModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/VelocityModule.hpp>
+#include <medicon/modules/InvManagerModule.hpp>
 #include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
 #include <medicon/sdk/BedrockAuth.hpp>
@@ -100,6 +101,7 @@ using YawInterpolationFn = float(__fastcall*)(void*, float);
 using SprintSpeedFn = int(__fastcall*)(void*, void*, void*, void*);
 using DestroyProgressFn = float(__fastcall*)(void*, void*);
 using DestroyStopFn = void(__fastcall*)(void*, const sdk::BlockPos*);
+using ContainerScreenTickFn = std::uintptr_t(__fastcall*)(void*);
 namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
 
 constexpr GUID queue_guid{0xf6fe7dea, 0x438b, 0x49d6, {0x95, 0xb8, 0xe3, 0x67, 0x45, 0xd4, 0xea, 0xa2}};
@@ -229,6 +231,7 @@ public:
     HookManager rotation_hooks;
     HookManager sprint_speed_hooks;
     HookManager regen_progress_hooks;
+    HookManager container_screen_hooks;
     HookManager model_hooks;
     HookManager model_box_hooks;
     HookManager model_static_hooks;
@@ -295,6 +298,7 @@ public:
     SprintSpeedFn sprint_speed_original{};
     DestroyProgressFn destroy_progress_original{};
     DestroyStopFn destroy_stop_original{};
+    ContainerScreenTickFn container_screen_tick_original{};
     std::atomic_bool sprint_packet_route_reported{};
     std::atomic_bool sprint_packet_layout_error_reported{};
     std::atomic_bool rotation_packet_route_reported{};
@@ -303,6 +307,8 @@ public:
     bool rotation_getter_identity_reported{}; // Game thread.
     ULONGLONG killaura_rotation_diagnostic_last{}; // Game thread, under render_mutex.
     ULONGLONG velocity_diagnostic_last{};
+    ULONGLONG inventory_diagnostic_last{};
+    std::string inventory_diagnostic_key;
     VelocityModule::Diagnostics velocity_reported_counts{};
     ULONGLONG pitch_diagnostic_last{}; // Game thread, under render_mutex.
     unsigned pitch_diagnostic_count{};
@@ -794,6 +800,7 @@ public:
     void connect_rotation();
     void connect_sprint_speed();
     void connect_regen_progress();
+    void connect_container_screen();
     void connect_model_probe();
     void connect_model_box();
     void connect_model_static();
@@ -2407,6 +2414,47 @@ void Runtime::connect_regen_progress() {
     report("Regen progress scaling and target-scoped native stop guard active.");
 }
 
+// The controller is only usable from inside its own tick. The module acts here
+// rather than retaining the pointer for baseTick, where the screen may be gone.
+std::uintptr_t __fastcall hook_container_screen_tick(void* controller) {
+    CallbackScope callback;
+    auto& state = callback.state;
+    if (!state.stopping.load(std::memory_order_acquire) && state.gameplay_ready.load(std::memory_order_acquire)) {
+        std::unique_lock render(state.render_mutex, std::defer_lock);
+        (void)render.try_lock_for(std::chrono::milliseconds(4));
+        if (render.owns_lock() && state.client) {
+            sdk::BedrockContainerScreen screen(state.gameplay, controller);
+            state.client->container_screen_tick(screen, !state.input_open() &&
+                state.window_focused_cached.load(std::memory_order_acquire));
+        }
+    }
+    const auto original = state.container_screen_tick_original;
+    return original ? original(controller) : 0;
+}
+
+void Runtime::connect_container_screen() {
+    if (stopping || !gameplay_ready.load(std::memory_order_acquire)) return;
+    std::string error;
+    if (container_screen_hooks.size()) {
+        if (!container_screen_hooks.enable_all(error))
+            report("ChestStealer hook unavailable: " + error, true);
+        return;
+    }
+    const auto target = gameplay.container_screen_tick_target();
+    if (!target) {
+        report("ChestStealer hook unavailable: container screen tick failed validation.", true);
+        return;
+    }
+    if (!container_screen_hooks.create("ChestStealer container screen tick", reinterpret_cast<void*>(target),
+            reinterpret_cast<void*>(&hook_container_screen_tick),
+            reinterpret_cast<void**>(&container_screen_tick_original), error) ||
+        !container_screen_hooks.enable_all(error)) {
+        report("ChestStealer hook unavailable: " + error, true);
+        return;
+    }
+    report("ChestStealer container screen hook active.");
+}
+
 void Runtime::connect_model_probe() {
     if (stopping) return;
     // connect_chat has finished publishing its immutable, validated current-
@@ -2914,15 +2962,16 @@ void hook_base_tick(void* actor) {
     // CustomModel sharing selects nearby players from this snapshot. Without
     // it, nobody was announced or watched unless another module was ON.
     bool wanted = (sprint && sprint->needs_restore()) || (velocity && velocity->needs_restore()) || state.model_sync_wanted;
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "regen", "esp", "rotations", "sprint", "velocity"}) {
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "regen", "esp", "rotations", "sprint", "velocity",
+                           "cheststealer", "invmanager"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
     }
     const auto* regen_module = dynamic_cast<const RegenModule*>(state.client->modules().find(RegenModule::module_id));
     const auto* rotations_module = dynamic_cast<const RotationsModule*>(
         state.client->modules().find(RotationsModule::module_id));
-    state.rotation_vector_fix_enabled.store(rotations_module && rotations_module->enabled() &&
-        rotations_module->vector_fix.get<bool>(), std::memory_order_release);
+    state.rotation_vector_fix_enabled.store(rotations_module && rotations_module->enabled(),
+        std::memory_order_release);
     state.regen_packet_trace_enabled.store(regen_module &&
         (regen_module->enabled() || regen_module->needs_restore()), std::memory_order_release);
     if (regen_module && regen_module->needs_restore()) wanted = true;
@@ -2991,9 +3040,37 @@ void hook_base_tick(void* actor) {
             std::unique_lock mouse(state.mouse_mutex, std::try_to_lock);
             if (mouse.owns_lock()) grabbed = state.bedrock_chat.mouse_grabbed(diagnostic);
         }
-        const bool allow_actions = !state.input_open() && grabbed.value_or(false) &&
+        const bool allow_screen_actions = !state.input_open() &&
             state.window_focused_cached.load(std::memory_order_acquire);
-        state.client->game_tick(state.gameplay, seconds, allow_actions);
+        const bool allow_actions = allow_screen_actions && grabbed.value_or(false);
+        state.client->game_tick(state.gameplay, seconds, allow_actions, allow_screen_actions);
+        if (const auto* manager = dynamic_cast<const InvManagerModule*>(state.client->modules().find(InvManagerModule::module_id));
+            manager && manager->enabled()) {
+            const auto& module = manager->diagnostic();
+            const auto sdk = state.gameplay.inventory_diagnostic();
+            const auto key = std::string(module.status) + "/" + sdk.stage + "/" + std::to_string(sdk.attempts) +
+                "/" + std::to_string(allow_actions) + "/" + std::to_string(allow_screen_actions);
+            const auto sampled_at = GetTickCount64();
+            if (key != state.inventory_diagnostic_key && (!state.inventory_diagnostic_last ||
+                sampled_at - state.inventory_diagnostic_last >= 2000)) {
+                char message[640]{};
+                std::snprintf(message, sizeof message,
+                    "InvManager solstice-normal-v3: module=%s sdk=%s ticks=%llu attempts=%llu sent=%llu move=%d slots=%d/%d armor_known=%d "
+                    "allow_play=%d allow_screen=%d inventory_table=0x%llX get7=0x%llX set12=0x%llX addAction=0x%llX transaction_table=0x%llX.",
+                    module.status, sdk.stage, static_cast<unsigned long long>(module.ticks),
+                    static_cast<unsigned long long>(sdk.attempts), static_cast<unsigned long long>(sdk.sent),
+                    module.move_type, module.first, module.second, module.armor_known, allow_actions, allow_screen_actions,
+                    static_cast<unsigned long long>(sdk.container_vtable_rva), static_cast<unsigned long long>(sdk.getter_rva),
+                    static_cast<unsigned long long>(sdk.setter_rva), static_cast<unsigned long long>(sdk.add_action_rva),
+                    static_cast<unsigned long long>(sdk.transaction_vtable_rva));
+                state.report(message);
+                state.inventory_diagnostic_key = key;
+                state.inventory_diagnostic_last = sampled_at;
+            }
+        } else {
+            state.inventory_diagnostic_last = 0;
+            state.inventory_diagnostic_key.clear();
+        }
         if (velocity) {
             const auto& counts = velocity->diagnostics();
             const auto& previous = state.velocity_reported_counts;
@@ -4018,6 +4095,10 @@ DWORD WINAPI start_worker(void*) {
         catch (const std::exception& error) {
             state.report(std::string("Regen destroy-progress hook unavailable: ") + error.what(), true);
         }
+        try { state.connect_container_screen(); }
+        catch (const std::exception& error) {
+            state.report(std::string("ChestStealer hook unavailable: ") + error.what(), true);
+        }
         state.report("Native profiles prepared in " + std::to_string(GetTickCount64() - profile_start) + " ms.");
         if (state.stopping) return 0;
         state.connect_native_input();
@@ -4097,10 +4178,10 @@ extern "C" int MediconAutoUnloadReady() {
         }
         return -1;
     }
-    const std::array<medicon::HookManager*, 13> managers{
+    const std::array<medicon::HookManager*, 14> managers{
         &state.auth_hooks, &state.reconnect_hooks,
         &state.model_static_hooks, &state.model_box_hooks, &state.model_hooks, &state.navigation_hooks,
-        &state.rotation_hooks, &state.sprint_speed_hooks, &state.regen_progress_hooks,
+        &state.rotation_hooks, &state.sprint_speed_hooks, &state.regen_progress_hooks, &state.container_screen_hooks,
         &state.mouse_hooks, &state.tick_hooks,
         &state.chat_hooks, &state.hooks};
     try {
@@ -4260,6 +4341,7 @@ int MediconStopOverlay() {
     if (!state.native_input_hooks.disable_all(error)) { state.report(error, true); return 0; }
     state.native_input_ready.store(false, std::memory_order_release);
     if (!state.regen_progress_hooks.disable_all(error)) { state.report(error, true); return 0; }
+    if (!state.container_screen_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.rotation_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.tick_hooks.disable_all(error)) { state.report(error, true); return 0; }
     if (!state.chat_hooks.disable_all(error)) { state.report(error, true); return 0; }

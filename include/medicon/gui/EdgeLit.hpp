@@ -1,5 +1,7 @@
 #pragma once
 
+#include "medicon/gui/LiquidGlass.hpp"
+
 #include <imgui.h>
 
 #include <memory>
@@ -51,6 +53,7 @@ void forget_edge_lit_frame(ImGuiContext* context);
 // Shared by the D3D11 host, Preview, and the D3D11On12 interop device.
 // Effects use genuine separable Gaussian convolution and premultiplied source-over.
 // render preserves every D3D11 state it changes and never retains the back buffer.
+// It also draws the frame's Liquid Glass, so every host has one effects pass.
 class EdgeLitD3D11 {
 public:
     EdgeLitD3D11();
@@ -62,9 +65,12 @@ public:
                 std::string& error);
     void reset();
     void invalidate_fonts();
+    // False until the first render, which loads Liquid Glass even with nothing to show.
+    [[nodiscard]] bool loaded() const noexcept { return glass_.loaded(); }
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    LiquidGlassD3D11 glass_;
 };
 
 } // namespace medicon::gui

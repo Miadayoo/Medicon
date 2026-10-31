@@ -11,6 +11,10 @@
 namespace medicon {
 namespace {
 
+// How long a server gets to confirm a break, and the pause before a refused
+// target is tried again.
+constexpr float block_update_timeout = 1.0F;
+
 bool redstone_ore(std::uint16_t id) noexcept {
     return id == 73 || id == 74 || id == 658 ||
         id == static_cast<std::uint16_t>(-403) || id == static_cast<std::uint16_t>(-404);
@@ -40,17 +44,34 @@ RegenModule::RegenModule()
 void RegenModule::clear_target() noexcept {
     target_ = {};
     face_ = 0;
-    target_yaw_ = target_pitch_ = progress_ = 0.0F;
+    target_yaw_ = target_pitch_ = progress_ = break_wait_ = 0.0F;
     target_valid_ = false;
     pickaxe_slot_ = safe_slot_ = -1;
     phase_ = Phase::idle;
     mining_started_ = false;
 }
 
-void RegenModule::on_enable() noexcept {
-    local_id_ = 0;
+void RegenModule::finish_target(sdk::GameplayAccess& game) noexcept {
+    game.stop_destroy_block();
+    completed_target_ = target_;
+    completed_target_valid_ = true;
+    completed_wait_ = block_update_timeout;
+    target_valid_ = false;
+    diagnostic_status_.store(DiagnosticStatus::broken, std::memory_order_release);
+    if (slot_changed_) {
+        release_requested_.store(true, std::memory_order_release);
+    } else {
+        original_slot_ = -1;
+        clear_target();
+    }
     scan_cooldown_ = 0.0F;
+}
+
+void RegenModule::on_enable() noexcept {
+    scan_cooldown_ = 0.0F;
+    // A pending release still needs local_id_ to restore the slot it owns.
     if (!release_requested_.load(std::memory_order_acquire)) {
+        local_id_ = 0;
         original_slot_ = -1;
         slot_changed_ = false;
         clear_target();
@@ -153,6 +174,11 @@ void RegenModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noex
         const float delta = gameplay_detail::tick_delta(delta_seconds);
         if (delta <= 0.0F) return;
         scan_cooldown_ = std::max(0.0F, scan_cooldown_ - delta);
+        // A block the server kept is a target again once its update is overdue.
+        if (completed_target_valid_) {
+            completed_wait_ -= delta;
+            if (completed_wait_ <= 0.0F) completed_target_valid_ = false;
+        }
 
         if (target_valid_) {
             std::uint16_t current_id{};
@@ -162,14 +188,7 @@ void RegenModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noex
             // Breaked swing is emitted once for that completed target.
             if (game.block_id(target_, current_id) && !redstone_ore(current_id)) {
                 if (mining_started_ && swing_mode == 2) (void)game.mining_swing();
-                completed_target_ = target_;
-                completed_target_valid_ = true;
-                game.stop_destroy_block();
-                target_valid_ = false;
-                diagnostic_status_.store(DiagnosticStatus::broken, std::memory_order_release);
-                if (slot_changed_) release_requested_.store(true, std::memory_order_release);
-                else clear_target();
-                scan_cooldown_ = 0.0F;
+                finish_target(game);
                 return;
             }
             const sdk::Vec3 center{static_cast<float>(target_.x) + 0.5F,
@@ -209,6 +228,17 @@ void RegenModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noex
         if (progress_ < gameplay_detail::number(rotation_percentage))
             (void)game.rotate_head_and_body(target_yaw_, target_pitch_);
 
+        if (phase_ == Phase::wait_break) {
+            break_wait_ -= delta;
+            if (break_wait_ > 0.0F) return;
+            // No block update arrived, so the server kept the block. Mine it
+            // again from the pickaxe rather than the final-hit item.
+            phase_ = Phase::idle;
+            safe_slot_ = -1;
+            progress_ = 0.0F;
+            mining_started_ = false;
+        }
+
         if (original_slot_ < 0) original_slot_ = game.selected_hotbar_slot();
         if (original_slot_ < 0) return;
 
@@ -239,16 +269,24 @@ void RegenModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noex
             }
             return;
         }
+        // The player can scroll away during either wait, so ask for the slot
+        // again instead of waiting for a selection nothing will make.
         if (phase_ == Phase::wait_pickaxe) {
-            if (selected != pickaxe_slot_) return;
+            if (selected != pickaxe_slot_) {
+                diagnostic_status_.store(DiagnosticStatus::waiting_for_pickaxe, std::memory_order_release);
+                (void)game.select_hotbar_slot(pickaxe_slot_);
+                return;
+            }
             phase_ = Phase::mining;
-            diagnostic_status_.store(DiagnosticStatus::waiting_for_pickaxe, std::memory_order_release);
         }
         if (phase_ == Phase::idle && selected == pickaxe_slot_) phase_ = Phase::mining;
         if (phase_ == Phase::wait_safe_item) {
-            if (selected != safe_slot_) return;
+            if (selected != safe_slot_) {
+                diagnostic_status_.store(DiagnosticStatus::waiting_for_safe_item, std::memory_order_release);
+                (void)game.select_hotbar_slot(safe_slot_);
+                return;
+            }
             phase_ = Phase::mining;
-            diagnostic_status_.store(DiagnosticStatus::waiting_for_safe_item, std::memory_order_release);
         }
         if (phase_ == Phase::mining && selected != pickaxe_slot_ && selected != safe_slot_) {
             if (game.select_hotbar_slot(pickaxe_slot_)) {
@@ -260,7 +298,7 @@ void RegenModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noex
         }
 
         if (infinity_durability.get<bool>() && phase_ == Phase::mining && selected == pickaxe_slot_ &&
-            game.should_switch_before_destroy(gameplay_detail::number(destroy_speed))) {
+            game.should_switch_before_destroy()) {
             for (int slot = 0; slot < 9; ++slot) {
                 if (slot == pickaxe_slot_) continue;
                 sdk::HotbarItemInfo info{};
@@ -282,22 +320,21 @@ void RegenModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) noex
         if (!game.advance_destroy_block(target_, face_, gameplay_detail::number(destroy_speed), progress_, destroyed)) {
             release(game, DiagnosticStatus::mine_failed);
             local_id_ = frame.local.id;
+            scan_cooldown_ = block_update_timeout;
             return;
         }
         mining_started_ = true;
-        const bool fastchange_complete = switch_mode.get<Choice>().index == 1 && progress_ >= 1.0F;
+        const bool fastchange = switch_mode.get<Choice>().index == 1;
         if (swing_mode == 1) (void)game.mining_swing();
-        if (!destroyed) diagnostic_status_.store(DiagnosticStatus::mining, std::memory_order_release);
-        if (destroyed || fastchange_complete) {
+        diagnostic_status_.store(DiagnosticStatus::mining, std::memory_order_release);
+        if (fastchange && (destroyed || progress_ >= 1.0F)) {
             if (swing_mode == 2) (void)game.mining_swing();
+            finish_target(game);
+        } else if (destroyed) {
+            // Reactive completes on the block update checked at the top of the tick.
             game.stop_destroy_block();
-            completed_target_ = target_;
-            completed_target_valid_ = true;
-            target_valid_ = false;
-            diagnostic_status_.store(DiagnosticStatus::broken, std::memory_order_release);
-            if (slot_changed_) release_requested_.store(true, std::memory_order_release);
-            else clear_target();
-            scan_cooldown_ = 0.0F;
+            phase_ = Phase::wait_break;
+            break_wait_ = block_update_timeout;
         }
     } catch (...) {
         release(game);

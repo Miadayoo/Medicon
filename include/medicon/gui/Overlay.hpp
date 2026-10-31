@@ -1,6 +1,7 @@
 #pragma once
 
 #include "medicon/gui/ArrayList.hpp"
+#include "medicon/gui/BlockCount.hpp"
 #include "medicon/gui/ClickGui.hpp"
 #include "medicon/gui/Clock.hpp"
 #include "medicon/gui/DisconnectScreen.hpp"
@@ -88,6 +89,7 @@ private:
     ClickGui gui_;
     ArrayList hud_;
     Watermark watermark_;
+    BlockCount block_count_;
     FontManager fonts_;
     MeshShadowRenderer shadows_;
     FrameClock clock_;

@@ -8,8 +8,8 @@ namespace medicon {
 
 VelocityModule::VelocityModule()
     : GameplayModule(module_id, "Velocity", "Cancel, reduce or delay incoming knockback.", Category::Movement),
-      mode(add_setting({"mode", "Mode", "Full cancels knockback; Percent scales it; Delay applies it later.",
-                        Choice{0, {"Full", "Percent", "Delay"}}})),
+      mode(add_setting({"mode", "Mode", "Full cancels knockback; Percent scales it; Delay applies it later; Delay2 ignores 3 hits, then takes the 4th normally and starts over.",
+                        Choice{0, {"Full", "Percent", "Delay", "Delay2"}}})),
       horizontal(add_setting({"horizontal", "Horizontal", "Horizontal knockback received: 0% cancels, 100% is normal.",
                               0, 0.0F, 100.0F, 1.0F})),
       vertical(add_setting({"vertical", "Vertical", "Vertical knockback received: 0% cancels, 100% is normal.",
@@ -30,10 +30,16 @@ bool VelocityModule::delay_enabled() const noexcept {
     return enabled() && selection && selection->index == 2;
 }
 
+bool VelocityModule::delay2_enabled() const noexcept {
+    const auto* selection = std::get_if<Choice>(&mode.value);
+    return enabled() && selection && selection->index == 3;
+}
+
 void VelocityModule::reset_delay() noexcept {
     pending_.clear();
     replies_.clear();
     sequence_ = applied_sequence_ = cancelled_sequence_ = 0;
+    delay2_hits_ = 0;
     world_identity_ = 0;
     local_id_ = 0;
     unique_id_ = 0;
@@ -43,6 +49,7 @@ void VelocityModule::on_tick(float) noexcept {
     // UI callbacks cannot send native packets. Keep held replies for cleanup
     // on the next game tick, even after leaving Delay or disabling the module.
     if (!delay_enabled()) cancel_motion();
+    if (!delay2_enabled()) delay2_hits_ = 0;
 }
 
 void VelocityModule::cancel_motion() noexcept {
@@ -77,7 +84,7 @@ VelocityModule::MotionResult VelocityModule::handle_motion(
     sdk::Vec3& motion, const sdk::GameplayFrame& frame, TimePoint now, std::int64_t received_timestamp) noexcept {
     if (!delay_enabled()) {
         cancel_motion();
-        return process_motion(motion);
+        return delay2_enabled() ? handle_delay2(motion, frame) : process_motion(motion);
     }
     if (!std::isfinite(motion.x) || !std::isfinite(motion.y) || !std::isfinite(motion.z))
         return MotionResult::ignored;
@@ -109,6 +116,23 @@ VelocityModule::MotionResult VelocityModule::handle_motion(
     ++sequence_;
     ++diagnostics_.queued;
     return MotionResult::delayed;
+}
+
+VelocityModule::MotionResult VelocityModule::handle_delay2(sdk::Vec3& motion, const sdk::GameplayFrame& frame) noexcept {
+    if (!std::isfinite(motion.x) || !std::isfinite(motion.y) || !std::isfinite(motion.z))
+        return MotionResult::ignored;
+    // A zero SetActorMotion is the server's velocity stop, not a hit (see Delay).
+    if (std::abs(motion.x) <= 1.0e-6F && std::abs(motion.y) <= 1.0e-6F && std::abs(motion.z) <= 1.0e-6F) {
+        ++diagnostics_.zero_motion_stops;
+        return MotionResult::ignored;
+    }
+    if (!sync_context(frame)) return MotionResult::ignored;
+    if (delay2_hits_ < delay2_ignored) {
+        ++delay2_hits_;
+        return MotionResult::cancelled;
+    }
+    delay2_hits_ = 0;
+    return MotionResult::ignored;
 }
 
 bool VelocityModule::handle_latency(const sdk::LatencyReply& reply, const sdk::GameplayFrame& frame) noexcept {

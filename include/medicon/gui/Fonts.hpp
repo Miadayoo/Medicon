@@ -17,7 +17,7 @@
 namespace medicon::gui {
 
 enum class FontRole { Header, Module, KeyHint, Label, Value, ArrayList, ArrayListMode, Splash, MainMenuLogo, MainMenuButton,
-                      Watermark, WatermarkSmall, WatermarkJapanese };
+                      Watermark, WatermarkSmall, WatermarkJapanese, BlockCount };
 enum class FontWeight { DynaPuff, DynaPuffEm, Kawai, DynaPuffLogo };
 
 // Metrics of one face in a font file or collection (.ttc), found by its family
@@ -55,6 +55,7 @@ struct FontSizes {
     float watermark = 0.0F;
     float watermark_small = 0.0F;
     float watermark_japanese = 0.0F;
+    float block_count = 0.0F;
 };
 
 // A font face ready for drawing. Measurement and drawing must both go through

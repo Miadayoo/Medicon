@@ -65,47 +65,56 @@ struct Target {
     float angle = std::numeric_limits<float>::max();
 };
 
+inline bool target_candidate(const sdk::GameplayFrame& frame, const sdk::ActorSnapshot& actor, float range,
+                             bool players_only, bool visible_only, float half_fov, Target& target) noexcept {
+    if (actor.id == 0 || actor.id == frame.local.id || actor.local || !actor.alive || actor.bot ||
+        (players_only && !actor.player) || (visible_only && !actor.visible) || !finite(actor.position)) return false;
+
+    sdk::Vec3 point = actor.position;
+    sdk::Vec3 closest = point;
+    if (valid_bounds(actor.bounds)) {
+        point = {(actor.bounds.min.x + actor.bounds.max.x) * 0.5F,
+                 actor.bounds.min.y + (actor.bounds.max.y - actor.bounds.min.y) * 0.75F,
+                 (actor.bounds.min.z + actor.bounds.max.z) * 0.5F};
+        closest = {std::clamp(frame.eye.x, actor.bounds.min.x, actor.bounds.max.x),
+                   std::clamp(frame.eye.y, actor.bounds.min.y, actor.bounds.max.y),
+                   std::clamp(frame.eye.z, actor.bounds.min.z, actor.bounds.max.z)};
+    }
+    const float distance = std::hypot(std::hypot(closest.x - frame.eye.x, closest.z - frame.eye.z),
+                                      closest.y - frame.eye.y);
+    if (!std::isfinite(distance) || distance > range) return false;
+
+    const float dx = point.x - frame.eye.x;
+    const float dy = point.y - frame.eye.y;
+    const float dz = point.z - frame.eye.z;
+    if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz)) return false;
+    const float horizontal = std::hypot(dx, dz);
+    if (horizontal < 0.0001F && std::abs(dy) < 0.0001F) return false;
+    const float yaw = horizontal < 0.0001F ? frame.yaw :
+        wrap_yaw(std::atan2(-dx, dz) * radians_to_degrees);
+    const float pitch = std::clamp(-std::atan2(dy, horizontal) * radians_to_degrees, -90.0F, 90.0F);
+    const float current_pitch = frame.pitch * degrees_to_radians;
+    const float target_pitch = pitch * degrees_to_radians;
+    const float yaw_difference = wrap_yaw(yaw - frame.yaw) * degrees_to_radians;
+    const float dot = std::cos(current_pitch) * std::cos(target_pitch) * std::cos(yaw_difference) +
+                      std::sin(current_pitch) * std::sin(target_pitch);
+    const float angle = std::acos(std::clamp(dot, -1.0F, 1.0F)) * radians_to_degrees;
+    if (angle > half_fov) return false;
+
+    target = {&actor, yaw, pitch, distance, angle};
+    return true;
+}
+
 inline Target find_target(const sdk::GameplayFrame& frame, float range, bool players_only,
                           bool visible_only, float half_fov, bool prefer_angle,
                           std::uintptr_t preferred_id = 0) noexcept {
     Target best;
     Target preferred;
     for (const auto& actor : frame.actors) {
-        if (actor.id == 0 || actor.id == frame.local.id || actor.local || !actor.alive ||
-            (players_only && !actor.player) || (visible_only && !actor.visible) || !finite(actor.position)) continue;
-
-        sdk::Vec3 point = actor.position;
-        sdk::Vec3 closest = point;
-        if (valid_bounds(actor.bounds)) {
-            point = {(actor.bounds.min.x + actor.bounds.max.x) * 0.5F,
-                     actor.bounds.min.y + (actor.bounds.max.y - actor.bounds.min.y) * 0.75F,
-                     (actor.bounds.min.z + actor.bounds.max.z) * 0.5F};
-            closest = {std::clamp(frame.eye.x, actor.bounds.min.x, actor.bounds.max.x),
-                       std::clamp(frame.eye.y, actor.bounds.min.y, actor.bounds.max.y),
-                       std::clamp(frame.eye.z, actor.bounds.min.z, actor.bounds.max.z)};
-        }
-        const float distance = std::hypot(std::hypot(closest.x - frame.eye.x, closest.z - frame.eye.z),
-                                          closest.y - frame.eye.y);
-        if (!std::isfinite(distance) || distance > range) continue;
-
-        const float dx = point.x - frame.eye.x;
-        const float dy = point.y - frame.eye.y;
-        const float dz = point.z - frame.eye.z;
-        if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz)) continue;
-        const float horizontal = std::hypot(dx, dz);
-        if (horizontal < 0.0001F && std::abs(dy) < 0.0001F) continue;
-        const float yaw = horizontal < 0.0001F ? frame.yaw :
-            wrap_yaw(std::atan2(-dx, dz) * radians_to_degrees);
-        const float pitch = std::clamp(-std::atan2(dy, horizontal) * radians_to_degrees, -90.0F, 90.0F);
-        const float current_pitch = frame.pitch * degrees_to_radians;
-        const float target_pitch = pitch * degrees_to_radians;
-        const float yaw_difference = wrap_yaw(yaw - frame.yaw) * degrees_to_radians;
-        const float dot = std::cos(current_pitch) * std::cos(target_pitch) * std::cos(yaw_difference) +
-                          std::sin(current_pitch) * std::sin(target_pitch);
-        const float angle = std::acos(std::clamp(dot, -1.0F, 1.0F)) * radians_to_degrees;
-        if (angle > half_fov) continue;
-
-        const Target candidate{&actor, yaw, pitch, distance, angle};
+        Target candidate;
+        if (!target_candidate(frame, actor, range, players_only, visible_only, half_fov, candidate)) continue;
+        const float distance = candidate.distance;
+        const float angle = candidate.angle;
         if (actor.id == preferred_id) {
             preferred = candidate;
             continue;

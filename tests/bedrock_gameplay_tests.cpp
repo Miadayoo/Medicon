@@ -123,6 +123,11 @@ void native_boundary() {
     require(!access.locate(diagnostic) && !diagnostic.empty(), "test executable passed Minecraft version gate");
     require(!access.capture(nullptr, nullptr), "absent world produced a ready frame");
     access.end_tick();
+    medicon::sdk::InventoryItemInfo inventory_item;
+    require(!access.inventory_item(0, inventory_item) && !access.armor_item(0, inventory_item) &&
+            !access.inventory_screen_open() && !access.swap_inventory_slots(0, 10) &&
+            !access.equip_armor(10, 0) && !access.drop_inventory_slot(10),
+            "Inventory actions escaped closed tick scope");
     require(!access.rotate(0, 0) && !access.rotate_head_and_body(0) && !access.attack(1) &&
             !access.place_block({}, true) && !access.replaceable({}) && !access.set_velocity({1, 2, 3}) &&
             access.apply_knockback({1, 2, 3}, 1000) == medicon::sdk::KnockbackApplyResult::failed,
@@ -432,10 +437,244 @@ void server_rotation_packets() {
             !write_gameplay_rotation_input(UINTPTR_MAX - 8, 144, 0, 0),
             "unreadable or overflowing packet address was accepted");
 }
+
+void item_stack_reader() {
+    using namespace medicon::sdk::detail;
+    std::uintptr_t item_object = 0x1234;
+    const auto holder = reinterpret_cast<std::uintptr_t>(&item_object);
+    alignas(8) std::array<std::byte, 0xA0> stack{};
+    std::memcpy(stack.data() + 8, &holder, sizeof holder);
+    stack[0x22] = std::byte{16};
+    const auto address = reinterpret_cast<std::uintptr_t>(stack.data());
+    std::uintptr_t item{};
+    std::uint8_t count{};
+    require(read_gameplay_stack_item(address, item, count) && item == reinterpret_cast<std::uintptr_t>(item_object) &&
+            count == 16, "stack item is read through its WeakPtr at +8");
+    // A block pointer alone (+0x18) must not make a stack look like an item.
+    std::uintptr_t empty_holder{};
+    const auto empty_address = reinterpret_cast<std::uintptr_t>(&empty_holder);
+    std::memcpy(stack.data() + 8, &empty_address, sizeof empty_address);
+    std::memcpy(stack.data() + 0x18, &holder, sizeof holder);
+    require(read_gameplay_stack_item(address, item, count) && item == 0 && count == 0, "item-less stack was occupied");
+    std::memcpy(stack.data() + 8, &holder, sizeof holder);
+    stack[0x22] = std::byte{0};
+    require(read_gameplay_stack_item(address, item, count) && item == 0, "zero-count stack was occupied");
+    require(!read_gameplay_stack_item(0, item, count), "null stack was readable");
+    const std::uintptr_t unreadable = 16;
+    std::memcpy(stack.data() + 8, &unreadable, sizeof unreadable);
+    require(!read_gameplay_stack_item(address, item, count), "unreadable WeakPtr was accepted");
+}
+
+void attribute_reader() {
+    using namespace medicon::sdk::detail;
+    alignas(8) std::array<std::uint32_t, 2> ids{3, 7};
+    alignas(8) std::array<std::byte, 0x88 * 2> instances{};
+    const auto put = [&](std::size_t offset, float value) { std::memcpy(instances.data() + offset, &value, sizeof value); };
+    put(0x88 + 0x78, 20.0F);
+    put(0x88 + 0x7C, 13.5F);
+    struct Vector { std::uintptr_t begin, end, capacity; };
+    const auto vector = [](const void* data, std::size_t size) {
+        const auto begin = reinterpret_cast<std::uintptr_t>(data);
+        return Vector{begin, begin + size, begin + size};
+    };
+    alignas(8) std::array<std::byte, attributes_component_size> component{};
+    const auto ids_vector = vector(ids.data(), sizeof ids);
+    auto instance_vector = vector(instances.data(), instances.size());
+    std::memcpy(component.data(), &ids_vector, sizeof ids_vector);
+    std::memcpy(component.data() + 0x18, &instance_vector, sizeof instance_vector);
+    const auto address = reinterpret_cast<std::uintptr_t>(component.data());
+    float value{};
+    require(read_gameplay_attribute(address, 7, value) && value == 13.5F,
+            "attribute was not read from the instance parallel to its id");
+    require(!read_gameplay_attribute(address, 5, value), "missing attribute id was found");
+    require(!read_gameplay_attribute(address, 0, value), "unresolved attribute id was accepted");
+    require(!read_gameplay_attribute(0, 7, value), "null attributes component was readable");
+    put(0x88 + 0x7C, 25.0F);
+    require(!read_gameplay_attribute(address, 7, value), "health above its maximum was accepted");
+    put(0x88 + 0x7C, std::numeric_limits<float>::quiet_NaN());
+    require(!read_gameplay_attribute(address, 7, value), "non-finite health was accepted");
+    put(0x88 + 0x7C, 13.5F);
+    instance_vector = vector(instances.data(), 0x88);
+    std::memcpy(component.data() + 0x18, &instance_vector, sizeof instance_vector);
+    require(!read_gameplay_attribute(address, 7, value), "mismatched attribute vectors were accepted");
+}
+
+struct InventoryFixture {
+    struct Stack {
+        std::uint64_t item{}, tag{};
+        bool operator==(const Stack&) const = default;
+    };
+    struct RecordedAction {
+        medicon::sdk::detail::NativeInventorySource source;
+        std::uint32_t slot;
+        Stack from, to;
+    };
+    std::array<Stack, 36> inventory{};
+    std::array<Stack, 4> armor{};
+    alignas(8) std::array<std::byte, 0x68> transaction{};
+    std::vector<RecordedAction> queued;
+    std::string events;
+    int constructed{}, destroyed{}, transactions_destroyed{}, packets_sent{};
+    bool allocation_fails{}, send_fails{};
+    static InventoryFixture* current;
+
+    static void construct(void* action, const medicon::sdk::detail::NativeInventorySource* source,
+                          std::uint32_t slot, std::uintptr_t from, std::uintptr_t to) {
+        auto& fixture = *current;
+        auto* bytes = static_cast<std::byte*>(action);
+        std::memcpy(bytes, source, sizeof(*source));
+        std::memcpy(bytes + 0xC, &slot, sizeof(slot));
+        std::memcpy(bytes + 0xD0, reinterpret_cast<void*>(from), sizeof(Stack));
+        std::memcpy(bytes + 0x168, reinterpret_cast<void*>(to), sizeof(Stack));
+        ++fixture.constructed;
+        fixture.events += 'c';
+    }
+    static void destroy(void* action) {
+        ++current->destroyed;
+        current->events += 'd';
+        std::memset(action, 0, 0x200);
+    }
+    static void add_action(void* data, const void* action, bool force) {
+        auto& fixture = *current;
+        require(data == fixture.transaction.data() + 0x10 && !force,
+                "addAction used the player manager instead of the independent transaction's data");
+        const auto* bytes = static_cast<const std::byte*>(action);
+        RecordedAction copied;
+        std::memcpy(&copied.source, bytes, sizeof(copied.source));
+        std::memcpy(&copied.slot, bytes + 0xC, sizeof(copied.slot));
+        std::memcpy(&copied.from, bytes + 0xD0, sizeof(Stack));
+        std::memcpy(&copied.to, bytes + 0x168, sizeof(Stack));
+        fixture.queued.push_back(copied);
+        fixture.events += 'q';
+    }
+    static void* create_transaction(void* context) {
+        auto& fixture = *static_cast<InventoryFixture*>(context);
+        fixture.events += 't';
+        return fixture.allocation_fails ? nullptr : fixture.transaction.data();
+    }
+    static void destroy_transaction(void* context, void* transaction) {
+        auto& fixture = *static_cast<InventoryFixture*>(context);
+        require(transaction == fixture.transaction.data(), "Wrong transaction was destroyed");
+        ++fixture.transactions_destroyed;
+        fixture.events += 'f';
+    }
+    static void construct_payload(void* output, void** transaction, bool client_side) {
+        require(!client_side && *transaction == current->transaction.data(),
+                "Independent Solstice transaction was marked client-side or lost ownership");
+        auto* payload = static_cast<std::byte*>(output);
+        std::memcpy(payload + 0x140, transaction, sizeof(void*));
+        *transaction = nullptr;
+        payload[0x148] = static_cast<std::byte>(client_side);
+        current->events += 'p';
+    }
+    static void construct_packet(void* output, void* argument) {
+        auto* packet = static_cast<std::byte*>(output);
+        auto* payload = static_cast<std::byte*>(argument);
+        std::memcpy(packet + 0x170, payload + 0x140, sizeof(void*));
+        std::memset(payload + 0x140, 0, sizeof(void*));
+        packet[0x178] = payload[0x148];
+        const unsigned priority = 5;
+        std::memcpy(packet + 0x180, &priority, sizeof(priority));
+        current->events += 'm';
+    }
+    static void send_packet(void* sender, void* argument) {
+        require(sender == current && current->queued.size() == 2 && current->destroyed == 2,
+                "Packet was sent before both independent actions were copied");
+        auto* packet = static_cast<std::byte*>(argument);
+        void* transaction{};
+        unsigned priority{};
+        std::memcpy(&transaction, packet + 0x170, sizeof(transaction));
+        std::memcpy(&priority, packet + 0x180, sizeof(priority));
+        require(transaction == current->transaction.data() && packet[0x178] == std::byte{0} && priority == 5,
+                "Native inventory packet layout or client-side flag was wrong");
+        ++current->packets_sent;
+        current->events += 's';
+    }
+    static void destroy_packet(void* packet, unsigned flags) {
+        require(flags == 0, "Native destructor attempted to delete borrowed packet storage");
+        ++current->transactions_destroyed;
+        current->events += 'x';
+        std::memset(packet, 0, 0x188);
+    }
+    static bool send_transaction(void* context, void** transaction) {
+        auto& fixture = *static_cast<InventoryFixture*>(context);
+        if (fixture.send_fails) return false;
+        return medicon::sdk::detail::send_gameplay_inventory_packet(transaction, context,
+            {construct_payload, construct_packet, destroy_packet, send_packet});
+    }
+};
+InventoryFixture* InventoryFixture::current{};
+
+void inventory_transaction_boundary() {
+    using namespace medicon::sdk::detail;
+    const NativeInventoryCalls calls{InventoryFixture::construct, InventoryFixture::destroy,
+        InventoryFixture::add_action, InventoryFixture::create_transaction,
+        InventoryFixture::destroy_transaction, InventoryFixture::send_transaction};
+    const auto pointer = [](const InventoryFixture::Stack& stack) { return reinterpret_cast<std::uintptr_t>(&stack); };
+    InventoryFixture fixture;
+    InventoryFixture::current = &fixture;
+    const InventoryFixture::Stack sword{1, 0x1234}, pickaxe{2, 0x5678}, helmet{3, 0xAAAA}, old_helmet{4, 0xBBBB}, empty{};
+    fixture.inventory[0] = sword;
+    fixture.inventory[35] = pickaxe;
+    std::array<NativeInventoryChange, 2> changes{{
+        {{}, 0, pointer(fixture.inventory[0]), pointer(fixture.inventory[35])},
+        {{}, 35, pointer(fixture.inventory[35]), pointer(fixture.inventory[0])}}};
+    require(send_gameplay_inventory_changes(changes, &fixture, calls) &&
+            fixture.inventory[0] == sword && fixture.inventory[35] == pickaxe && fixture.events == "tcqdcqdpmsx",
+            "Independent swap modified local slots or used the wrong native ownership sequence");
+    require(fixture.queued.size() == 2 && fixture.queued[0].from == sword && fixture.queued[0].to == pickaxe &&
+            fixture.queued[1].from == pickaxe && fixture.queued[1].to == sword &&
+            fixture.transactions_destroyed == 1 && fixture.packets_sent == 1,
+            "Native swap lost stacks, sent twice or leaked its transaction");
+
+    fixture = {};
+    fixture.inventory[7] = sword;
+    changes = {{{{}, 7, pointer(fixture.inventory[7]), pointer(empty)}, {{2, 0}, 0, pointer(empty), pointer(fixture.inventory[7])}}};
+    require(send_gameplay_inventory_changes(changes, &fixture, calls) &&
+            fixture.inventory[7] == sword && fixture.queued.size() == 2 &&
+            fixture.queued[0].from == sword && fixture.queued[0].to == empty &&
+            fixture.queued[1].source.type == 2 && fixture.queued[1].source.container == 0 &&
+            fixture.queued[1].slot == 0 && fixture.queued[1].from == empty && fixture.queued[1].to == sword,
+            "Drop did not match Solstice's inventory and world actions");
+
+    fixture = {};
+    fixture.inventory[35] = helmet;
+    fixture.armor[0] = old_helmet;
+    changes = {{{{}, 35, pointer(fixture.inventory[35]), pointer(fixture.armor[0])},
+        {{0, 120}, 0, pointer(fixture.armor[0]), pointer(fixture.inventory[35])}}};
+    require(send_gameplay_inventory_changes(changes, &fixture, calls) && fixture.queued.size() == 2 &&
+            fixture.queued[0].from == helmet && fixture.queued[0].to == old_helmet &&
+            fixture.queued[1].source.container == 120 && fixture.queued[1].from == old_helmet && fixture.queued[1].to == helmet,
+            "Independent armor transaction lost its counterpart or replaced armor");
+
+    fixture = {};
+    changes[1].slot = 4;
+    require(!send_gameplay_inventory_changes(changes, &fixture, calls) && fixture.events.empty(),
+            "Invalid armor slot partially constructed a transaction");
+    changes[1] = {{2, 0}, 0, pointer(empty), pointer(empty)};
+    changes[0].from = 0;
+    require(!send_gameplay_inventory_changes(changes, &fixture, calls) && fixture.events.empty(),
+            "Null source stack reached a native constructor");
+    changes[0].from = pointer(sword);
+    fixture.allocation_fails = true;
+    require(!send_gameplay_inventory_changes(changes, &fixture, calls) && fixture.events == "t" &&
+            fixture.constructed == 0 && fixture.transactions_destroyed == 0,
+            "Failed allocation reached native actions");
+    fixture = {};
+    fixture.send_fails = true;
+    require(!send_gameplay_inventory_changes(changes, &fixture, calls) && fixture.events == "tcqdcqdf" &&
+            fixture.transactions_destroyed == 1 && fixture.packets_sent == 0,
+            "Failed send leaked or double-freed its independent transaction");
+    void* owned = fixture.transaction.data();
+    require(!send_gameplay_inventory_packet(&owned, &fixture, {}) && owned == fixture.transaction.data(),
+            "Unavailable packet constructor consumed transaction ownership");
+    InventoryFixture::current = nullptr;
+}
+
 } // namespace
 
 int main() {
-    try { components(); pools(); native_boundary(); predicted_motion_boundary(); incoming_motion(); velocity_packet_observations(); delayed_velocity_memory(); latency_packet_copy(); movement_input(); render_pitch_scope(); server_rotation_packets(); }
+    try { components(); pools(); native_boundary(); predicted_motion_boundary(); incoming_motion(); velocity_packet_observations(); delayed_velocity_memory(); latency_packet_copy(); movement_input(); render_pitch_scope(); server_rotation_packets(); item_stack_reader(); attribute_reader(); inventory_transaction_boundary(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Bedrock gameplay ABI tests passed\n";
 }

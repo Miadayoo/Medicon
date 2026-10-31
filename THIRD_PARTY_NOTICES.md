@@ -9,7 +9,7 @@
 | [Geist SemiBold 600 and Geist Mono Medium 500](https://github.com/vercel/geist-font) | `be21666703155b45d8bfb1e7fe5652fe48c842cb` | SIL Open Font License 1.1; see bundled `assets/fonts/OFL.txt` |
 | [Solstice signature data](https://github.com/surukotonai/solstice/blob/1d7808f52ef4ba6e34a7fbcc65294907a7761611/src/SDK/SigManager.hpp) | `1d7808f52ef4ba6e34a7fbcc65294907a7761611` | No root license found at this revision; no license grant is asserted |
 
-CMake fetches dependencies into the build's `_deps` directory. Preserve the corresponding license files when redistributing dependency code or binaries. The Solstice import contains signature definitions and source metadata; its scanner, SDK, modules, authorization, and networking implementation are not imported. See `data/signatures/solstice.json` and `docs/signatures.md` for provenance.
+CMake fetches dependencies into the build's `_deps` directory. Preserve the corresponding license files when redistributing dependency code or binaries. The Solstice import contains signature definitions and source metadata; its scanner, SDK, authorization, and networking implementation are not imported, and AntiBot is the only module ported from it. See `data/signatures/solstice.json` and `docs/signatures.md` for provenance.
 
 The user-supplied, unmodified DynaPuff Medium font is embedded in the client and
 Preview. Its SHA-256 checksum is recorded in `assets/fonts/README.md`.
@@ -17,6 +17,8 @@ Copyright 2021 The DynaPuff Project Authors (https://github.com/googlefonts/dyna
 Its embedded metadata specifies SIL Open Font License 1.1. CMake copies
 `assets/fonts/DynaPuff-OFL.txt` to `bin/licenses/DynaPuff-OFL.txt` for redistribution.
 The previous Geist source assets retain their original OFL notice.
+
+The Liquid Glass pass (`src/gui/LiquidGlass.cpp`) ports the optics of [YMM4-LiquidGlass](https://github.com/namakemono-san/YMM4-LiquidGlass) from C#/ComputeSharp to HLSL: the signed distance field with smoothed corners, the bezel height and displacement, the channel offsets, Beer-Lambert absorption and the Fresnel highlight. MIT, Copyright (c) 2026 namakemono-san; see bundled `third_party/ymm4-liquidglass/LICENSE`, and preserve it when redistributing. The spring constants of the block counter follow [AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache-2.0); no source is imported from it.
 
 The local ignored `.tools` directory contains development tools, not runtime client dependencies: LLVM MinGW (upstream LLVM/MinGW licenses), CMake, and Ninja. Their bundled notices remain in their distributions. None are downloaded or executed at client startup.
 
@@ -38,4 +40,6 @@ The gameplay bridge additionally uses the same pinned Solstice revision's
 layout/ABI references. ChinaHat, Derp, Aimbot, Killaura, Scaffold, ESP, the
 snapshot interface and ImGui glow renderer are independently implemented here.
 No upstream module, EnTT implementation or game-owned STL type is linked into
-the client. See `docs/gameplay-modules.md` for behavior and validation scope.
+the client, except that AntiBot is a direct port of Solstice's
+`Features/Modules/Misc/AntiBot.cpp` checks, settings and hitbox limits. See
+`docs/gameplay-modules.md` for behavior and validation scope.

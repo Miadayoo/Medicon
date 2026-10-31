@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -174,6 +175,103 @@ void test_dispatch_and_persistence() {
     check(restored_example.keybind() == example.keybind() && restored_gui.keybind() == gui.keybind(),
           "Command binds did not round-trip through the existing config schema");
 }
+
+void test_help_and_not_found() {
+    ModuleManager modules;
+    CommandManager commands(modules);
+    const auto help = commands.execute(".HELP");
+    expect_success(help, false, "Help failed");
+    for (const auto* name : {".bind", ".unbind", ".config", ".help"})
+        check(help.message.find(name) != std::string::npos, "Help omitted a command");
+    for (const auto* text : {".help config", ".help .config"}) {
+        const auto detail = commands.execute(text);
+        expect_success(detail, false, "Command help failed");
+        check(detail.message.find(".config save") != std::string::npos, "Command help omitted usage");
+    }
+    expect_failure(commands.execute(".help bind extra"), "Extra help argument was accepted");
+    const auto missing = commands.execute(".fly on");
+    expect_failure(missing, "Unknown command was accepted");
+    check(missing.message == ".fly was not found. Try using .help to see the available commands.",
+          "Unknown command message changed");
+    check(commands.execute(".help fly").message ==
+          "fly was not found. Try using .help to see the available commands.",
+          "Unknown help topic message changed");
+}
+
+void test_config() {
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("medicon-command-configs-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct RemoveDirectory {
+        std::filesystem::path path;
+        ~RemoveDirectory() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+    } cleanup{directory};
+
+    ModuleManager modules;
+    auto& example = modules.add<TestModule>("example", "Example", 'K');
+    CommandManager commands(modules, directory);
+
+    expect_failure(CommandManager(modules).execute(".config list"), "Config command needs a directory");
+    const auto empty = commands.execute(".config");
+    expect_success(empty, false, "Listing a missing directory failed");
+    check(empty.message.find("no configs") != std::string::npos, "Empty list was not reported");
+
+    expect_failure(commands.execute(".c s"), "Bare save needs a current config");
+    expect_success(commands.execute(".config save pvp"), false, "Save failed");
+    check(std::filesystem::exists(directory / "pvp.json"), "Named config was not written");
+    expect_success(commands.execute(".config save legit"), false, "Second save failed");
+    example.set_keybind('L');
+    expect_failure(commands.execute(".config save pvp"), "Save replaced another existing config");
+    expect_failure(commands.execute(".config load missing"), "Missing config was loaded");
+    check(example.keybind() == 'L', "Rejected load changed the module");
+    const auto loaded = commands.execute(".CONFIG LOAD pvp");
+    expect_success(loaded, true, "Load failed");
+    check(loaded.config_loaded && example.keybind() == 'K', "Load did not restore the saved bind");
+
+    example.set_keybind('M');
+    expect_success(commands.execute(".config save pvp"), false, "Current config should save without overwrite");
+    expect_success(commands.execute(".config save legit overwrite"), false, "Overwrite failed");
+    const auto list = commands.execute(".config list");
+    expect_success(list, false, "List failed");
+    check(list.message == "Configs:\nlegit\npvp", "List was not sorted by name");
+
+    { std::ofstream broken(directory / "broken.json"); broken << "{"; }
+    expect_failure(commands.execute(".config load broken"), "Malformed config was loaded");
+    check(example.keybind() == 'M', "Malformed config changed the module");
+
+    expect_success(commands.execute(".config delete legit"), false, "Delete failed");
+    expect_failure(commands.execute(".config delete legit"), "Deleted config still exists");
+    check(!std::filesystem::exists(directory / "legit.json"), "Delete left the file");
+
+    for (const auto* text : {".config save", ".config load", ".config delete", ".config rename pvp",
+                             ".config \"list\"", ".config save pvp force", ".config load pvp overwrite",
+                             ".config load ../pvp", ".config save a/b", ".config save a.b", ".config save \"\"",
+                             ".config save con", ".config save NUL", ".config save com1",
+                             ".config save \"two words\""})
+        expect_failure(commands.execute(text), "Malformed config command was accepted");
+    expect_success(commands.execute(".config save combo"), false, "Device-like prefix must remain usable");
+
+    example.set_keybind('H');
+    expect_success(commands.execute(".c s hive"), false, "Short save failed");
+    example.set_keybind('J');
+    const auto short_load = commands.execute(".C L hive");
+    expect_success(short_load, true, "Short load failed");
+    check(short_load.config_loaded && example.keybind() == 'H', "Short load did not restore the saved bind");
+    example.set_keybind('N');
+    const auto current_save = commands.execute(".c s");
+    expect_success(current_save, false, "Bare save failed");
+    check(current_save.message.find("hive") != std::string::npos, "Bare save did not target the loaded config");
+    expect_success(commands.execute(".config load combo"), true, "Load before bare save failed");
+    check(example.keybind() != 'N', "Bare save target test needs distinct state");
+    expect_success(commands.execute(".config load hive"), true, "Reload of bare-saved config failed");
+    check(example.keybind() == 'N', "Bare save did not write the current state");
+    expect_failure(commands.execute(".c l"), "Short load needs a name");
+    expect_success(commands.execute(".config delete hive"), false, "Delete of current config failed");
+    expect_failure(commands.execute(".c s"), "Bare save targeted a deleted config");
+
+    const auto alias_help = commands.execute(".help c");
+    expect_success(alias_help, false, "Help for the short form failed");
+    check(alias_help.message.find(".c s") != std::string::npos, "Help omitted the short forms");
+}
 } // namespace
 
 int main() {
@@ -183,6 +281,8 @@ int main() {
         test_errors_are_atomic();
         test_gui_fallback_and_reset();
         test_dispatch_and_persistence();
+        test_help_and_not_found();
+        test_config();
         std::cout << "Command tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

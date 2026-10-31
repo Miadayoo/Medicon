@@ -1,20 +1,23 @@
 # Gameplay modules
 
-All ten modules are registered by `register_builtin_modules`, start disabled,
+All twelve modules are registered by `register_builtin_modules`, start disabled,
 and use the existing ClickGUI, keybind commands, ArrayList and ConfigStore.
 
 | ID / display name | Category | Behavior and settings |
 | --- | --- | --- |
 | `chinahat` / ChinaHat | Visual | A translucent conical hat above the local player's head in third person. Radius, height, head offset, color, rainbow and opacity. Hidden in first person. |
 | `derp` / Derp | Player | Spins the local head and body yaw. Speed in degrees per second; view and movement direction are unchanged. |
+| `antibot` / AntiBot | Misc | Port of Solstice's AntiBot: excludes server-side fake players from Aimbot, Killaura and ESP. Marked actors stay in the frame, so custom models and other non-targeting readers are unaffected. Mode `Simple` applies the Player, Hitbox (width 0.54–0.66, height 1.35–1.81), Invisible and multi-line Name checks; `Custom` toggles each of them and adds Has Armor Check (off by default) with Armor Mode `Full` or `One Element`. Armor that cannot be read does not count as missing. Solstice's PlayerList check is not ported. |
 | `aimbot` / Aimbot | Player | Smoothly requests head/body yaw and model pitch toward an eligible target within range and the configured view FOV; camera yaw is unchanged. Smoothing, player filter, visibility filter, and require-click (on by default). |
-| `killaura` / Killaura | Player | Attacks the nearest eligible actor at the configured CPS, at most once per game tick. Rotate offers `None` and `Simple`; `Simple` turns toward the target and retains it while eligible. Swing sends the native Attack swing after successful attacks. Range, requested yaw/pitch, player and visibility filters. Rotations owns third-person angle rendering. |
-| `scaffold` / Scaffold | Movement | Finds replaceable cells one level below the feet (the highest cell whose top is at or under them, as Solstice's `y - 2.62`), then along horizontal movement. When the target has no face to click, a cell beside it is placed first as support. Rotate offers `None`, `Flick` (the previous Simple behavior), and `Simple` (instantly turns to a new target and holds that angle for one second). Extension, hotbar auto-selection and placement delay. |
-| `regen` / Regen | Player | Finds the nearest redstone ore within Range and selects the best-tier available hotbar pickaxe. Switch `Reactive` waits for the target to stop being redstone; `Fastchange` advances at full progress without waiting for its block update. Destroy Speed `1.00` is vanilla, `0.50` halves break time, and `0.00` is nearly instant. Rotation Percentage controls how long Regen aims at the target while mining. Swing offers `None`, `Always`, and `Breaked`, using the native Mine swing source separate from Killaura's Attack swing. Infinity Durability swaps to a non-damageable hotbar item for the final hit and restores the prior slot afterward. |
+| `killaura` / Killaura | Player | Attacks eligible actors at the configured CPS, at most one attack interval per game tick. Mode selects targets: `Switch` picks the best actor every tick, `Single` keeps its target until it stops being eligible, and `Multi` attacks every eligible actor each interval and rotates to the best one. Priority defines the best actor as `Distance` or `Health` (lowest first; unknown health falls back to distance). Rotate offers `None` and `Simple`; `Simple` turns toward the target. Swing sends the native Attack swing after successful attacks. Range, requested yaw/pitch, player and visibility filters. Rotations owns third-person angle rendering. |
+| `scaffold` / Scaffold | Movement | Finds replaceable cells one level below the feet (the highest cell whose top is at or under them, as Solstice's `y - 2.62`), then along horizontal movement. When the target has no face to click, a cell beside it is placed first as support. Rotate offers `None`, `Flick` (the previous Simple behavior), and `Simple` (instantly turns to a new target and holds that angle for one second). Extension, hotbar auto-selection and placement delay. While it runs, a Liquid Glass counter below the crosshair shows the blocks it can still place: the whole hotbar with Auto Select, the held stack without it. |
+| `regen` / Regen | Player | Finds the nearest redstone ore within Range and selects the best-tier available hotbar pickaxe. Switch `Reactive` waits for the target to stop being redstone; `Fastchange` advances at full progress without waiting for its block update. Either way, a block still redstone one second later is mined again, and a refused start waits one second before retrying. Destroy Speed `1.00` is vanilla, `0.50` halves break time, and `0.00` is nearly instant. Rotation Percentage controls how long Regen aims at the target while mining. Swing offers `None`, `Always`, and `Breaked`, using the native Mine swing source separate from Killaura's Attack swing. Infinity Durability swaps to a non-damageable hotbar item for the final hit and restores the prior slot afterward. |
+| `cheststealer` / ChestStealer | Player | Takes the items out of an opened chest, one stack per Delay (ms, 0–1000, default 100), using the screen's own shift-click. Auto Close (on by default) closes a chest once it was emptied; a chest that was never touched stays open. |
+| `invmanager` / InvManager | Player | Keeps the best item of the selected kind in each hotbar slot. Slot 1–9 each offer None, Sword, Pickaxe, Axe, Shovel or Block; the defaults are Sword, Pickaxe, Axe, Block in slots 1–4. Mode `On Inventory` works only while the inventory screen is open; `Always` also works during normal play. Delay (ms, 0–1000, default 100) separates moves. It always drops weapons, tools and armor weaker than the best of their kind, and armor no better than what is worn, then sorts the main inventory: gear by kind and strength, blocks, other items by kind, empty slots last. Hotbar slots set to None stay as they are unless their gear is dropped. Auto Armor (off by default) wears the strongest armor found. Strength is the material plus Sharpness or Efficiency levels; armor adds Protection and Fire Protection from diamond up, as in Solstice. |
 | `sprint` / Sprint | Movement | Rage requests sprint for movement input in any direction; Legit requires forward input. It updates the native processed/raw SprintDown input and server-facing PlayerAuthInput sprint state. The game applies sprint acceleration and eligibility checks. Sneaking, locked movement, menus and module disable release the request. |
 | `velocity` / Velocity | Movement | Full cancels incoming SetActorMotion packets for the local player. Percent exposes separate Horizontal (X/Z) and Vertical (Y) sliders, each 0–100 in steps of 1. 0% removes that component, 100% preserves it. Delay holds copied knockback vectors and applies them on a later game tick; Delay (ms) is 0-10,000, default 8,000, slider step 50. Zero passes packets through immediately. Defaults to Full with both percentages at 0. |
 | `esp` / ESP | Visual | Projects actor bounds as a screen box. Range, player filter, color, optional fill, line width and glow toggle. Glow combines a tight core and a long exponential tail in one continuous exterior mesh, with a smooth fade at its outer limit. Spread increases smoothly by up to 40% for large, nearby boxes. Width/intensity are source-only constants in `src/gui/GameplayVisuals.cpp`; old config values are ignored. |
-| `rotations` / Rotations | Misc | Owns the shared requested server yaw/pitch and their third-person render interpolation, including pitch-only requests from any source. Speed sets the maximum angular speed, reached at a fixed 180-degree distance. Sprint Fix gates Legit sprinting to within 45 degrees of the server direction. Vector Fix rotates PlayerAuthInput movement vectors with the silent yaw to preserve the intended world-space direction; it is off by default. Always keeps rendering aligned to the current view whenever no gameplay module requests a target angle. |
+| `rotations` / Rotations | Misc | Owns the shared requested server yaw/pitch and their third-person render interpolation, including pitch-only requests from any source. Speed sets the maximum angular speed, reached at a fixed 180-degree distance. While the module is on, Sprint Fix and Vector Fix always apply and have no settings; old config values are ignored. Sprint Fix gates Legit sprinting to within 45 degrees of the server direction. Vector Fix rotates PlayerAuthInput movement vectors with the silent yaw to preserve the intended world-space direction. Always keeps rendering aligned to the current view whenever no gameplay module requests a target angle. |
 
 Each built-in feature has its own header and implementation in
 `include/medicon/modules/<Feature>Module.hpp` and `src/modules/<Feature>Module.cpp`
@@ -154,6 +157,23 @@ turned off, unless the user picked another slot meanwhile. Restoration runs
 after client/player validation, before the world snapshot's component checks.
 An unavailable inventory or failed write keeps the original slot pending for
 the next tick instead of losing it; a confirmed inventory change cancels it.
+
+ChestStealer runs from a hook on the container screen's own tick, because the
+controller it acts through exists only there; the pointer is never retained.
+InvManager runs from the game tick, with a separate permission that survives
+the mouse being released by the open inventory. It sends one move per Delay, in
+the order drops, hotbar slots, armor, sorting. Each sent transaction also updates
+the local slots, because the server does not resend them for these moves while
+the screen is open. Both affected slots must match the expected result before
+the next move; unrelated changes and half-applied swaps cannot acknowledge it.
+An unconfirmed move times out after one second and is retried after five. The
+same move planned again within five seconds means the server restored the slot,
+and it backs off five seconds too. Unavailable native actions also back off
+for five seconds, including at Delay 0.
+Equally strong gear already in an assigned hotbar slot wins ties. Changing
+worlds resets pending operations. Native layouts and the
+limits of the swap request are recorded in
+[gameplay-sdk-validation.md](gameplay-sdk-validation.md).
 
 ESP and ChinaHat reread the camera (view matrix, render origin, FOV) every
 Present from the fields the last tick validated: plain copies, no native call.

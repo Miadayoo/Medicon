@@ -284,6 +284,12 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     client.game_tick(game, 0.05F);
     require(!game.render_rotation && !render_module->render_enabled() && game.server_rotation,
             "Killaura enabled vertical model rendering while Rotations was off");
+    client.modules().find("antibot")->set_enabled(true);
+    client.game_tick(game, 0.05F);
+    require(!game.server_rotation && game.current.actors[0].bot, "AntiBot did not exclude a marked actor from Killaura");
+    client.modules().find("antibot")->set_enabled(false);
+    client.game_tick(game, 0.05F);
+    require(game.server_rotation && !game.current.actors[0].bot, "Disabling AntiBot did not clear its mark");
     game.current.actors.clear();
     client.game_tick(game, 0.05F);
     require(!game.server_rotation && game.last_yaw == game.current.yaw && game.last_pitch == game.current.pitch,
@@ -338,6 +344,27 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
     client.game_tick(game, 0.05F);
     require(game.rotations == 0 && game.head_body_rotations == final_rotation_count && game.velocity_writes == 1,
             "Stopped client cannot mutate the game");
+}
+
+void config_command_test(const std::filesystem::path& path) {
+    medicon::Client client(path);
+    require(client.start(), "Config client starts");
+    auto* model_probe = client.modules().find("custommodel");
+    auto* gui_module = client.modules().find("clickgui");
+    require(model_probe && gui_module, "Config test modules are registered");
+    model_probe->set_enabled(true);
+    client.gui().set_open(true);
+    gui_module->set_keybind(VK_F9);
+    require(client.execute_command(".config save session").success, "Named config saves");
+    gui_module->set_keybind(VK_F10);
+    const auto loaded = client.execute_command(".config load session");
+    require(loaded.success && loaded.changed && loaded.config_loaded, "Named config loads");
+    require(gui_module->keybind() == VK_F9, "Load restores the saved bind");
+    require(!client.gui().open() && !model_probe->enabled(), "Load applies the startup session rules");
+    medicon::Client restored(path);
+    require(restored.start(), "Second config client starts");
+    require(restored.modules().find("clickgui")->keybind() == VK_F9, "Load persists to the active config");
+    require(restored.stop() && client.stop(), "Config clients stop");
 }
 
 void client_test(const std::filesystem::path& path) {
@@ -598,6 +625,7 @@ int main() {
         custom_model_hook_test();
         gameplay_dispatch_test(directory / "gameplay-config.json");
         client_test(directory / "config.json");
+        config_command_test(directory / "config-commands" / "config.json");
         main_menu_input_test(directory / "main-menu-config.json");
         std::filesystem::remove_all(directory);
         std::cout << "Runtime, actual detour and GUI frame tests passed.\n";

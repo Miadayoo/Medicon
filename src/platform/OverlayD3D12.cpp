@@ -332,7 +332,7 @@ public:
             return true;
         }
         if (!retired_.empty()) collect_retired();
-        if (edge_frame && edge_frame->height > 0) {
+        if ((edge_frame && edge_frame->height > 0) || gui::current_liquid_glass() || !effects_ || !effects_->loaded()) {
             const auto effects_start = perf_now();
             if (!ensure_effects(error)) return false;
             ID3D11Resource* wrapped = frame.wrapped.Get();

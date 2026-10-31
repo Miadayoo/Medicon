@@ -38,11 +38,12 @@ protected:
     void on_disable() noexcept override;
 
 private:
-    enum class Phase : std::uint8_t { idle, wait_pickaxe, mining, wait_safe_item };
+    enum class Phase : std::uint8_t { idle, wait_pickaxe, mining, wait_safe_item, wait_break };
     [[nodiscard]] bool find_target(sdk::GameplayAccess& game, sdk::BlockPos& position,
                                    std::uint8_t& face, float& yaw, float& pitch,
                                    const sdk::BlockPos* excluded = nullptr) const;
     void clear_target() noexcept;
+    void finish_target(sdk::GameplayAccess& game) noexcept;
 
     std::uintptr_t local_id_ = 0;
     sdk::BlockPos target_{};
@@ -52,6 +53,8 @@ private:
     float target_pitch_ = 0.0F;
     float progress_ = 0.0F;
     float scan_cooldown_ = 0.0F;
+    float break_wait_ = 0.0F;
+    float completed_wait_ = 0.0F;
     int original_slot_ = -1;
     int pickaxe_slot_ = -1;
     int safe_slot_ = -1;

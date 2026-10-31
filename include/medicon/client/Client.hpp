@@ -22,7 +22,12 @@ public:
     bool start();
     bool stop();
     void tick(float delta_seconds);
-    void game_tick(sdk::GameplayAccess& game, float delta_seconds, bool allow_actions = true);
+    // allow_screen_actions also covers an open game screen, which releases the
+    // mouse and so clears allow_actions.
+    void game_tick(sdk::GameplayAccess& game, float delta_seconds, bool allow_actions = true,
+                   bool allow_screen_actions = false);
+    // From the native screen's own tick, under the same render lock.
+    void container_screen_tick(sdk::ContainerScreen& screen, bool allow_actions) noexcept;
     void clear_gameplay() noexcept;
     // The copied frame the overlay draws, while it has a camera; a native host
     // refreshes its camera fields every Present (BedrockGameplay::refresh_view).
@@ -38,8 +43,9 @@ public:
     void render(); // An ImGui context and an active NewFrame() are required.
     // Returns true when the GUI owns the key and the host must not forward it to the game.
     bool key_event(int key, bool pressed, bool repeat = false);
-    // Execute on the same thread as tick/render/key_event. Saves changed binds
-    // immediately and reports a persistence failure without overwriting bad JSON.
+    // Execute on the same thread as tick/render/key_event. Saves changed binds and
+    // loaded named configs immediately and reports a persistence failure without
+    // overwriting bad JSON.
     CommandResult execute_command(std::string_view input);
     [[nodiscard]] bool capturing_input() const noexcept { return overlay_.gui().open() || overlay_.main_menu().active() || overlay_.social().screen_visible(); }
     bool scan_signatures(); // Explicit, potentially expensive; never calls a game function.
@@ -53,6 +59,7 @@ public:
     [[nodiscard]] static std::filesystem::path default_config_path();
 private:
     void save_config();
+    void clear_loaded_session_state();
 
     ModuleManager modules_;
     ConfigStore config_;

@@ -153,7 +153,7 @@ const EdgeLitFrame* current_edge_lit_frame() {
     if (found==published.end() || found->second.number!=ImGui::GetFrameCount()) return nullptr;
     return &found->second.frame;
 }
-void forget_edge_lit_frame(ImGuiContext* context) { published.erase(context); }
+void forget_edge_lit_frame(ImGuiContext* context) { published.erase(context); forget_liquid_glass(context); }
 
 struct EdgeLitD3D11::Impl {
     ComPtr<ID3D11Device> device;
@@ -539,22 +539,33 @@ struct EdgeLitD3D11::Impl {
 
 EdgeLitD3D11::EdgeLitD3D11()=default;
 EdgeLitD3D11::~EdgeLitD3D11()=default;
-void EdgeLitD3D11::reset() { impl_.reset(); }
+void EdgeLitD3D11::reset() { impl_.reset(); glass_.reset(); }
 void EdgeLitD3D11::invalidate_fonts() { if(impl_) { impl_->fontView.Reset(); impl_->atlas=nullptr; } }
 bool EdgeLitD3D11::render(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11Texture2D* backBuffer,ID3D11RenderTargetView* target,std::string& error) {
     const auto* frame=current_edge_lit_frame();
-    if(!frame || frame->height<=0) return true;
-    if(!device || !context || !backBuffer || !target) { error="Edge-lit requires a complete D3D11 render target."; return false; }
-    if(!impl_ || impl_->device.Get()!=device) {
-        impl_=std::make_unique<Impl>();
-        if(!impl_->initialize(device,error)) { impl_.reset(); return false; }
+    const auto* pane=current_liquid_glass();
+    if(frame && frame->height>0) {
+        if(!device || !context || !backBuffer || !target) { error="Edge-lit requires a complete D3D11 render target."; return false; }
+        if(!impl_ || impl_->device.Get()!=device) {
+            impl_=std::make_unique<Impl>();
+            if(!impl_->initialize(device,error)) { impl_.reset(); return false; }
+        }
+        if (!impl_->render(context,backBuffer,target,*frame,error)) {
+            // Discard any partially recorded command list before a retry; it may
+            // otherwise retain a swap-chain resource through ResizeBuffers.
+            impl_.reset();
+            return false;
+        }
     }
-    if (!impl_->render(context,backBuffer,target,*frame,error)) {
-        // Discard any partially recorded command list before a retry; it may
-        // otherwise retain a swap-chain resource through ResizeBuffers.
-        impl_.reset();
-        return false;
-    }
-    return true;
+    if(pane) return glass_.render(device,context,backBuffer,target,*pane,error);
+    if(glass_.loaded() || !device || !context || !backBuffer || !target) return true;
+    // Load at injection, while nothing is on screen to hitch: D3D11On12 builds its
+    // pipeline at the first draw, so one real, fully transparent pane goes through.
+    D3D11_TEXTURE2D_DESC back{}; backBuffer->GetDesc(&back);
+    LiquidGlassFrame unseen;
+    unseen.center={back.Width*.5F,back.Height*.5F};
+    unseen.size={120,56};
+    unseen.lens=unseen.opacity=0;
+    return glass_.render(device,context,backBuffer,target,unseen,error);
 }
 } // namespace medicon::gui

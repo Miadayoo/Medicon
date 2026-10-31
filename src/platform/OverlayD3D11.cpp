@@ -159,7 +159,7 @@ public:
         if (!update_render_target(error)) return false;
         const auto effects_start = perf_now();
         if (!effects_.render(device_.Get(), context_.Get(), back_buffer_.Get(), render_target_.Get(), error)) return false;
-        if (edge_frame && edge_frame->height > 0) count_effects(perf_now() - effects_start);
+        if ((edge_frame && edge_frame->height > 0) || gui::current_liquid_glass()) count_effects(perf_now() - effects_start);
         if (data->CmdListsCount > 0) {
             HostPipelineState host_state(device_.Get(), context_.Get());
             ID3D11RenderTargetView* target = render_target_.Get();

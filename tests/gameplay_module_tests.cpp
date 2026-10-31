@@ -2,10 +2,13 @@
 #include "medicon/modules/RotationsModule.hpp"
 #include "medicon/sdk/Gameplay.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -66,8 +69,53 @@ public:
     bool throw_attack = false;
     bool throw_place = false;
     bool throw_query = false;
+    std::array<InventoryItemInfo, 36> inventory{};
+    std::array<InventoryItemInfo, 4> worn{};
+    std::vector<std::pair<int, int>> swaps, equips;
+    std::vector<int> drops;
+    bool inventory_readable = true;
+    bool armor_readable = true;
+    bool inventory_open = false;
+    bool server_answers_swaps = true;
+    bool swap_result = true;
+    bool server_answers_drops = true;
+    bool server_answers_equips = true;
+    bool drop_result = true;
+    std::map<Cell, std::uint16_t> blocks;
+    std::vector<BlockPos> destroy_requests;
+    float next_progress = 0.0F;
+    bool next_destroyed = false;
+    bool destroy_result = true;
+    bool switch_before_destroy = false;
+    int selected_slot = 0;
+    int destroy_stops = 0, mining_swings = 0, safe_finishes = 0;
 
     const GameplayFrame& frame() const noexcept override { return state; }
+    bool block_id(BlockPos position, std::uint16_t& id) const override {
+        const auto found = blocks.find(cell(position));
+        id = found == blocks.end() ? 0 : found->second;
+        return true;
+    }
+    bool advance_destroy_block(BlockPos position, std::uint8_t, float, float& progress, bool& destroyed) override {
+        destroy_requests.push_back(position);
+        progress = next_progress;
+        destroyed = next_destroyed;
+        return destroy_result;
+    }
+    bool should_switch_before_destroy() const override { return switch_before_destroy; }
+    bool prepare_durability_safe_finish() override { ++safe_finishes; return true; }
+    void stop_destroy_block() noexcept override { ++destroy_stops; }
+    bool mining_swing() override { ++mining_swings; return true; }
+    int selected_hotbar_slot() const noexcept override { return selected_slot; }
+    bool hotbar_item(int slot, BlockPos, HotbarItemInfo& info) const override {
+        const auto& item = inventory[static_cast<std::size_t>(slot)];
+        info.occupied = item.kind != InventoryItemKind::empty;
+        info.pickaxe = item.kind == InventoryItemKind::pickaxe;
+        info.damageable = info.pickaxe;
+        info.destroy_speed = info.pickaxe ? item.value : 0.0F;
+        return true;
+    }
+    bool select_hotbar_slot(int slot) override { selected_slot = slot; return true; }
     bool rotate(float yaw, float pitch) override {
         if (throw_rotation) throw std::runtime_error("rotate");
         rotations.emplace_back(yaw, pitch);
@@ -118,6 +166,34 @@ public:
     bool replaceable(BlockPos position) const override {
         if (throw_query) throw std::runtime_error("query");
         return !solid.contains(cell(position));
+    }
+    bool inventory_item(int slot, InventoryItemInfo& info) const override {
+        if (slot < 0 || slot >= 36 || !inventory_readable) return false;
+        info = inventory[static_cast<std::size_t>(slot)];
+        return true;
+    }
+    bool inventory_screen_open() const override { return inventory_open; }
+    bool swap_inventory_slots(int first, int second) override {
+        swaps.emplace_back(first, second);
+        if (swap_result && server_answers_swaps)
+            std::swap(inventory[static_cast<std::size_t>(first)], inventory[static_cast<std::size_t>(second)]);
+        return swap_result;
+    }
+    bool armor_item(int slot, InventoryItemInfo& info) const override {
+        if (!armor_readable) return false;
+        info = worn[static_cast<std::size_t>(slot)];
+        return true;
+    }
+    bool equip_armor(int inventory_slot, int armor_slot) override {
+        equips.emplace_back(inventory_slot, armor_slot);
+        if (server_answers_equips)
+            std::swap(inventory[static_cast<std::size_t>(inventory_slot)], worn[static_cast<std::size_t>(armor_slot)]);
+        return true;
+    }
+    bool drop_inventory_slot(int slot) override {
+        drops.push_back(slot);
+        if (drop_result && server_answers_drops) inventory[static_cast<std::size_t>(slot)] = {};
+        return drop_result;
     }
 
     ActorSnapshot target(std::uintptr_t id, float yaw, float distance, bool player = true) const {
@@ -219,6 +295,41 @@ void test_velocity_delay_timing() {
     velocity.delay_ms.get<int>() = 0;
     check(velocity.handle_motion(first, game.state, start + 13s) == Result::ignored && velocity.pending_count() == 0,
           "Zero delay must use native dispatch immediately");
+}
+
+void test_velocity_delay2_hit_count() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 3;
+    velocity.set_enabled(true);
+    using Result = VelocityModule::MotionResult;
+    const VelocityModule::TimePoint start{};
+    check(!velocity.setting_visible(velocity.delay_ms) && !velocity.setting_visible(velocity.sync_replies) &&
+          !velocity.setting_visible(velocity.horizontal), "Delay2 must expose no extra settings");
+
+    Vec3 hit{1, 2, 3}, stop{};
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        for (int i = 0; i < 3; ++i) {
+            check(velocity.handle_motion(hit, game.state, start) == Result::cancelled, "Delay2 did not ignore a hit");
+            check(velocity.handle_motion(stop, game.state, start) == Result::ignored, "A velocity stop was cancelled");
+        }
+        check(velocity.handle_motion(hit, game.state, start) == Result::ignored && near(hit.x, 1) && near(hit.y, 2) && near(hit.z, 3),
+              "The fourth hit must pass through unchanged");
+    }
+    velocity.update(game, true, start);
+    check(game.velocity_requests.empty() && velocity.pending_count() == 0, "Delay2 queued or replayed a hit");
+
+    LatencyReply reply;
+    check(velocity.handle_motion(hit, game.state, start) == Result::cancelled && !velocity.handle_latency(reply, game.state),
+          "Delay2 held a latency reply");
+
+    velocity.reset_delay();
+    for (int i = 0; i < 3; ++i)
+        check(velocity.handle_motion(hit, game.state, start) == Result::cancelled, "A reset did not restart the count");
+    velocity.set_enabled(false);
+    velocity.set_enabled(true);
+    check(velocity.handle_motion(hit, game.state, start) == Result::cancelled, "Disabling Velocity kept the Delay2 count");
 }
 
 void test_velocity_delay_reset_and_failures() {
@@ -569,7 +680,7 @@ void test_disabled_and_unavailable() {
           aura.category() == Category::Player && scaffold.category() == Category::Movement,
           "Gameplay module categories changed");
     check(rotations.category() == Category::Misc && !rotations.enabled() &&
-          rotations.settings().size() == 4 && !rotations.always.get<bool>(),
+          rotations.settings().size() == 2 && !rotations.always.get<bool>(),
           "Rotations must start disabled with Always off");
     for (auto* module : modules) {
         check(!module->enabled(), "Gameplay modules must be disabled by default");
@@ -638,6 +749,75 @@ void test_derp_spin_and_reset() {
     game.state.head_yaw_ready = false;
     derp.game_tick(game, 0.05F);
     check(near(game.head_body_rotations.back(), 48.0F), "Derp did not recover after a bridge exception");
+}
+
+void test_antibot_checks() {
+    AntiBotModule antibot;
+    ActorSnapshot player;
+    player.player = true;
+    player.bounds = {{0.0F, 64.0F, 0.0F}, {0.6F, 65.8F, 0.6F}};
+    player.armor_pieces = 0;
+    check(!antibot.is_bot(player), "Disabled AntiBot flagged a player");
+    auto mob = player;
+    mob.player = false;
+    check(!antibot.is_bot(mob), "Disabled AntiBot flagged a non-player");
+
+    antibot.set_enabled(true);
+    check(!antibot.is_bot(player), "AntiBot flagged a normal player");
+    check(antibot.is_bot(mob), "Simple mode kept a non-player");
+    auto sneaking = player;
+    sneaking.bounds.max.y = 65.49F;
+    check(!antibot.is_bot(sneaking), "AntiBot flagged a sneaking player");
+    auto wide = player;
+    wide.bounds.max.x = 1.0F;
+    check(antibot.is_bot(wide), "Simple mode kept a wrong-width hitbox");
+    auto tall = player;
+    tall.bounds.max.y = 66.0F;
+    check(antibot.is_bot(tall), "Simple mode kept a wrong-height hitbox");
+    auto invisible = player;
+    invisible.invisible = true;
+    check(antibot.is_bot(invisible), "Simple mode kept an invisible actor");
+    auto titled = player;
+    titled.multiline_name = true;
+    check(antibot.is_bot(titled), "Simple mode kept a multi-line nametag");
+
+    antibot.armor_check.get<bool>() = true;
+    check(!antibot.is_bot(player), "Simple mode applied the armor check");
+    check(!antibot.setting_visible(antibot.hitbox_check), "Simple mode showed a Custom setting");
+    antibot.mode.get<Choice>().index = 1;
+    check(antibot.setting_visible(antibot.armor_mode), "Custom mode hid Armor Mode");
+    antibot.player_check.get<bool>() = false;
+    antibot.hitbox_check.get<bool>() = false;
+    antibot.invisible_check.get<bool>() = false;
+    antibot.name_check.get<bool>() = false;
+    antibot.armor_check.get<bool>() = false;
+    check(!antibot.setting_visible(antibot.armor_mode), "Armor Mode stayed visible without its check");
+    check(!antibot.is_bot(mob) && !antibot.is_bot(wide) && !antibot.is_bot(invisible) && !antibot.is_bot(titled),
+          "Custom mode ignored disabled checks");
+
+    antibot.armor_check.get<bool>() = true;
+    check(antibot.is_bot(player), "Armor check kept an unarmored player");
+    auto partial = player;
+    partial.armor_pieces = 3;
+    check(antibot.is_bot(partial), "Full armor mode kept a partial set");
+    antibot.armor_mode.get<Choice>().index = 1;
+    check(!antibot.is_bot(partial), "One Element armor mode rejected a partial set");
+    auto unread = player;
+    unread.armor_pieces = -1;
+    check(!antibot.is_bot(unread), "Unreadable armor counted as missing");
+    check(antibot.is_bot(mob), "Armor check kept a non-player");
+}
+
+void test_bots_are_not_targeted() {
+    MockGame game;
+    KillauraModule killaura;
+    killaura.set_enabled(true);
+    killaura.cps.get<float>() = 20.0F;
+    auto bot = game.target(2, 0.0F, 2.0F);
+    bot.bot = true;
+    game.state.actors = {bot, game.target(3, 0.0F, 3.0F)};
+    killaura.game_tick(game, 0.05F);
+    check(game.attacks.size() == 1 && game.attacks.back() == 3, "Killaura attacked a marked bot");
 }
 
 void test_aimbot_selection_and_cone() {
@@ -793,6 +973,63 @@ void test_killaura_failures_are_throttled() {
     check(game.attacks.size() == 2, "Killaura did not recover after a bridge exception");
 }
 
+void test_killaura_modes() {
+    MockGame game;
+    KillauraModule aura;
+    aura.set_enabled(true);
+    aura.cps.get<float>() = 20.0F;
+    check(aura.mode.get<Choice>().index == 0 && aura.priority.get<Choice>().index == 0,
+          "Killaura must default to Switch by Distance");
+    auto near_actor = game.target(2, 0.0F, 1.0F), far_actor = game.target(3, 90.0F, 3.0F);
+    near_actor.health = 20.0F;
+    far_actor.health = 4.0F;
+    game.state.actors = {near_actor, far_actor};
+
+    // Switch re-evaluates every tick; unknown health falls back to distance.
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 2, "Switch did not pick the nearest actor");
+    aura.priority.get<Choice>().index = 1;
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 3, "Switch did not change to the lowest-health actor");
+    game.state.actors.back().health = -1.0F;
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 2, "Health priority preferred an unknown health");
+    game.state.actors.front().health = -1.0F;
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 2, "Unknown health did not fall back to distance");
+
+    // Single keeps the lock against a better target, and without Rotate.
+    aura.mode.get<Choice>().index = 1;
+    aura.priority.get<Choice>().index = 0;
+    aura.rotate.get<Choice>().index = 0;
+    game.state.actors = {far_actor};
+    aura.game_tick(game, 0.05F);
+    game.state.actors = {near_actor, far_actor};
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 3, "Single released its target for a better one");
+    game.state.actors.back().alive = false;
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 2, "Single kept an ineligible target");
+    game.state.actors.back().alive = true;
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.back() == 2, "Single did not keep its replacement target");
+
+    // Multi hits everyone once per attack interval and rotates to the best one.
+    aura.mode.get<Choice>().index = 2;
+    aura.rotate.get<Choice>().index = 1;
+    auto bot = game.target(4, 0.0F, 1.5F);
+    bot.bot = true;
+    game.state.actors = {far_actor, near_actor, bot};
+    game.attacks.clear();
+    aura.game_tick(game, 0.05F);
+    check(game.attacks == std::vector<std::uintptr_t>{3, 2}, "Multi did not attack each eligible actor once");
+    check(near(game.head_body_rotations.back(), 0.0F), "Multi did not rotate to the best target");
+    aura.cps.get<float>() = 10.0F;
+    aura.game_tick(game, 0.05F);
+    aura.game_tick(game, 0.05F);
+    check(game.attacks.size() == 4, "Multi attacked again inside the CPS interval");
+}
+
 void test_rotations_vertical_render() {
     RotationsModule rotations;
     RotationsModule::RenderAngles angles;
@@ -939,6 +1176,48 @@ void test_scaffold_floor_extension_and_delay() {
     check(game.placements.size() == 4, "Scaffold cooldown survived a local player change");
 }
 
+void test_scaffold_block_count() {
+    MockGame game;
+    ScaffoldModule scaffold;
+    check(scaffold.block_count() == -1, "Scaffold knew its blocks before a tick");
+    scaffold.set_enabled(true);
+    const InventoryItemInfo stone{InventoryItemKind::block, 0.0F, 40};
+    game.inventory[0] = stone;
+    game.inventory[3] = {InventoryItemKind::block, 0.0F, 25};
+    game.inventory[5] = classify_inventory_item("apple", 16);
+    game.inventory[9] = {InventoryItemKind::block, 0.0F, 64};
+    scaffold.game_tick(game, 0.05F);
+    check(scaffold.block_count() == 65, "Scaffold counted more than its reachable hotbar blocks");
+
+    // The count is read through the placement delay.
+    game.inventory[0].count = 39;
+    scaffold.game_tick(game, 0.01F);
+    check(scaffold.block_count() == 64, "Scaffold's count waited for the placement delay");
+
+    scaffold.auto_select.get<bool>() = false;
+    game.selected_slot = 3;
+    scaffold.game_tick(game, 0.01F);
+    check(scaffold.block_count() == 25, "Without Auto Select only the held stack can be placed");
+    scaffold.auto_select.get<bool>() = true;
+
+    game.inventory_readable = false;
+    scaffold.game_tick(game, 0.01F);
+    check(scaffold.block_count() == 25, "An unreadable hotbar replaced the known count");
+    game.inventory_readable = true;
+
+    game.state.ready = false;
+    scaffold.game_tick(game, 0.01F);
+    check(scaffold.block_count() == -1, "Scaffold kept a count without a world");
+    game.state.ready = true;
+    scaffold.game_tick(game, 0.01F);
+    check(scaffold.block_count() == 64, "Scaffold did not count again after the world returned");
+    scaffold.reset_block_count();
+    check(scaffold.block_count() == -1, "The block count did not reset");
+    scaffold.game_tick(game, 0.01F);
+    scaffold.set_enabled(false);
+    check(scaffold.block_count() == -1, "Turning Scaffold off kept its count");
+}
+
 void test_scaffold_stationary_failure_and_invalid_data() {
     MockGame game;
     ScaffoldModule scaffold;
@@ -1023,13 +1302,511 @@ void test_scaffold_level_and_support() {
     }
 }
 
+void test_inventory_item_classification() {
+    using Kind = InventoryItemKind;
+    check(classify_inventory_item("diamond_sword", 1) == InventoryItemInfo{Kind::sword, 4.0F, 1}, "Sword not classified");
+    check(classify_inventory_item("netherite_pickaxe", 1).kind == Kind::pickaxe, "Pickaxe not classified");
+    check(classify_inventory_item("netherite_pickaxe", 1).value == 5.0F, "Tool tier not read");
+    check(classify_inventory_item("wooden_axe", 1) == InventoryItemInfo{Kind::axe, 0.5F, 1}, "A pickaxe rule swallowed the axe");
+    check(classify_inventory_item("stone_shovel", 1).kind == Kind::shovel, "Shovel not classified");
+    check(classify_inventory_item("apple", 3) == InventoryItemInfo{Kind::other, 0.0F, 3}, "Unknown item given a kind");
+}
+
+const InventoryItemInfo wooden_sword{InventoryItemKind::sword, 0.5F, 1};
+const InventoryItemInfo diamond_sword{InventoryItemKind::sword, 4.0F, 1};
+const InventoryItemInfo iron_pickaxe{InventoryItemKind::pickaxe, 3.0F, 1};
+const InventoryItemInfo stone_axe{InventoryItemKind::axe, 1.0F, 1};
+
+void test_inv_manager_defaults_and_slots() {
+    InvManagerModule manager;
+    const auto slot_option = [&manager](std::size_t slot) {
+        const auto& choice = manager.slots[slot]->get<Choice>();
+        return choice.options[static_cast<std::size_t>(choice.index)];
+    };
+    check(slot_option(0) == "Sword" && slot_option(1) == "Pickaxe" && slot_option(2) == "Axe" &&
+          slot_option(3) == "Block" && slot_option(4) == "None", "Default hotbar layout changed");
+    check(!manager.auto_armor.get<bool>(), "Default InvManager options changed");
+    manager.set_enabled(true);
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    MockGame game;
+    game.inventory[0] = {InventoryItemKind::other, 0.0F, 1};
+    game.inventory[9] = iron_pickaxe;
+    game.inventory[12] = diamond_sword;
+    game.inventory[20] = wooden_sword;
+    game.inventory[30] = {InventoryItemKind::block, 0.0F, 32};
+    game.inventory[31] = stone_axe;
+    for (int tick = 0; tick < 10; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops == std::vector<int>({20}), "The weaker sword was not dropped first");
+    check(game.swaps.size() >= 4 && std::vector<std::pair<int, int>>(game.swaps.begin(), game.swaps.begin() + 4) ==
+          std::vector<std::pair<int, int>>({{0, 12}, {1, 9}, {2, 31}, {3, 30}}),
+          "Slots were not filled in order with the best items");
+    check(game.inventory[0] == diamond_sword && game.inventory[1] == iron_pickaxe && game.inventory[2] == stone_axe &&
+          game.inventory[3].kind == InventoryItemKind::block, "Swaps did not produce the configured hotbar");
+    const auto moves = game.swaps.size();
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == moves, "A correct inventory was reshuffled");
+
+    game.inventory[10] = {InventoryItemKind::block, 0.0F, 64};
+    game.inventory[3].count = 4;
+    for (int tick = 0; tick < 4; ++tick) manager.game_tick(game, 0.05F);
+    check(game.inventory[3].count == 4, "A block slot was churned for a larger stack");
+
+    manager.slots[2]->get<Choice>().index = 0;
+    game.inventory[2] = {};
+    game.inventory[35] = stone_axe;
+    for (int tick = 0; tick < 4; ++tick) manager.game_tick(game, 0.05F);
+    check(game.inventory[2].kind == InventoryItemKind::empty, "A None slot was filled");
+}
+
+void test_inv_manager_modes_delay_and_refusal() {
+    InvManagerModule manager;
+    manager.set_enabled(true);
+    manager.delay.get<float>() = 200.0F;
+    MockGame game;
+    game.inventory[10] = diamond_sword;
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.empty(), "On Inventory acted with the inventory closed");
+    game.inventory_open = true;
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1, "On Inventory did not act with the inventory open");
+
+    game.swaps.clear();
+    game.inventory[11] = iron_pickaxe;
+    for (int tick = 0; tick < 3; ++tick) manager.game_tick(game, 0.05F);
+    check(game.swaps.empty(), "Delay did not hold back the next move");
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1 && game.swaps[0] == std::pair{1, 11}, "Delay held the next move too long");
+
+    game.swaps.clear();
+    game.server_answers_swaps = false;
+    game.inventory[12] = stone_axe;
+    manager.delay.get<float>() = 0.0F;
+    for (int tick = 0; tick < 8; ++tick) manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1, "An unanswered swap was resent before its timeout");
+    for (int tick = 0; tick < 12; ++tick) manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1, "A refused swap was not backed off");
+    for (int tick = 0; tick < 110; ++tick) manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 2, "A refused swap was never retried");
+
+    // The local update confirms at once; the server's refusal restores the slot later.
+    manager.set_enabled(false);
+    manager.set_enabled(true);
+    game.inventory = {};
+    game.inventory[0] = diamond_sword;
+    const auto weaker = classify_inventory_item("iron_sword", 1);
+    game.inventory[5] = weaker;
+    game.drops.clear();
+    manager.game_tick(game, 0.05F);
+    check(game.drops == std::vector<int>({5}), "The weaker sword was not dropped");
+    manager.game_tick(game, 0.05F);
+    game.inventory[5] = weaker;
+    for (int tick = 0; tick < 20; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops.size() == 1 && manager.diagnostic().status == std::string_view("delay-or-retry-backoff"),
+          "A move the server reverted was resent in a loop");
+    for (int tick = 0; tick < 90; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops.size() == 2, "A reverted move was never retried");
+
+    manager.set_enabled(false);
+    game.inventory_readable = false;
+    manager.set_enabled(true);
+    game.swaps.clear();
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.empty(), "An unreadable inventory produced a swap");
+}
+
+void test_inv_manager_sorts_inventory() {
+    InvManagerModule manager;
+    manager.set_enabled(true);
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    for (auto* slot : manager.slots) slot->get<Choice>().index = 0;
+    const InventoryItemInfo apple{InventoryItemKind::other, 0.0F, 3, 260};
+    const InventoryItemInfo bread{InventoryItemKind::other, 0.0F, 7, 297};
+    const InventoryItemInfo small_blocks{InventoryItemKind::block, 0.0F, 8};
+    const InventoryItemInfo large_blocks{InventoryItemKind::block, 0.0F, 32};
+    const InventoryItemInfo iron_helmet{InventoryItemKind::helmet, 3.0F, 1};
+    MockGame game;
+    game.inventory[0] = wooden_sword;
+    game.inventory[9] = bread;
+    game.inventory[10] = iron_helmet;
+    game.inventory[14] = wooden_sword;
+    game.inventory[15] = small_blocks;
+    game.inventory[18] = large_blocks;
+    game.inventory[20] = stone_axe;
+    game.inventory[27] = apple;
+    game.inventory[33] = diamond_sword;
+    for (int tick = 0; tick < 20; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops == std::vector<int>({0, 14}), "Weaker swords were not dropped, hotbar included");
+    const std::vector<InventoryItemInfo> sorted{diamond_sword, stone_axe, iron_helmet, large_blocks, small_blocks, apple, bread};
+    for (std::size_t place = 0; place < sorted.size(); ++place)
+        check(game.inventory[9 + place] == sorted[place], "The inventory was not sorted in order");
+    for (std::size_t slot = 9 + sorted.size(); slot < 36; ++slot)
+        check(game.inventory[slot].kind == InventoryItemKind::empty, "The sorted inventory left a gap");
+    const auto moves = game.swaps.size();
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == moves, "A sorted inventory kept moving");
+}
+
+void test_inv_manager_keeps_assigned_copies() {
+    InvManagerModule manager;
+    manager.set_enabled(true);
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    manager.slots[1]->get<Choice>().index = 1;
+    MockGame game;
+    game.inventory[10] = diamond_sword;
+    game.inventory[11] = wooden_sword;
+    for (int tick = 0; tick < 6; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops.empty(), "A second Sword slot lost its sword");
+    check(game.inventory[0] == diamond_sword && game.inventory[1] == wooden_sword, "Both Sword slots were not filled");
+}
+
+void test_inv_manager_auto_armor_and_drop() {
+    InvManagerModule manager;
+    manager.set_enabled(true);
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    const InventoryItemInfo iron_helmet{InventoryItemKind::helmet, 3.0F, 1};
+    const InventoryItemInfo diamond_helmet{InventoryItemKind::helmet, 4.0F, 1};
+    const InventoryItemInfo diamond_boots{InventoryItemKind::boots, 4.0F, 1};
+    const auto holds = [](const MockGame& game, const InventoryItemInfo& item) {
+        return std::find(game.inventory.begin(), game.inventory.end(), item) != game.inventory.end();
+    };
+    MockGame game;
+    game.worn[0] = iron_helmet;
+    game.inventory[12] = diamond_helmet;
+    game.inventory[13] = diamond_boots;
+    game.inventory[14] = iron_helmet;
+    for (int tick = 0; tick < 6; ++tick) manager.game_tick(game, 0.05F);
+    check(game.equips.empty(), "Auto Armor acted while off");
+    check(game.drops == std::vector<int>({14}), "Armor no better than the worn piece was kept");
+    check(holds(game, diamond_helmet) && holds(game, diamond_boots), "Better armor was dropped");
+
+    manager.auto_armor.get<bool>() = true;
+    for (int tick = 0; tick < 10; ++tick) manager.game_tick(game, 0.05F);
+    check(game.worn[0] == diamond_helmet && game.worn[3] == diamond_boots, "Auto Armor did not wear the best pieces");
+    check(game.drops.size() == 2 && !holds(game, iron_helmet), "The replaced armor was not dropped");
+}
+
+void test_inv_manager_waits_for_affected_slots() {
+    InvManagerModule manager;
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    manager.set_enabled(true);
+    MockGame game;
+    game.server_answers_swaps = false;
+    game.inventory[10] = diamond_sword;
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1, "Initial swap was not requested");
+    // The destination arrives first. Treating any inventory change as success
+    // used to drop the original sword while this swap was still in flight.
+    game.inventory[0] = diamond_sword;
+    game.inventory[20] = iron_pickaxe;
+    manager.game_tick(game, 0.05F);
+    check(game.drops.empty() && game.swaps.size() == 1, "A half-applied swap triggered another operation");
+    game.inventory[10] = {};
+    manager.game_tick(game, 0.05F);
+    check(game.drops.empty() && game.swaps.size() == 2 && game.swaps.back() == std::pair{1, 20},
+          "A fully applied swap did not release the next operation");
+
+    manager.set_enabled(false);
+    manager.set_enabled(true);
+    game = MockGame{};
+    game.server_answers_drops = false;
+    game.inventory[0] = diamond_sword;
+    game.inventory[10] = wooden_sword;
+    manager.game_tick(game, 0.05F);
+    for (int tick = 0; tick < 25; ++tick) {
+        game.inventory[35] = {InventoryItemKind::other, 0, static_cast<std::uint8_t>(tick + 1)};
+        manager.game_tick(game, 0.05F);
+    }
+    check(game.drops == std::vector<int>{10} && game.swaps.empty(),
+          "Unrelated slot changes acknowledged or repeatedly resent a rejected drop");
+    game.inventory[10] = {};
+    for (int tick = 0; tick < 110; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops.size() == 1, "A later successful drop was repeated");
+}
+
+void test_inv_manager_armor_confirmation_and_failures() {
+    InvManagerModule manager;
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    manager.auto_armor.get<bool>() = true;
+    manager.set_enabled(true);
+    MockGame game;
+    const InventoryItemInfo helmet{InventoryItemKind::helmet, 4.0F, 1};
+    game.inventory[10] = helmet;
+    game.server_answers_equips = false;
+    manager.game_tick(game, 0.05F);
+    game.worn[0] = helmet;
+    manager.game_tick(game, 0.05F);
+    check(game.equips.size() == 1 && game.drops.empty(), "Partially applied armor equip dropped its source");
+    game.inventory[10] = {};
+    game.armor_readable = false;
+    game.inventory[11] = stone_axe;
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.empty(), "Unreadable armor acknowledged an equip");
+    game.armor_readable = true;
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1, "Completed armor equip did not release the next operation");
+
+    manager.set_enabled(false);
+    manager.set_enabled(true);
+    game = MockGame{};
+    game.swap_result = false;
+    game.inventory[10] = diamond_sword;
+    for (int tick = 0; tick < 20; ++tick) manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 1, "An unavailable native swap was retried every tick at zero delay");
+    game.state.world_identity = 2;
+    game.swap_result = true;
+    manager.game_tick(game, 0.05F);
+    check(game.swaps.size() == 2 && game.inventory[0] == diamond_sword, "Refusal state survived a world change");
+
+    manager.set_enabled(false);
+    manager.set_enabled(true);
+    game = MockGame{};
+    game.drop_result = false;
+    game.inventory[0] = diamond_sword;
+    game.inventory[10] = wooden_sword;
+    for (int tick = 0; tick < 20; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops == std::vector<int>{10} && game.inventory[10] == wooden_sword,
+          "A failed drop was repeated or changed local inventory");
+}
+
+void test_inv_manager_keeps_equally_strong_assigned_gear() {
+    InvManagerModule manager;
+    manager.delay.get<float>() = 0.0F;
+    manager.mode.get<Choice>().index = 1;
+    manager.slots[0]->get<Choice>().index = 0;
+    manager.slots[8]->get<Choice>().index = 1;
+    manager.set_enabled(true);
+    MockGame game;
+    game.inventory[0] = diamond_sword;
+    game.inventory[8] = diamond_sword;
+    for (int tick = 0; tick < 5; ++tick) manager.game_tick(game, 0.05F);
+    check(game.drops == std::vector<int>{0} && game.inventory[8] == diamond_sword && game.swaps.empty(),
+          "An equally strong sword already in its assigned slot was dropped and replaced");
+}
+
+class MockChest final : public ContainerScreen {
+public:
+    std::array<bool, slot_limit> items{};
+    std::vector<int> taken;
+    bool is_chest = true;
+    int closes = 0;
+    bool chest() const override { return is_chest; }
+    bool slot_occupied(int slot) const override { return items[static_cast<std::size_t>(slot)]; }
+    bool take(int slot) override {
+        taken.push_back(slot);
+        items[static_cast<std::size_t>(slot)] = false;
+        return true;
+    }
+    bool close() override { ++closes; return true; }
+};
+
+void test_chest_stealer_delay_and_close() {
+    ChestStealerModule stealer;
+    MockChest chest;
+    chest.items[3] = chest.items[7] = true;
+    stealer.screen_tick(chest, 1000);
+    check(chest.taken.empty(), "Disabled ChestStealer took an item");
+    stealer.set_enabled(true);
+    stealer.delay.get<float>() = 100.0F;
+    stealer.screen_tick(chest, 1000);
+    stealer.screen_tick(chest, 1050);
+    check(chest.taken.empty(), "ChestStealer ignored the delay after opening");
+    stealer.screen_tick(chest, 1100);
+    check(chest.taken == std::vector<int>({3}), "ChestStealer did not take the first stack");
+    stealer.screen_tick(chest, 1150);
+    check(chest.taken.size() == 1, "ChestStealer ignored the delay between stacks");
+    stealer.screen_tick(chest, 1200);
+    check(chest.taken == std::vector<int>({3, 7}) && chest.closes == 0, "ChestStealer did not take the next stack");
+    stealer.screen_tick(chest, 1250);
+    check(chest.closes == 0, "ChestStealer closed before the chest settled");
+    stealer.screen_tick(chest, 1450);
+    check(chest.closes == 1, "ChestStealer did not close the emptied chest");
+
+    MockChest empty;
+    stealer.screen_tick(empty, 3000);
+    stealer.screen_tick(empty, 3500);
+    check(empty.closes == 0, "An untouched chest was closed");
+
+    stealer.auto_close.get<bool>() = false;
+    MockChest kept;
+    kept.items[0] = true;
+    stealer.delay.get<float>() = 0.0F;
+    stealer.screen_tick(kept, 5000);
+    stealer.screen_tick(kept, 5500);
+    check(kept.taken.size() == 1 && kept.closes == 0, "Auto Close off still closed the chest");
+
+    MockChest furnace;
+    furnace.is_chest = false;
+    furnace.items[0] = true;
+    stealer.screen_tick(furnace, 9000);
+    check(furnace.taken.empty(), "ChestStealer acted on another container type");
+}
+
 } // namespace
+
+constexpr BlockPos regen_ore{2, 65, 0};
+constexpr BlockPos regen_other_ore{-3, 65, 0};
+constexpr std::uint16_t redstone = 73;
+constexpr int regen_pickaxe_slot = 2;
+
+void prepare_regen(MockGame& game, RegenModule& regen) {
+    game.blocks[cell(regen_ore)] = redstone;
+    game.inventory[regen_pickaxe_slot].kind = InventoryItemKind::pickaxe;
+    game.inventory[regen_pickaxe_slot].value = 4.0F;
+    regen.set_enabled(true);
+}
+
+void tick_regen(MockGame& game, RegenModule& regen, int ticks = 1) {
+    for (int tick = 0; tick < ticks; ++tick) regen.game_tick(game, 0.05F);
+}
+
+void test_regen_reactive_waits_for_block_update() {
+    MockGame game;
+    RegenModule regen;
+    regen.swing.get<Choice>().index = 2;
+    prepare_regen(game, regen);
+    game.blocks[cell(regen_other_ore)] = redstone;
+    tick_regen(game, regen, 3);
+    check(game.selected_slot == regen_pickaxe_slot, "Regen did not select the pickaxe");
+    check(game.destroy_requests.size() == 2, "Regen did not mine after the slot change");
+
+    game.next_progress = 1.0F;
+    game.next_destroyed = true;
+    tick_regen(game, regen);
+    const auto requests = game.destroy_requests.size();
+    check(game.mining_swings == 0, "Reactive swung before the block update");
+    tick_regen(game, regen, 10);
+    check(game.destroy_requests.size() == requests, "Reactive moved on before the block update");
+    check(game.selected_slot == regen_pickaxe_slot, "Reactive restored the slot before the block update");
+
+    game.blocks.clear();
+    tick_regen(game, regen);
+    check(game.mining_swings == 1, "Reactive did not swing on the block update");
+    tick_regen(game, regen);
+    check(game.selected_slot == 0, "Reactive did not restore the slot after the block update");
+}
+
+void test_regen_reactive_retries_a_refused_break() {
+    MockGame game;
+    RegenModule regen;
+    prepare_regen(game, regen);
+    tick_regen(game, regen, 3);
+    game.next_progress = 1.0F;
+    game.next_destroyed = true;
+    tick_regen(game, regen);
+    const auto requests = game.destroy_requests.size();
+    game.next_progress = 0.0F;
+    game.next_destroyed = false;
+    tick_regen(game, regen, 21);
+    check(game.destroy_requests.size() > requests, "Reactive never retried a block the server kept");
+}
+
+void test_regen_fastchange_retries_a_refused_break() {
+    MockGame game;
+    RegenModule regen;
+    regen.switch_mode.get<Choice>().index = 1;
+    prepare_regen(game, regen);
+    game.selected_slot = regen_pickaxe_slot;
+    tick_regen(game, regen);
+    game.next_progress = 1.0F;
+    tick_regen(game, regen);
+    check(game.destroy_stops >= 1, "Fastchange did not finish at full progress");
+    game.next_progress = 0.0F;
+    const auto requests = game.destroy_requests.size();
+    tick_regen(game, regen, 5);
+    check(game.destroy_requests.size() == requests, "Fastchange reselected the block it just finished");
+    tick_regen(game, regen, 25);
+    check(game.destroy_requests.size() > requests, "Fastchange excluded a block the server kept forever");
+}
+
+void test_regen_restores_slot_after_a_quick_toggle() {
+    MockGame game;
+    RegenModule regen;
+    prepare_regen(game, regen);
+    tick_regen(game, regen, 2);
+    check(game.selected_slot == regen_pickaxe_slot, "Regen did not select the pickaxe");
+    regen.set_enabled(false);
+    regen.set_enabled(true);
+    game.blocks.clear();
+    tick_regen(game, regen);
+    check(game.selected_slot == 0, "A quick toggle lost the slot to restore");
+}
+
+void test_regen_restores_the_latest_slot() {
+    MockGame game;
+    RegenModule regen;
+    prepare_regen(game, regen);
+    game.selected_slot = regen_pickaxe_slot;
+    tick_regen(game, regen);
+    game.blocks.clear();
+    tick_regen(game, regen, 2);
+
+    game.selected_slot = 5;
+    game.blocks[cell(regen_ore)] = redstone;
+    tick_regen(game, regen, 8);
+    check(game.selected_slot == regen_pickaxe_slot, "Regen did not select the pickaxe again");
+    game.blocks.clear();
+    tick_regen(game, regen, 2);
+    check(game.selected_slot == 5, "Regen restored the slot from an earlier target");
+}
+
+void test_regen_slot_waits_survive_scrolling() {
+    MockGame game;
+    RegenModule regen;
+    prepare_regen(game, regen);
+    tick_regen(game, regen);
+    check(game.selected_slot == regen_pickaxe_slot, "Regen did not select the pickaxe");
+    game.selected_slot = 7;
+    tick_regen(game, regen, 2);
+    check(game.selected_slot == regen_pickaxe_slot, "Regen stayed stuck after the player scrolled");
+    check(!game.destroy_requests.empty(), "Regen did not mine after recovering the slot");
+
+    game.inventory[4].kind = InventoryItemKind::block;
+    regen.infinity_durability.value = true;
+    game.switch_before_destroy = true;
+    tick_regen(game, regen);
+    check(game.selected_slot == 4 && game.safe_finishes == 1, "Regen did not select the final-hit item");
+    game.selected_slot = 7;
+    const auto requests = game.destroy_requests.size();
+    tick_regen(game, regen, 2);
+    check(game.selected_slot == 4, "Regen lost the final-hit item after the player scrolled");
+    check(game.destroy_requests.size() > requests, "Regen did not finish after recovering the final-hit item");
+}
+
+void test_regen_failed_starts_are_throttled() {
+    MockGame game;
+    RegenModule regen;
+    prepare_regen(game, regen);
+    game.selected_slot = regen_pickaxe_slot;
+    game.destroy_result = false;
+    tick_regen(game, regen);
+    tick_regen(game, regen, 10);
+    check(game.destroy_requests.size() == 1, "Regen retried a refused block without a cooldown");
+    check(regen.diagnostic_status() == RegenModule::DiagnosticStatus::mine_failed, "Regen hid the refused break");
+    tick_regen(game, regen, 15);
+    check(game.destroy_requests.size() == 2, "Regen did not retry after the cooldown");
+}
 
 int main() {
     try {
         test_disabled_and_unavailable();
+        test_regen_reactive_waits_for_block_update();
+        test_regen_reactive_retries_a_refused_break();
+        test_regen_fastchange_retries_a_refused_break();
+        test_regen_restores_slot_after_a_quick_toggle();
+        test_regen_restores_the_latest_slot();
+        test_regen_slot_waits_survive_scrolling();
+        test_regen_failed_starts_are_throttled();
+        test_antibot_checks();
+        test_bots_are_not_targeted();
         test_velocity_motion();
         test_velocity_delay_timing();
+        test_velocity_delay2_hit_count();
         test_velocity_delay_reset_and_failures();
         test_velocity_delay_capacity();
         test_velocity_zero_motion_is_immediate();
@@ -1043,11 +1820,23 @@ int main() {
         test_aimbot_yaw_wrap_and_bounds_range();
         test_killaura_cadence_and_filters();
         test_killaura_failures_are_throttled();
+        test_killaura_modes();
         test_rotations_vertical_render();
         test_sprint_input_and_release();
         test_scaffold_floor_extension_and_delay();
+        test_scaffold_block_count();
         test_scaffold_stationary_failure_and_invalid_data();
         test_scaffold_level_and_support();
+        test_inventory_item_classification();
+        test_inv_manager_defaults_and_slots();
+        test_inv_manager_modes_delay_and_refusal();
+        test_inv_manager_sorts_inventory();
+        test_inv_manager_keeps_assigned_copies();
+        test_inv_manager_auto_armor_and_drop();
+        test_inv_manager_waits_for_affected_slots();
+        test_inv_manager_armor_confirmation_and_failures();
+        test_inv_manager_keeps_equally_strong_assigned_gear();
+        test_chest_stealer_delay_and_close();
         std::cout << "Gameplay module tests passed\n";
         return 0;
     } catch (const std::exception& error) {

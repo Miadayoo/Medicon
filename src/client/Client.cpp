@@ -5,9 +5,12 @@
 #include <medicon/modules/RotationsModule.hpp>
 #include <medicon/modules/DerpModule.hpp>
 #include <medicon/modules/AimbotModule.hpp>
+#include <medicon/modules/AntiBotModule.hpp>
 #include <medicon/modules/KillauraModule.hpp>
 #include <medicon/modules/ScaffoldModule.hpp>
 #include <medicon/modules/RegenModule.hpp>
+#include <medicon/modules/ChestStealerModule.hpp>
+#include <medicon/modules/InvManagerModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/VelocityModule.hpp>
 #include <medicon/gui/GameplayVisuals.hpp>
@@ -75,9 +78,7 @@ public:
                                float& progress, bool& destroyed) override {
         return game_.advance_destroy_block(position, face, scale, progress, destroyed);
     }
-    bool should_switch_before_destroy(float scale) const override {
-        return game_.should_switch_before_destroy(scale);
-    }
+    bool should_switch_before_destroy() const override { return game_.should_switch_before_destroy(); }
     bool prepare_durability_safe_finish() override { return game_.prepare_durability_safe_finish(); }
     void stop_destroy_block() noexcept override { game_.stop_destroy_block(); }
     int selected_hotbar_slot() const noexcept override { return game_.selected_hotbar_slot(); }
@@ -85,6 +86,14 @@ public:
         return game_.hotbar_item(slot, target, info);
     }
     bool select_hotbar_slot(int slot) override { return game_.select_hotbar_slot(slot); }
+    bool inventory_item(int slot, sdk::InventoryItemInfo& info) const override {
+        return game_.inventory_item(slot, info);
+    }
+    bool inventory_screen_open() const override { return game_.inventory_screen_open(); }
+    bool swap_inventory_slots(int first, int second) override { return game_.swap_inventory_slots(first, second); }
+    bool armor_item(int slot, sdk::InventoryItemInfo& info) const override { return game_.armor_item(slot, info); }
+    bool equip_armor(int inventory_slot, int armor_slot) override { return game_.equip_armor(inventory_slot, armor_slot); }
+    bool drop_inventory_slot(int slot) override { return game_.drop_inventory_slot(slot); }
 
     [[nodiscard]] bool has_rotation_request() const noexcept { return rotation_requested_; }
 
@@ -120,7 +129,7 @@ private:
 } // namespace
 
 Client::Client(std::filesystem::path path)
-    : config_(std::move(path)), commands_(modules_), overlay_(modules_) {
+    : config_(std::move(path)), commands_(modules_, config_.path().parent_path() / "configs"), overlay_(modules_) {
     register_builtin_modules(modules_);
     // The GUI requests saves on discrete changes (drag end, toggle, close) — never per frame.
     overlay_.set_save_handler([this] { save_config(); });
@@ -134,18 +143,22 @@ void Client::save_config() {
     if (!config_.save(modules_, error_)) overlay_.gui().set_status(error_);
 }
 
-bool Client::start() {
-    if (running_) return true;
-    error_.clear();
-    config_writable_ = config_.load(modules_, error_);
-    // Keep defaults and surface a malformed-config error without destroying the file.
-    overlay_.gui().set_status(config_writable_ ? "Foundation ready / host renderer" : error_);
+void Client::clear_loaded_session_state() {
     // A saved enabled ClickGUI is a previous session's open state, not a request
     // to capture input on injection. Only its bound key opens the new session.
     overlay_.gui().set_open(false);
     // CustomModel starts OFF on injection, even if the previous session saved
     // it ON. F8 enables it after the model's native resources are prepared.
     if (auto* probe = modules_.find(CustomModelProbeModule::module_id)) probe->set_enabled(false);
+}
+
+bool Client::start() {
+    if (running_) return true;
+    error_.clear();
+    config_writable_ = config_.load(modules_, error_);
+    // Keep defaults and surface a malformed-config error without destroying the file.
+    overlay_.gui().set_status(config_writable_ ? "Foundation ready / host renderer" : error_);
+    clear_loaded_session_state();
     overlay_.set_main_menu_active(false);
     overlay_.start_splash();
     running_ = true;
@@ -173,12 +186,14 @@ void Client::tick(float seconds) {
     modules_.tick(seconds);
 }
 
-void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_actions) {
+void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_actions, bool allow_screen_actions) {
     if (!running_) return;
     if (!game.frame().ready) { clear_gameplay(); return; }
     if (!std::isfinite(seconds) || seconds <= 0.0F) seconds = 0.05F;
     // The host serializes this game-thread entry point with UI settings edits.
     // No game-owned pointers are used by tick() or render().
+    if (const auto* anti_bot = dynamic_cast<AntiBotModule*>(modules_.find(AntiBotModule::module_id)))
+        for (const auto& actor : game.frame().actors) actor.bot = anti_bot->is_bot(actor);
     auto* rotations = dynamic_cast<RotationsModule*>(modules_.find(RotationsModule::module_id));
     const auto* derp = dynamic_cast<DerpModule*>(modules_.find(DerpModule::module_id));
     const auto* aimbot = dynamic_cast<AimbotModule*>(modules_.find(AimbotModule::module_id));
@@ -187,6 +202,7 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     auto* regen = dynamic_cast<RegenModule*>(modules_.find(RegenModule::module_id));
     auto* sprint = dynamic_cast<SprintModule*>(modules_.find(SprintModule::module_id));
     auto* velocity = dynamic_cast<VelocityModule*>(modules_.find(VelocityModule::module_id));
+    auto* inv_manager = dynamic_cast<InvManagerModule*>(modules_.find(InvManagerModule::module_id));
     const auto* killaura_rotate = killaura ? std::get_if<Choice>(&killaura->rotate.value) : nullptr;
     const auto* scaffold_rotate = scaffold ? std::get_if<Choice>(&scaffold->rotate.value) : nullptr;
     const bool has_rotation_requester = (derp && derp->enabled()) || (aimbot && aimbot->enabled()) ||
@@ -207,14 +223,19 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     if (gameplay_actions_allowed) {
         for (const auto& module : modules_.all()) {
             if (!module->enabled()) continue;
-            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get()); gameplay && gameplay != sprint && gameplay != velocity)
+            if (auto* gameplay = dynamic_cast<GameplayModule*>(module.get());
+                gameplay && gameplay != sprint && gameplay != velocity && gameplay != inv_manager)
                 gameplay->game_tick(rotation_route, seconds);
         }
     }
+    // The open inventory releases the mouse, which holds every other module.
+    if (inv_manager && inv_manager->enabled() && (gameplay_actions_allowed ||
+        (allow_screen_actions && !capturing_input() && rotation_route.inventory_screen_open())))
+        inv_manager->game_tick(rotation_route, seconds);
     // Rotation requesters must publish their final server yaw before Legit's
     // Sprint Fix checks the allowed 45-degree movement cone.
     if (sprint) {
-        const bool sprint_fix = rotations && rotations->enabled() && rotations->sprint_fix.get<bool>() &&
+        const bool sprint_fix = rotations && rotations->enabled() &&
             rotations->server_rotation_valid.load(std::memory_order_acquire);
         const float rotation_yaw = rotations
             ? rotations->server_yaw.load(std::memory_order_relaxed) : game.frame().yaw;
@@ -227,11 +248,19 @@ void Client::game_tick(sdk::GameplayAccess& game, float seconds, bool allow_acti
     gameplay_age_ = 0.0F;
 }
 
+void Client::container_screen_tick(sdk::ContainerScreen& screen, bool allow_actions) noexcept {
+    if (!running_ || !allow_actions || capturing_input()) return;
+    if (auto* stealer = dynamic_cast<ChestStealerModule*>(modules_.find(ChestStealerModule::module_id)))
+        stealer->screen_tick(screen, GetTickCount64());
+}
+
 void Client::clear_gameplay() noexcept {
     if (auto* velocity = dynamic_cast<VelocityModule*>(modules_.find(VelocityModule::module_id)))
         velocity->reset_delay();
     if (auto* rotations = dynamic_cast<RotationsModule*>(modules_.find(RotationsModule::module_id)))
         rotations->reset_render();
+    if (auto* scaffold = dynamic_cast<ScaffoldModule*>(modules_.find(ScaffoldModule::module_id)))
+        scaffold->reset_block_count();
     gameplay_frame_.ready = false;
     gameplay_frame_.projection_ready = false;
     gameplay_frame_.actors.clear();
@@ -260,6 +289,7 @@ bool Client::key_event(int key, bool pressed, bool repeat) {
 CommandResult Client::execute_command(std::string_view input) {
     if (!running_) return {true, false, false, "Medicon is not initialized."};
     auto result = commands_.execute(input);
+    if (result.config_loaded) clear_loaded_session_state();
     if (result.changed) {
         modules_.reset_keys();
         if (!config_writable_) {

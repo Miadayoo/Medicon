@@ -1,11 +1,32 @@
-# Local bind commands
+# Local commands
 
 `CommandManager` parses `.bind` and `.unbind` against registered module IDs or
 display names, with case-insensitive exact matching and quoted names. Unknown
-dot commands return a local error. Invalid or ambiguous arguments do not change
-binds. `Client::execute_command` resets held-key state and persists each actual
-change through the existing atomic `ConfigStore`. A malformed existing config
-is retained; the result explicitly reports a session-only change.
+dot commands return `<command> was not found. Try using .help to see the
+available commands.` Invalid or ambiguous arguments do not change binds.
+`Client::execute_command` resets held-key state and persists each actual change
+through the existing atomic `ConfigStore`. A malformed existing config is
+retained; the result explicitly reports a session-only change.
+
+`.help` lists the commands and `.help <command>` shows one command's usage.
+
+`.config` manages named copies of the module state in
+`%LOCALAPPDATA%\Medicon\configs\<name>.json`, separate from the active
+`config.json`:
+
+| Command | Effect |
+| --- | --- |
+| `.config` / `.config list` | List saved configs |
+| `.config save <name>` / `.c s <name>` | Save the current state and make it the current config; replacing another config needs `overwrite` |
+| `.config save` / `.c s` | Update the current config |
+| `.config load <name>` / `.c l <name>` | Replace the live state, persist it to `config.json` and make it the current config |
+| `.config delete <name>` | Delete a saved config |
+
+The current config is the last one saved or loaded and lasts for the session.
+
+Names are up to 64 ASCII letters, digits, `-` or `_`; Windows device names are
+rejected. A rejected or malformed config changes nothing. Load uses the same
+session rules as startup: ClickGUI closes and CustomModel stays OFF until F8.
 
 Join a Minecraft world, close ClickGUI, and open Minecraft's own chat input.
 Enter `.bind clickgui rshift` and press Enter to bind ClickGUI to Right Shift.

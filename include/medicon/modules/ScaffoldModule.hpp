@@ -11,6 +11,11 @@ public:
     static constexpr const char* module_id = "scaffold";
     ScaffoldModule();
     void game_tick(sdk::GameplayAccess& game, float delta_seconds) noexcept override;
+    // Blocks it can still place, as of the last game tick; -1 while unknown.
+    // Written and read under the host's render lock, like the gameplay frame.
+    [[nodiscard]] int block_count() const noexcept { return block_count_; }
+    void reset_block_count() noexcept { block_count_ = -1; }
+    [[nodiscard]] float view_yaw() const noexcept { return view_yaw_; }
 
     Setting& extend;
     Setting& auto_select;
@@ -27,6 +32,8 @@ private:
     float rotation_hold_remaining_ = 0.0F;
     float rotation_hold_yaw_ = 0.0F;
     float rotation_hold_pitch_ = 0.0F;
+    float view_yaw_ = 0.0F;
+    int block_count_ = -1;
     int rotation_hold_block_x_ = 0;
     int rotation_hold_block_y_ = 0;
     int rotation_hold_block_z_ = 0;

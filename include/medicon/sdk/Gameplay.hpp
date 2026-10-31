@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace medicon::sdk {
@@ -19,6 +20,43 @@ struct HotbarItemInfo {
     std::int16_t item_id = 0;
     float destroy_speed = 0.0F;
 };
+
+// Sorting follows this order; armor kinds are also the armor slot order.
+enum class InventoryItemKind : std::uint8_t {
+    empty, other, block, sword, pickaxe, axe, shovel, helmet, chestplate, leggings, boots
+};
+struct InventoryItemInfo {
+    InventoryItemKind kind = InventoryItemKind::empty;
+    float value = 0.0F; // strength within a kind: material plus enchantment levels
+    std::uint8_t count = 0;
+    std::int16_t id = 0;
+    bool operator==(const InventoryItemInfo&) const = default;
+};
+
+// Tool and armor kinds and materials come from the item's identifier
+// ("diamond_sword"). Solstice's getItemValue adds enchantment levels on top.
+[[nodiscard]] inline InventoryItemInfo classify_inventory_item(std::string_view name, std::uint8_t count) noexcept {
+    InventoryItemInfo info{InventoryItemKind::other, 0.0F, count};
+    const auto has = [name](std::string_view text) { return name.find(text) != std::string_view::npos; };
+    if (has("_sword")) info.kind = InventoryItemKind::sword;
+    else if (has("_pickaxe")) info.kind = InventoryItemKind::pickaxe;
+    else if (has("_axe")) info.kind = InventoryItemKind::axe;
+    else if (has("_shovel")) info.kind = InventoryItemKind::shovel;
+    else if (has("_helmet")) info.kind = InventoryItemKind::helmet;
+    else if (has("_chestplate")) info.kind = InventoryItemKind::chestplate;
+    else if (has("_leggings")) info.kind = InventoryItemKind::leggings;
+    else if (has("_boots")) info.kind = InventoryItemKind::boots;
+    else return info;
+    if (has("netherite_")) info.value = 5.0F;
+    else if (has("diamond_")) info.value = 4.0F;
+    else if (has("iron_") || has("turtle_")) info.value = 3.0F;
+    else if (has("copper_")) info.value = info.kind >= InventoryItemKind::helmet ? 1.0F : 2.5F;
+    else if (has("chainmail_")) info.value = 2.5F;
+    else if (has("golden_")) info.value = 2.0F;
+    else if (has("stone_")) info.value = 1.0F;
+    else if (has("wooden_") || has("leather_")) info.value = 0.5F;
+    return info;
+}
 
 // Copied 1.26.52.3 NetworkStackLatency packet. The inspected class contains
 // scalar data and static native vtable/dispatcher pointers, with no owned heap
@@ -49,6 +87,13 @@ struct ActorSnapshot {
     bool has_render_position = false;
     std::int64_t unique_id{};
     std::string model_name;
+    bool invisible = false, multiline_name = false;
+    // Worn pieces of a remote player; -1 when they could not be read.
+    std::int8_t armor_pieces = -1;
+    // Current health attribute; negative when it could not be read.
+    float health = -1.0F;
+    // Set by Client from AntiBot on the copied snapshot, before modules tick.
+    mutable bool bot = false;
 };
 
 struct GameplayFrame {
@@ -143,9 +188,7 @@ public:
                                        float& progress, bool& destroyed) {
         (void)position; (void)face; (void)destroy_time_scale; (void)progress; (void)destroyed; return false;
     }
-    [[nodiscard]] virtual bool should_switch_before_destroy(float destroy_time_scale) const {
-        (void)destroy_time_scale; return false;
-    }
+    [[nodiscard]] virtual bool should_switch_before_destroy() const { return false; }
     virtual bool prepare_durability_safe_finish() { return false; }
     virtual void stop_destroy_block() noexcept {}
     [[nodiscard]] virtual int selected_hotbar_slot() const noexcept { return -1; }
@@ -153,6 +196,31 @@ public:
         (void)slot; (void)target; (void)info; return false;
     }
     virtual bool select_hotbar_slot(int slot) { (void)slot; return false; }
+    // Slots 0-8 are the hotbar and 9-35 the main inventory.
+    [[nodiscard]] virtual bool inventory_item(int slot, InventoryItemInfo& info) const {
+        (void)slot; (void)info; return false;
+    }
+    [[nodiscard]] virtual bool inventory_screen_open() const { return false; }
+    // Independent Normal transaction, as Solstice: wait for server slot updates.
+    virtual bool swap_inventory_slots(int first, int second) { (void)first; (void)second; return false; }
+    // Armor slots 0-3 are helmet, chestplate, leggings and boots.
+    [[nodiscard]] virtual bool armor_item(int slot, InventoryItemInfo& info) const {
+        (void)slot; (void)info; return false;
+    }
+    virtual bool equip_armor(int inventory_slot, int armor_slot) { (void)inventory_slot; (void)armor_slot; return false; }
+    virtual bool drop_inventory_slot(int slot) { (void)slot; return false; }
+};
+
+// One chest screen for the duration of its native tick; never retained.
+class ContainerScreen {
+public:
+    static constexpr int slot_limit = 54;
+    virtual ~ContainerScreen() = default;
+    [[nodiscard]] virtual bool chest() const = 0;
+    [[nodiscard]] virtual bool slot_occupied(int slot) const = 0;
+    // The screen's own shift-click, into the player's inventory.
+    virtual bool take(int slot) = 0;
+    virtual bool close() = 0;
 };
 
 } // namespace medicon::sdk

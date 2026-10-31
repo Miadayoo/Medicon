@@ -3,6 +3,7 @@
 #include "medicon/modules/GameplayModule.hpp"
 
 #include <cstdint>
+#include <vector>
 
 namespace medicon {
 
@@ -14,6 +15,8 @@ public:
     [[nodiscard]] bool rotation_diagnostic(std::uintptr_t& target_id, float& yaw, float& pitch,
                                            bool& applied) const noexcept;
 
+    Setting& mode;
+    Setting& priority;
     Setting& range;
     Setting& cps;
     Setting& rotate;
@@ -29,6 +32,7 @@ private:
     std::uintptr_t local_id_ = 0;
     std::uintptr_t target_id_ = 0;
     float cooldown_ = 0.0F;
+    std::vector<std::uintptr_t> multi_targets_;
     std::uintptr_t diagnostic_target_id_ = 0;
     float diagnostic_yaw_ = 0.0F;
     float diagnostic_pitch_ = 0.0F;

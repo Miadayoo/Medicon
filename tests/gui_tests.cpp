@@ -1,6 +1,7 @@
 #include <medicon/core/ConfigStore.hpp>
 #include <medicon/core/ModuleManager.hpp>
 #include <medicon/gui/ArrayList.hpp>
+#include <medicon/gui/BlockCount.hpp>
 #include <medicon/gui/EdgeLit.hpp>
 #include <medicon/gui/GuiMath.hpp>
 #include <medicon/gui/Overlay.hpp>
@@ -153,6 +154,65 @@ void test_animation_primitives() {
     check(r.value() == half, "reversing keeps progress");
     check(close_to(ease_out_cubic(0.5F), 0.875, 1e-6), "easeOutCubic");
     check(clamp_dt(5.0) == 0.1F && clamp_dt(-1.0) == 0.0F, "dt clamp");
+
+    // The exact solution lands in the same place however the time is cut up.
+    Spring coarse{1.0F, 0.0F}, fine{1.0F, 0.0F};
+    coarse.step(0.0F, 250.0F, 0.34F, 0.12F);
+    for (int i = 0; i < 120; ++i) fine.step(0.0F, 250.0F, 0.34F, 0.001F);
+    check(close_to(coarse.value, fine.value, 1e-3) && close_to(coarse.velocity, fine.velocity, 1e-2), "spring depends on frame rate");
+    float lowest = coarse.value;
+    for (int i = 0; i < 200; ++i) { coarse.step(0.0F, 250.0F, 0.34F, 0.01F); lowest = std::min(lowest, coarse.value); }
+    check(lowest < -0.1F && close_to(coarse.value, 0.0, 1e-2), "spring must overshoot, then settle");
+}
+
+void test_block_count_motion() {
+    const BlockCountAnimator::Metrics metrics{20.0F, 25.0F, 54.0F};
+    const auto run = [&](BlockCountAnimator& glass, int count, float seconds) {
+        for (float t = 0.0F; t < seconds; t += 0.01F) glass.update(count, metrics, 0.0F, 0.01F);
+    };
+    BlockCountAnimator glass;
+    glass.update(-1, metrics, 0.0F, 0.01F);
+    check(!glass.visible(), "an unknown count shows no glass");
+
+    glass.update(100, metrics, 0.0F, 0.01F);
+    check(glass.visible() && close_to(glass.width(), 110.0, 0.5), "glass rises at its final width");
+    check(glass.digit(0).value == 0 && glass.digit(2).value == 1 && glass.digit(3).value < 0, "digits are stored by place");
+    check(glass.digit(0).progress == 1.0F, "the first digits do not roll in");
+    run(glass, 100, 1.5F);
+    check(close_to(glass.lens(), 1.0, 0.01) && close_to(glass.scale(), 1.0, 0.01), "glass settles fully formed");
+    check(close_to(glass.waist(), 0.0, 0.001) && close_to(glass.height(metrics), 54.0, 0.1), "resting glass is undeformed");
+
+    // Three digits to two: the pane closes past its size and rings back.
+    glass.update(99, metrics, 0.0F, 0.01F);
+    check(glass.digit(2).value < 0 && glass.digit(2).previous == 1 && glass.direction() < 0.0F, "the lost digit leaves");
+    float narrowest = glass.width(), tallest = 0.0F, brightest = 0.0F;
+    for (int i = 0; i < 150; ++i) {
+        glass.update(99, metrics, 0.0F, 0.01F);
+        narrowest = std::min(narrowest, glass.width());
+        tallest = std::max(tallest, glass.height(metrics));
+        brightest = std::max(brightest, glass.energy());
+    }
+    check(narrowest < 88.0F, "losing a digit must be elastic");
+    check(tallest > 56.0F, "closing in must swell the pane");
+    check(brightest > 0.3F, "losing a digit must energize the glass");
+    run(glass, 99, 2.0F);
+    check(close_to(glass.width(), 90.0, 0.05) && close_to(glass.energy(), 0.0, 0.01), "glass settles at its new size");
+
+    // Placing at full speed must stay a dent, never a stretch of the width.
+    float shallowest = 54.0F;
+    for (int blocks = 98; blocks > 80; --blocks) {
+        for (int i = 0; i < 10; ++i) {
+            glass.update(blocks, metrics, 0.0F, 0.01F);
+            shallowest = std::min(shallowest, glass.height(metrics));
+        }
+    }
+    check(shallowest > 50.0F && close_to(glass.width(), 90.0, 0.5), "single blocks only dent the glass");
+
+    glass.update(12345, metrics, 0.0F, 0.01F);
+    check(glass.digit(3).value == 9, "counts beyond four digits stay in the pane");
+
+    run(glass, -1, 2.0F);
+    check(!glass.visible(), "a dissolved pane stops drawing");
 }
 
 // --- 9.1 ArrayList sort ----------------------------------------------------------------
@@ -1049,6 +1109,7 @@ int main() {
         {"slider", test_slider},
         {"Velocity settings", test_velocity_settings},
         {"animation primitives", test_animation_primitives},
+        {"block count motion", test_block_count_motion},
         {"top navigation", test_top_nav},
         {"arraylist sort", test_arraylist_sort},
         {"arraylist animation", test_arraylist_animation},

@@ -82,6 +82,25 @@ inline float follow(float current, float target, float dt, float tau) {
     return std::abs(target - next) < 0.01F ? target : next;
 }
 
+// Damped oscillator, solved exactly each step so the motion does not depend on
+// the frame rate. A damping ratio below 1 (required) overshoots and rings.
+struct Spring {
+    float value = 0.0F;
+    float velocity = 0.0F;
+
+    void step(float target, float stiffness, float damping_ratio, float dt) {
+        const float omega = std::sqrt(stiffness);
+        const float decay = damping_ratio * omega;
+        const float ringing = omega * std::sqrt(1.0F - damping_ratio * damping_ratio);
+        const float offset = value - target;
+        const float fade = std::exp(-decay * dt);
+        const float c = std::cos(ringing * dt);
+        const float s = std::sin(ringing * dt);
+        value = target + fade * (offset * c + (velocity + decay * offset) / ringing * s);
+        velocity = fade * (velocity * c - (decay * velocity + stiffness * offset) / ringing * s);
+    }
+};
+
 // --- Slider (spec 4.5.2) ------------------------------------------------------
 
 inline int float_precision(float step) {

@@ -211,7 +211,7 @@ void render_esp(ImDrawList& draw, const EspModule& module, const sdk::GameplayFr
     if (!finite(frame.local.position) || color.a <= 0.0F) return;
 
     for (const auto& actor : frame.actors) {
-        if (!actor.alive || actor.local || (actor.id != 0 && actor.id == frame.local.id) ||
+        if (!actor.alive || actor.local || actor.bot || (actor.id != 0 && actor.id == frame.local.id) ||
             (module.players_only.get<bool>() && !actor.player) || !finite(actor.position)) continue;
         const double dx = static_cast<double>(actor.position.x) - frame.local.position.x;
         const double dy = static_cast<double>(actor.position.y) - frame.local.position.y;

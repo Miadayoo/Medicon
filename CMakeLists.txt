@@ -192,6 +192,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/DisconnectScreen.cpp
         src/gui/ArrayList.cpp
         src/gui/ArrayListAnimator.cpp
+        src/gui/BlockCount.cpp
         src/gui/ClickGui.cpp
         src/gui/Draw.cpp
         src/gui/EdgeLit.cpp
@@ -201,6 +202,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/Ime.cpp
         src/gui/InjectSplash.cpp
         src/gui/KeyNames.cpp
+        src/gui/LiquidGlass.cpp
         src/gui/Log.cpp
         src/gui/MainMenu.cpp
         src/gui/MusicWidget.cpp
@@ -352,6 +354,10 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_gameplay_visual_tests)
         target_link_libraries(medicon_gameplay_visual_tests PRIVATE medicon_gui)
         add_test(NAME gameplay_visuals COMMAND medicon_gameplay_visual_tests)
+        add_executable(medicon_liquid_glass_tests tests/liquid_glass_tests.cpp)
+        medicon_target(medicon_liquid_glass_tests)
+        target_link_libraries(medicon_liquid_glass_tests PRIVATE medicon_gui d3d12 dxgi)
+        add_test(NAME liquid_glass COMMAND medicon_liquid_glass_tests)
         add_executable(medicon_dll_tests tests/dll_tests.cpp)
         medicon_target(medicon_dll_tests)
         target_link_libraries(medicon_dll_tests PRIVATE medicon_imgui)
@@ -411,6 +417,7 @@ if(MEDICON_BUILD_WINDOWS)
             target_compile_options(medicon_music_native_tests PRIVATE -fms-extensions)
         endif()
         add_test(NAME music_native_art COMMAND medicon_music_native_tests)
+        add_test(NAME preview_block_count COMMAND MediconPreview --scenario block_count --size 1920x1080 --fixed-dt 0.01)
         add_test(NAME preview_music COMMAND MediconPreview --scenario music --size 1920x1080 --fixed-dt 0.016666667)
         add_test(NAME preview_music_small COMMAND MediconPreview --scenario music --size 640x480 --dpi 144 --fixed-dt 0.016666667)
         set_tests_properties(preview_music preview_music_small PROPERTIES TIMEOUT 30)

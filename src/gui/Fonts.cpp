@@ -190,6 +190,7 @@ float FontManager::role_size(FontRole role) const {
     case FontRole::Watermark: return sizes_.watermark;
     case FontRole::WatermarkSmall: return sizes_.watermark_small;
     case FontRole::WatermarkJapanese: return sizes_.watermark_japanese;
+    case FontRole::BlockCount: return sizes_.block_count;
     }
     return sizes_.module;
 }
@@ -414,7 +415,7 @@ bool FontManager::prepare(ImFontAtlas& atlas, const FontSizes& sizes) {
         if (!cjk_.valid) cjk_ = find_face("meiryo.ttc", "Meiryo UI", "Regular");
     }
 
-    const std::array<std::pair<FontWeight, float>, 13> required{{
+    const std::array<std::pair<FontWeight, float>, 14> required{{
         {role_weight(FontRole::Header), sizes.header},
         {role_weight(FontRole::Module), sizes.module},
         {role_weight(FontRole::KeyHint), sizes.key_hint},
@@ -428,6 +429,7 @@ bool FontManager::prepare(ImFontAtlas& atlas, const FontSizes& sizes) {
         {role_weight(FontRole::Watermark), sizes.watermark},
         {role_weight(FontRole::WatermarkSmall), sizes.watermark_small},
         {role_weight(FontRole::WatermarkJapanese), sizes.watermark_japanese},
+        {role_weight(FontRole::BlockCount), sizes.block_count},
     }};
     const bool glyphs_changed = codepoints_.size() != built_codepoints_;
     bool missing = false;
