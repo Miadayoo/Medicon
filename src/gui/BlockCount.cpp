@@ -13,8 +13,8 @@
 namespace medicon::gui {
 namespace {
 
-constexpr float reference_height = 56.0F;
-constexpr float reference_padding = 26.0F;
+constexpr float reference_height = 34.0F;
+constexpr float reference_padding = 16.0F;
 constexpr float vertical_position = 0.66F;       // of the client height, below the crosshair
 constexpr float light_angle = -2.19F;            // from the upper left
 constexpr float digit_seconds = 0.16F;
@@ -124,7 +124,7 @@ void BlockCount::render(GuiContext& context) {
         if (value < 0 || opacity <= 0.0F) return;
         const char text[]{static_cast<char>('0' + value), '\0'};
         const float inset = (cell - fonts.measure(FontRole::BlockCount, text)) * 0.5F;
-        fonts.draw(list, FontRole::BlockCount, x + inset, y + 2.0F * s, to_u32(Color{0.0F, 0.0F, 0.0F, 1.0F}, 0.45F * opacity), text, snap);
+        fonts.draw(list, FontRole::BlockCount, x + inset, y + 1.0F * s, to_u32(Color{0.0F, 0.0F, 0.0F, 1.0F}, 0.45F * opacity), text, snap);
         fonts.draw(list, FontRole::BlockCount, x + inset, y, to_u32(Color{1.0F, 1.0F, 1.0F, 1.0F}, opacity), text, snap);
     };
     for (std::size_t place = 0; place < BlockCountAnimator::digit_capacity; ++place) {
