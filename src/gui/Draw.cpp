@@ -98,6 +98,11 @@ void draw_category_icon(ImDrawList* list, Category category, ImVec2 center, floa
         line(-0.42F, -0.30F, -0.10F, 0); line(-0.10F, 0, -0.42F, 0.30F);
         line(0.05F, 0.30F, 0.46F, 0.30F);
         break;
+    case Category::Scripts:
+        line(-0.20F, -0.30F, -0.48F, 0); line(-0.48F, 0, -0.20F, 0.30F);
+        line(0.20F, -0.30F, 0.48F, 0); line(0.48F, 0, 0.20F, 0.30F);
+        line(0.10F, -0.45F, -0.10F, 0.45F);
+        break;
     }
 }
 

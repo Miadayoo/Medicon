@@ -20,6 +20,10 @@ MediconLoader に配る Core DLL の配信も、このサーバーで行えま�
 
 初回は生成された公開鍵ヘッダーで **MediconLoader をビルドし直して配布**してください。サーバーだけを配置した場合は `keys/ReleasePublicKey.hpp` に出力されるので、ビルド環境の `include/medicon/update/ReleasePublicKey.hpp` に反映します。DLL は `releases/<version>/MediconCore.dll` に永続保存され、再起動後も配信されます。詳細は [../docs/auto-update.md](../docs/auto-update.md) を参照してください。
 
+## Script SDK ドキュメント
+
+`GET /docs` で公開ドキュメント（`src/http/docs.html`）を配信します。サインイン不要の1ページで、外部のファイルやスクリプトは読み込みません。内容を変えたらサーバーを再起動してください。
+
 ## 必要なもの
 
 - Node.js 24 LTS 以降

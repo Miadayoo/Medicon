@@ -195,16 +195,62 @@ bool ConfigStore::load(ModuleManager& modules, std::string& error) const {
     }
 }
 
+bool ConfigStore::load_module(Module& module, std::string& error, bool* requested_enabled) const {
+    error.clear();
+    try {
+        if (!std::filesystem::exists(path_)) return true;
+        if (std::filesystem::file_size(path_) > 4 * 1024 * 1024) invalid("config", "exceeds 4 MiB");
+        std::ifstream stream(path_, std::ios::binary);
+        if (!stream) invalid("config", "cannot open");
+        const auto root = Json::parse(stream);
+        if (!root.is_object() || !root.contains("version")) invalid("config", "missing version");
+        (void)read_integer(root.at("version"), "version", 1, 1);
+        if (!root.contains("modules") || !root.at("modules").is_object()) invalid("modules", "expected an object");
+        const auto found = root.at("modules").find(module.id());
+        if (found == root.at("modules").end()) return true;
+        if (!found->is_object()) invalid(module.id(), "expected an object");
+        std::vector<std::pair<Setting*, Setting::Value>> pending;
+        if (found->contains("settings")) {
+            const auto& values = found->at("settings");
+            if (!values.is_object()) invalid(module.id(), "invalid settings");
+            for (auto& setting : module.settings()) if (values.contains(setting.id)) {
+                // A schema change to a script setting falls back to its new default.
+                try { pending.emplace_back(&setting, read_value(setting, values.at(setting.id), module.id() + "." + setting.id)); }
+                catch (const std::runtime_error&) { /* A different setting still restores. */ }
+            }
+        }
+        const auto key = found->contains("keybind") ? read_integer(found->at("keybind"), module.id(), 0, 255) : module.keybind();
+        if (found->contains("enabled") && !found->at("enabled").is_boolean()) invalid(module.id(), "invalid enabled state");
+        const bool enabled = found->value("enabled", false);
+        for (auto& [setting, value] : pending) setting->value.swap(value);
+        module.set_keybind(key);
+        if (requested_enabled) *requested_enabled = enabled;
+        else module.set_enabled(enabled);
+        return true;
+    } catch (const std::exception& e) { error = e.what(); return false; }
+}
+
 bool ConfigStore::save(const ModuleManager& modules, std::string& error) const {
     error.clear();
     try {
         Json root{{"version", 1}, {"modules", Json::object()}};
+        // Scripts arrive asynchronously and can temporarily be absent after an
+        // error/restart. Preserve their persisted IDs until they register again.
+        if (std::filesystem::exists(path_)) {
+            if (std::filesystem::file_size(path_) > 4 * 1024 * 1024) invalid("config", "exceeds 4 MiB");
+            std::ifstream existing(path_, std::ios::binary);
+            root = Json::parse(existing);
+            if (!root.is_object() || !root.contains("version")) invalid("config", "missing version");
+            (void)read_integer(root.at("version"), "version", 1, 1);
+            if (!root.contains("modules") || !root.at("modules").is_object()) invalid("modules", "expected an object");
+        }
         for (const auto& module : modules.all()) {
             Json settings = Json::object();
             for (const auto& setting : module->settings()) settings[setting.id] = write_value(setting);
             root["modules"][module->id()] = Json{{"enabled", module->enabled()},
                 {"keybind", module->keybind()}, {"settings", std::move(settings)}};
         }
+        if (modules.find("custommodel")) root["modules"].erase("custommodelprobe");
 
         if (const auto directory = path_.parent_path(); !directory.empty()) {
             std::filesystem::create_directories(directory);

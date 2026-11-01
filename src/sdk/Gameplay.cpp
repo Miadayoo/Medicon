@@ -71,6 +71,9 @@ constexpr std::size_t player_auth_input_interact_rotation_offset = 0x6C;
 // InputData's reserved upper 62 bits are checked before changing any bit, so
 // an unknown layout is passed through unchanged.
 constexpr std::size_t player_auth_input_flags_offset = 0x88;
+constexpr std::size_t player_auth_input_delta_offset = 0x48;
+constexpr std::size_t player_auth_input_vehicle_rotation_offset = 0x54;
+constexpr std::size_t player_auth_input_mode_offset = 0x98;
 constexpr std::uint32_t invisible_flag = 5; // ActorFlags::Invisible
 constexpr std::uint32_t sprinting_input_bit = 20;
 constexpr std::uint32_t start_sprinting_input_bit = 25;
@@ -496,6 +499,76 @@ bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float y
     return true;
 }
 
+bool write_gameplay_move_fix_input(std::uintptr_t packet, bool& sprinting) noexcept {
+    Vec2 rotation{}, original_move{}, original_vehicle{};
+    Vec3 delta{};
+    std::array<std::uint64_t, 2> original_flags{};
+    std::int32_t original_mode{};
+    if (!read_at(packet, player_auth_input_rotation_offset, rotation) ||
+        !read_at(packet, player_auth_input_delta_offset, delta) ||
+        !read_at(packet, player_auth_input_move_offset, original_move) ||
+        !read_at(packet, player_auth_input_vehicle_rotation_offset, original_vehicle) ||
+        !read_at(packet, player_auth_input_flags_offset, original_flags) ||
+        !read_at(packet, player_auth_input_mode_offset, original_mode) ||
+        !std::isfinite(rotation.x) || !std::isfinite(rotation.y) ||
+        std::abs(rotation.x) > 180 || std::abs(rotation.y) > 360000 ||
+        !valid_position(delta) || !std::isfinite(original_move.x) || !std::isfinite(original_move.y) ||
+        std::abs(original_move.x) > 1.01F || std::abs(original_move.y) > 1.01F ||
+        !std::isfinite(original_vehicle.x) || !std::isfinite(original_vehicle.y) ||
+        (original_flags[1] & ~std::uint64_t{3}) != 0 || original_mode < 0 || original_mode > 4)
+        return false;
+
+    const auto bit = [](unsigned index) { return std::uint64_t{1} << index; };
+    auto flags = original_flags;
+    bool next_sprinting = sprinting;
+    if (flags[0] & bit(start_sprinting_input_bit)) next_sprinting = true;
+    else if (flags[0] & bit(stop_sprinting_input_bit)) next_sprinting = false;
+    else if (flags[0] & bit(sprinting_input_bit)) next_sprinting = true;
+
+    const bool has_input = original_move.x != 0 || original_move.y != 0;
+    const float motion = std::hypot(delta.x, delta.z);
+    if (!has_input && motion == 0) { sprinting = next_sprinting; return true; }
+
+    Vec2 move{};
+    if (has_input) {
+        move = original_move;
+        // With no horizontal displacement, retain the input rather than invent
+        // a direction from atan2(0, 0). Motion-only packets keep zero input.
+        if (motion > 0.000001F) {
+            const float yaw = std::remainder(rotation.y, 360.0F) * degrees_to_radians;
+            const float sine = std::sin(yaw), cosine = std::cos(yaw);
+            move = {(delta.x * cosine + delta.z * sine) / motion,
+                    (delta.z * cosine - delta.x * sine) / motion};
+        }
+        if (std::abs(move.x) < 0.001F) move.x = 0;
+        if (std::abs(move.y) < 0.001F) move.y = 0;
+    }
+    // Motion-controller input supplies its continuous direction in mMove.
+    // Remove Up/Down/Left/Right/UpLeft/UpRight left over from keyboard input.
+    flags[0] &= ~(std::uint64_t{0x3F} << 10);
+    if (move.y <= 0) {
+        flags[0] &= ~(bit(sprinting_input_bit) | bit(start_sprinting_input_bit) | bit(27));
+        if (next_sprinting) flags[0] |= bit(stop_sprinting_input_bit);
+        next_sprinting = false;
+    }
+
+    const auto restore = [&] {
+        (void)write_at(packet, player_auth_input_move_offset, original_move);
+        (void)write_at(packet, player_auth_input_vehicle_rotation_offset, original_vehicle);
+        (void)write_at(packet, player_auth_input_flags_offset, original_flags);
+        (void)write_at(packet, player_auth_input_mode_offset, original_mode);
+    };
+    if (!write_at(packet, player_auth_input_move_offset, move) ||
+        !write_at(packet, player_auth_input_vehicle_rotation_offset, move) ||
+        !write_at(packet, player_auth_input_flags_offset, flags) ||
+        !write_at(packet, player_auth_input_mode_offset, std::int32_t{4})) {
+        restore();
+        return false;
+    }
+    sprinting = next_sprinting;
+    return true;
+}
+
 RenderPitchScope::RenderPitchScope(std::uintptr_t rotation_component, float pitch) noexcept {
     if (!rotation_component || !std::isfinite(pitch) ||
         !read_at(rotation_component, 0, original_pitch_) ||
@@ -532,6 +605,7 @@ struct BedrockGameplay::Impl {
     std::uintptr_t render_position = 0;
     std::atomic_bool sprint_packet_override{};
     std::atomic_bool sprint_packet_last_state{};
+    std::atomic_bool move_fix_sprinting{};
     std::uintptr_t packet_send_target{};
     void(*packet_send_original)(void*, void*){};
     VelocityTraceObserver velocity_observer{};
@@ -1207,6 +1281,7 @@ InventoryDiagnostic BedrockGameplay::inventory_diagnostic() const noexcept { ret
 
 void BedrockGameplay::clear() noexcept {
     impl_->server_rotation.store(no_server_rotation, std::memory_order_release);
+    impl_->move_fix_sprinting.store(false, std::memory_order_release);
     impl_->diagnostic_local_game_mode.store(0, std::memory_order_release);
     impl_->active = false;
     impl_->switched_this_tick = false;
@@ -2144,6 +2219,31 @@ RotationInputRewrite BedrockGameplay::rewrite_rotation_input(void* packet, bool 
     const auto pitch = std::bit_cast<float>(static_cast<std::uint32_t>(angles >> 32));
     return detail::write_gameplay_rotation_input(address, id, yaw, pitch, vector_fix)
         ? RotationInputRewrite::rewritten : RotationInputRewrite::layout_rejected;
+}
+
+MoveFixInputRewrite BedrockGameplay::rewrite_move_fix_input(void* packet, bool enabled) noexcept {
+    auto& state = *impl_;
+    if (!enabled) {
+        state.move_fix_sprinting.store(false, std::memory_order_release);
+        return MoveFixInputRewrite::ignored;
+    }
+    if (!state.supported || !packet) return MoveFixInputRewrite::ignored;
+    const auto address = reinterpret_cast<std::uintptr_t>(packet);
+    const auto get_id = state.method(address, 1);
+    if (!get_id) return MoveFixInputRewrite::ignored;
+    using GetId = int(__fastcall*)(void*);
+    if (reinterpret_cast<GetId>(get_id)(packet) != player_auth_input_packet_id)
+        return MoveFixInputRewrite::ignored;
+    constexpr std::array<unsigned char, 6> get_id_code{0xB8, 144, 0, 0, 0, 0xC3};
+    std::uintptr_t vtable{};
+    if (!read_at(address, 0, vtable) || !state.image.contains(vtable) ||
+        vtable - state.image.address != 0xE83A360 || !state.native_identity(get_id, 0xB26A00, get_id_code))
+        return MoveFixInputRewrite::layout_rejected;
+    bool sprinting = state.move_fix_sprinting.load(std::memory_order_acquire);
+    if (!detail::write_gameplay_move_fix_input(address, sprinting))
+        return MoveFixInputRewrite::layout_rejected;
+    state.move_fix_sprinting.store(sprinting, std::memory_order_release);
+    return MoveFixInputRewrite::rewritten;
 }
 
 bool BedrockGameplay::read_rotation_movement(void* packet, RotationMovementSample& sample) const noexcept {

@@ -4,6 +4,7 @@
 #include "medicon/modules/AimbotModule.hpp"
 #include "medicon/modules/AntiBotModule.hpp"
 #include "medicon/modules/DerpModule.hpp"
+#include "medicon/modules/DisablerModule.hpp"
 #include "medicon/modules/KillauraModule.hpp"
 #include "medicon/modules/ScaffoldModule.hpp"
 #include "medicon/modules/RegenModule.hpp"

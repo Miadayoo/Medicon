@@ -111,7 +111,13 @@ void BlockCount::render(GuiContext& context) {
     glass.energy = animator_.energy();
     glass.light = animator_.light();
     glass.opacity = animator_.opacity();
-    publish_liquid_glass(glass);
+    // Only High Contrast replaces the glass. The Windows transparency switch stays
+    // off on many desktops and says nothing about a HUD asked for as Liquid Glass.
+    if(accessibility_preferences.high_contrast) {
+        GlassPlate plate; plate.accent=false; plate.fill={0.0F,0.0F,0.0F,1.0F}; plate.fill_opacity=1; plate.alpha=glass.opacity;
+        draw_glass_plate(context.draw_list,{center.x-glass.size.x*.5F,center.y-glass.size.y*.5F},
+            {center.x+glass.size.x*.5F,center.y+glass.size.y*.5F},glass.size.y*.5F,plate);
+    } else publish_liquid_glass(glass);
 
     // Digits sit in equal cells from the right edge, which the spring moves.
     auto* list = context.draw_list;

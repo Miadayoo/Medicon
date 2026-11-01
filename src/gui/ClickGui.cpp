@@ -458,8 +458,8 @@ struct ClickGui::Impl {
         PanelPoint old{36.0F, 42.0F};
         int count = 0;
         for (std::size_t i = 0; i < panels.size(); ++i) {
-            if (!panels[i].present) continue;
-            if (!placed(static_cast<int>(i)) || stored_x(static_cast<int>(i)) != old.x || stored_y(static_cast<int>(i)) != old.y) return;
+            if (!panels[i].present || !placed(static_cast<int>(i))) continue;
+            if (stored_x(static_cast<int>(i)) != old.x || stored_y(static_cast<int>(i)) != old.y) return;
             ++count;
             old.x += 162.0F;
             if (old.x + 150.0F > frame.client_w / scale) { old.x = 36.0F; old.y += 540.0F; }
@@ -1639,6 +1639,20 @@ struct ClickGui::Impl {
 
 ClickGui::ClickGui(ModuleManager& modules) : impl_(std::make_unique<Impl>(modules)) {}
 ClickGui::~ClickGui() = default;
+
+void ClickGui::forget_module(const Module& module) {
+    auto& d = *impl_;
+    if (d.overlay.module == &module) d.close_overlay();
+    if (d.capture == &module) d.capture = nullptr;
+    if (d.hovered.module == &module) d.hovered = {};
+    if (d.press && d.press->target.module == &module) d.press.reset();
+    if (d.pending_overlay.first == &module) d.pending_overlay = {nullptr, -1};
+    d.module_ui.erase(&module);
+    for (auto& panel : d.panels) {
+        std::erase(panel.modules, &module);
+        std::erase_if(panel.layout.modules, [&](const auto& row) { return row.module == &module; });
+    }
+}
 
 void ClickGui::render(gui::GuiContext& context) { impl_->render(context); }
 

@@ -305,6 +305,47 @@ void relative_mouse_pointer_tracks_no_legacy_motion() {
           "A one-pixel viewport did not clamp relative coordinates");
 }
 
+void relative_mouse_pointer_can_leave_a_window() {
+    medicon::platform::RelativeMousePointer pointer;
+    // An 800x600 client at (200,150) on a 1920x1080 desktop. The desktop
+    // bounds, expressed in client coordinates, extend past all four edges.
+    const auto move = [&](int dx, int dy, int seed_x = 799, int seed_y = 599) {
+        return pointer.move_within(dx, dy, -200, -150, 1720, 930, seed_x, seed_y);
+    };
+    check(move(20, 20) && pointer.x() == 819 && pointer.y() == 619,
+          "Windowed raw motion was trapped at the right/bottom client edge");
+    check(move(0, 0) && pointer.x() == 819 && pointer.y() == 619,
+          "A raw button packet recentered a pointer outside the window");
+    check(move(-850, -650) && pointer.x() == -31 && pointer.y() == -31,
+          "Windowed raw motion was trapped at the left/top client edge");
+    check(move(50, 60) && pointer.x() == 19 && pointer.y() == 29,
+          "The pointer could not return to the client from the desktop");
+    pointer.reset();
+    check(move(5, -5, 1071, 1056 - 150) && pointer.x() == 1076 && pointer.y() == 901,
+          "An off-client desktop seed was replaced with the window center");
+    check(move(10000, 10000) && pointer.x() == 1719 && pointer.y() == 929,
+          "Relative motion escaped the desktop's right/bottom edges");
+    check(move(-1, -1) && pointer.x() == 1718 && pointer.y() == 928,
+          "Desktop-edge overshoot consumed motion back toward the window");
+    check(move(-10000, -10000) && pointer.x() == -200 && pointer.y() == -150,
+          "Relative motion escaped the desktop's left/top edges");
+    check(move(1, 1) && pointer.x() == -199 && pointer.y() == -149,
+          "Negative desktop-edge overshoot consumed motion back toward the window");
+
+    pointer.reset();
+    check(pointer.move_within(-2000, -1000, -2120, -1230, 1720, 930, 10, 10) &&
+              pointer.x() == -1990 && pointer.y() == -990,
+          "A monitor left/above the primary display was inaccessible");
+    pointer.reset();
+    constexpr auto largest = std::numeric_limits<int>::max();
+    constexpr auto smallest = std::numeric_limits<int>::min();
+    check(pointer.move_within(largest, smallest, smallest, smallest, largest, largest, 10, -10) &&
+              pointer.x() == largest - 1 && pointer.y() == smallest,
+          "Signed desktop bounds overflowed during relative motion");
+    check(!pointer.move_within(0, 0, -200, -150, -200, 930, 0, 0) && !pointer.active(),
+          "An empty desktop retained active relative motion");
+}
+
 #ifdef _WIN32
 void direct_raw_mouse_reads_are_stationary_for_the_game() {
     RAWINPUT raw{};
@@ -429,6 +470,7 @@ int main() {
         raw_motion_is_not_clickgui_wheel();
         relative_pointer_owns_overlay_motion();
         relative_mouse_pointer_tracks_no_legacy_motion();
+        relative_mouse_pointer_can_leave_a_window();
 #ifdef _WIN32
         direct_raw_mouse_reads_are_stationary_for_the_game();
         only_pointer_motion_reuses_published_menu_state();

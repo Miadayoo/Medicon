@@ -96,6 +96,9 @@ public:
     SocialScreen& screen() noexcept { return screen_; }
     void preview_badge(bool shown) noexcept { badge_preview_ = shown; }
     ToastManager& toasts() noexcept { return toasts_; }
+    bool script_notification(std::string_view owner,std::uint64_t generation,std::string_view title,std::string_view body,
+                             FontManager& fonts,bool in_menu);
+    bool script_sound(bool in_menu);
     MusicWidget& music() noexcept { return music_; }
 
     // social.json "debugTiming": microseconds spent in pump() + render() per frame.
@@ -143,6 +146,7 @@ private:
     std::vector<social::Event> scratch_;
     bool fonts_requested_ = false;
     std::chrono::steady_clock::time_point last_sound_{};
+    std::chrono::steady_clock::time_point last_script_notification_{};
     double frame_us_ = 0.0;
     Timing timing_{};
 };

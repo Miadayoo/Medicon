@@ -4,6 +4,9 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
+#include <span>
+#include <cstdint>
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;
@@ -22,12 +25,21 @@ struct LiquidGlassFrame {
     float energy = 0.0F;  // 0..1, light caught inside the glass
     float light = 0.0F;   // direction of the light on screen, radians
     float opacity = 1.0F;
+    float radius = -1.0F; // negative preserves the native capsule
+    std::string owner;
+    std::uint64_t generation = 0;
 };
 
 // Same lifetime as an Edge-lit frame: it belongs to the current ImGui context
 // and frame, so a widget that stops publishing simply stops drawing.
-void publish_liquid_glass(const LiquidGlassFrame& frame);
+bool publish_liquid_glass(const LiquidGlassFrame& frame);
 const LiquidGlassFrame* current_liquid_glass();
+std::span<const LiquidGlassFrame> current_liquid_glass_frames();
+void remove_liquid_glass(std::string_view owner, std::uint64_t generation);
+// The pass has nothing left to load. Hosts use this to skip it on idle frames.
+bool liquid_glass_warm();
+// Whether scripts may use glass: warm, and the user's Windows settings allow it.
+bool liquid_glass_ready();
 void forget_liquid_glass(ImGuiContext* context);
 
 // Refracts the finished scene through the pane. Runs before the ImGui pass, so
@@ -41,6 +53,8 @@ public:
     LiquidGlassD3D11& operator=(const LiquidGlassD3D11&) = delete;
     bool render(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* backBuffer,
                 ID3D11RenderTargetView* target, const LiquidGlassFrame& frame, std::string& error);
+    bool render(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* backBuffer,
+                ID3D11RenderTargetView* target, std::span<const LiquidGlassFrame> frames, std::string& error);
     void reset();
     // Its shaders are compiled and have been through the driver once.
     [[nodiscard]] bool loaded() const noexcept;
@@ -48,6 +62,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    ImGuiContext* context_ = nullptr;
 };
 
 } // namespace medicon::gui

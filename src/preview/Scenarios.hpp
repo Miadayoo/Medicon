@@ -37,9 +37,11 @@ public:
     virtual void log(const std::string& line) = 0;
     // Runs at the start of every frame until replaced (timed scenarios that keep input going).
     virtual void set_frame_hook(std::function<void()> hook) = 0;
+    virtual void set_ui_hook(std::function<void()> hook) = 0;
 };
 
 std::vector<std::string> scenario_names();
+void run_script_scenario(ScenarioHost& host, bool capture);
 // Sets up the named scenario and drives frames/captures. Returns false if unknown.
 bool run_scenario(const std::string& name, ScenarioHost& host, bool capture);
 // Scripted Win32-message input checks (spec 9.4). Returns the number of failures.

@@ -4,6 +4,24 @@
 
 namespace medicon {
 
+Module& ModuleManager::adopt(std::unique_ptr<Module> module) {
+    if (!module || find(module->id())) throw std::invalid_argument("Null or duplicate runtime module");
+    auto& result = *module;
+    modules_.push_back(std::move(module));
+    return result;
+}
+
+std::unique_ptr<Module> ModuleManager::extract(std::string_view id) {
+    for (auto it = modules_.begin(); it != modules_.end(); ++it) {
+        if ((*it)->id() != id) continue;
+        (*it)->set_enabled(false);
+        auto result = std::move(*it);
+        modules_.erase(it);
+        return result;
+    }
+    return {};
+}
+
 Module* ModuleManager::find(std::string_view id) noexcept {
     if (id == "custommodelprobe") id = "custommodel"; // Legacy command/config name.
     for (const auto& module : modules_) if (module->id() == id) return module.get();

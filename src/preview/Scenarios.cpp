@@ -2057,12 +2057,13 @@ struct Tester {
 } // namespace
 
 std::vector<std::string> scenario_names() {
-    std::vector<std::string> names;
+    std::vector<std::string> names{"scripts"};
     for (const auto& [name, runner] : scenarios()) names.push_back(name);
     return names;
 }
 
 bool run_scenario(const std::string& name, ScenarioHost& host, bool capture) {
+    if (name == "scripts") { run_script_scenario(host, capture); return true; }
     const auto found = scenarios().find(name);
     if (found == scenarios().end()) return false;
     found->second(host, capture);

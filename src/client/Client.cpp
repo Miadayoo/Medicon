@@ -14,6 +14,7 @@
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/VelocityModule.hpp>
 #include <medicon/gui/GameplayVisuals.hpp>
+#include <medicon/gui/ScriptScreen.hpp>
 #include <medicon/memory/module_view.hpp>
 #include <Windows.h>
 #include <ShlObj.h>
@@ -129,10 +130,20 @@ private:
 } // namespace
 
 Client::Client(std::filesystem::path path)
-    : config_(std::move(path)), commands_(modules_, config_.path().parent_path() / "configs"), overlay_(modules_) {
+    : config_(std::move(path)), commands_(modules_, config_.path().parent_path() / "configs"), overlay_(modules_), scripts_(modules_, config_.path()) {
     register_builtin_modules(modules_);
     // The GUI requests saves on discrete changes (drag end, toggle, close) — never per frame.
     overlay_.set_save_handler([this] { save_config(); });
+    gui::attach_script_gui(scripts_, overlay_.gui(), &overlay_.fonts(),&overlay_);
+    scripts_.host().world_identity=[this]{return gameplay_frame_.world_identity;};
+    scripts_.set_save_handler([this] { save_config(); });
+    scripts_.host().player = [this]() -> std::optional<MediconPlayerSnapshot> {
+        const auto* frame = gameplay_snapshot();
+        if (!frame) return std::nullopt;
+        const auto& p = frame->local;
+        return MediconPlayerSnapshot{p.position.x,p.position.y,p.position.z,p.velocity.x,p.velocity.y,p.velocity.z,
+            p.health,frame->yaw,frame->pitch,p.alive ? 1u : 0u};
+    };
 }
 
 Client::~Client() { stop(); }
@@ -162,6 +173,7 @@ bool Client::start() {
     overlay_.set_main_menu_active(false);
     overlay_.start_splash();
     running_ = true;
+    scripts_.start();
     return true;
 }
 
@@ -171,6 +183,7 @@ bool Client::stop() {
     overlay_.set_main_menu_active(false);
     // Save enabled state before shutdown invokes module disable callbacks.
     const bool saved = !config_writable_ || config_.save(modules_, error_);
+    scripts_.stop();
     modules_.shutdown();
     clear_gameplay();
     running_ = false;
@@ -183,6 +196,10 @@ void Client::tick(float seconds) {
     elapsed_ += seconds;
     gameplay_age_ += seconds;
     if (gameplay_age_ > 0.25F) clear_gameplay();
+    scripts_.host().features = (scripts_.host().features&~(MEDICON_FEATURE_CHAT|MEDICON_FEATURE_PLAYER)) | MEDICON_FEATURE_RENDER |
+        ((script_chat_available_ && script_chat_available_()) ? MEDICON_FEATURE_CHAT : 0) |
+        (((script_player_available_ && script_player_available_()) || gameplay_frame_.ready) ? MEDICON_FEATURE_PLAYER : 0);
+    scripts_.pump();
     modules_.tick(seconds);
 }
 
@@ -279,11 +296,15 @@ void Client::render() {
     gui::render_gameplay_visuals(modules_, gameplay_frame_, elapsed_, partial_tick);
     modules_.render();
     overlay_.render();
+    scripts_.render_ui();
 }
 
 bool Client::key_event(int key, bool pressed, bool repeat) {
     if (!running_) return false;
-    return overlay_.key_event(key, pressed, repeat);
+    scripts_.record_key_event(key,pressed);
+    const bool owned = overlay_.key_event(key, pressed, repeat);
+    if (!owned) scripts_.key_event(key, pressed, repeat);
+    return owned;
 }
 
 CommandResult Client::execute_command(std::string_view input) {

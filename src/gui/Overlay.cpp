@@ -70,7 +70,7 @@ void Overlay::set_main_menu_active(bool active) noexcept {
 
 bool Overlay::allows_game_movement() const noexcept {
     return gui_.open() && !main_menu_.active() && !disconnect_.visible() && !social_.screen_visible() && !social_.screen_open() &&
-        !gui_.capturing_keybind() && (!ImGui::GetCurrentContext() || !ImGui::GetIO().WantTextInput);
+        !gui_.capturing_keybind() && !script_ui_focused_ && (!ImGui::GetCurrentContext() || !ImGui::GetIO().WantTextInput);
 }
 
 void Overlay::set_disconnect_state(bool visible,bool available,std::uint64_t generation,std::string error) {
@@ -199,6 +199,7 @@ void Overlay::collect_text() {
 }
 
 bool Overlay::prepare_frame() {
+    refresh_accessibility_preferences();
     frame_ = compute_frame();
     const bool splash = splash_.active();
     if (!splash) splash_glyphs_sealed_ = false;
@@ -222,6 +223,7 @@ bool Overlay::prepare_frame() {
 }
 
 void Overlay::render() {
+    script_ui_focused_=false;
     frame_ = compute_frame();
     frame_.dt = clock_.tick();
     if (!sizes_ready_) prepared_sizes_ = font_sizes(frame_);

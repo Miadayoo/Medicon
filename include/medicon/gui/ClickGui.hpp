@@ -63,6 +63,8 @@ public:
     /// Replaces the automatic settings of one module with an ImGui window shown while
     /// the module is expanded. Call render_settings() inside to include the defaults.
     void set_module_settings_renderer(std::string module_id, ModuleSettingsCallback draw);
+    // Clear every borrowed UI reference before a runtime module is destroyed.
+    void forget_module(const Module& module);
     void set_status(std::string status);
     [[nodiscard]] const std::string& status() const noexcept;
 

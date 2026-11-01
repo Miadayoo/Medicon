@@ -6,6 +6,7 @@
 #include "medicon/modules/ExampleModule.hpp"
 #include "medicon/modules/EspModule.hpp"
 #include "medicon/modules/VelocityModule.hpp"
+#include "medicon/modules/DisablerModule.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -368,6 +369,29 @@ void test_events() {
 
 } // namespace
 
+void test_disabler_config() {
+    ModuleManager modules;
+    register_builtin_modules(modules);
+    auto* disabler = dynamic_cast<DisablerModule*>(modules.find(DisablerModule::module_id));
+    check(disabler && disabler->category() == Category::Misc && !disabler->move_fix_enabled(),
+          "Disabler must be registered in Misc and disabled by default");
+    check(disabler->mode.get<Choice>() == Choice{0, {"Flareon"}} && disabler->suffix() == "Flareon",
+          "Disabler must expose the Flareon mode");
+    disabler->set_enabled(true);
+    check(disabler->move_fix_enabled(), "Enabling Disabler must activate MoveFix");
+    disabler->move_fix.get<bool>() = false;
+    check(!disabler->move_fix_enabled(), "MoveFix toggle did not release packet control");
+    TestDirectory directory;
+    ConfigStore store(directory.path / "config.json");
+    std::string error;
+    check(store.save(modules, error), "Could not save Disabler settings");
+    ModuleManager restored;
+    auto& loaded = restored.add<DisablerModule>();
+    check(store.load(restored, error) && loaded.enabled() && !loaded.move_fix_enabled() &&
+          !loaded.move_fix.get<bool>() && loaded.mode.get<Choice>().index == 0,
+          "Disabler settings did not survive a config round trip");
+}
+
 void test_watermark_defaults() {
     ModuleManager modules;
     register_builtin_modules(modules);
@@ -390,6 +414,7 @@ void test_watermark_defaults() {
 int main() {
     try {
         test_modules();
+        test_disabler_config();
         test_watermark_defaults();
         test_config_round_trip();
         test_config_validation();

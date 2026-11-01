@@ -4,6 +4,7 @@
 // value mapping. No ImGui dependency so it can be unit tested directly.
 
 #include "medicon/gui/Theme.hpp"
+#include "medicon/gui/Accessibility.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +61,7 @@ struct Reversible {
     float p = 0.0F;
 
     void step(bool forward, float dt, float open_seconds, float close_seconds) {
+        if(accessibility_preferences.reduced_motion) { snap(forward); return; }
         if (forward) p += open_seconds > 0.0F ? dt / open_seconds : 1.0F;
         else p -= close_seconds > 0.0F ? dt / close_seconds : 1.0F;
         p = std::clamp(p, 0.0F, 1.0F);
@@ -71,12 +73,14 @@ struct Reversible {
 
 // Linear tween toward 0 or 1 (hover/enabled colours).
 inline float tween(float current, bool target, float dt, float seconds) {
+    if(accessibility_preferences.reduced_motion) return target ? 1.F : 0.F;
     const float delta = seconds > 0.0F ? dt / seconds : 1.0F;
     return target ? std::min(1.0F, current + delta) : std::max(0.0F, current - delta);
 }
 
 // Exponential follow: x += (target - x) * (1 - exp(-dt / tau)).
 inline float follow(float current, float target, float dt, float tau) {
+    if(accessibility_preferences.reduced_motion) return target;
     if (tau <= 0.0F) return target;
     const float next = current + (target - current) * (1.0F - std::exp(-dt / tau));
     return std::abs(target - next) < 0.01F ? target : next;
@@ -89,6 +93,7 @@ struct Spring {
     float velocity = 0.0F;
 
     void step(float target, float stiffness, float damping_ratio, float dt) {
+        if(accessibility_preferences.reduced_motion) { value=target; velocity=0; return; }
         const float omega = std::sqrt(stiffness);
         const float decay = damping_ratio * omega;
         const float ringing = omega * std::sqrt(1.0F - damping_ratio * damping_ratio);

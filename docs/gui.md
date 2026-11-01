@@ -34,7 +34,7 @@
 
 Watermark（`watermark`、Client カテゴリ、既定で ON）はゲーム中だけ左上に出る HUD です。メインメニューのボタンと同じガラスプレート（`draw_glass_plate`：ミルキーな白の塗り、白い 1px の縁、左の水色のアクセントライン、柔らかい青のドロップ）に、メインメニューと同じ DynaPuff で「Medicon」（21px、`#80C9FF`）とバージョン（11px、灰色がかった青）を載せます。バージョンは MediconLoader が起動時に取得・署名検証した更新サーバーの manifest の最新版（`MediconLoaderGetStatus` の `latest_version`）を使い、オフラインなどで取れなかったときは起動した Core のバージョン、ローダーなしで注入したときはビルドのバージョンを出します。Core 自身は通信しません。高さ 40・角丸 14・画面端から 16（すべて HUD スケール × `scale`）。影は `#A9D9FF` のぼかし、Glow は淡い青の光とアクセントラインのにじみで、どちらもメッシュをワーカーで1回作って使い回します。表示時は 250 ms の EaseOutCubic で不透明度 0→1・Y −5→0・拡大 0.97→1、OFF にすると同じ動きを逆に再生します。設定は `version`（ON）、`fps`（OFF、0.5 秒ごとに更新）、`ping`（OFF、取得元がまだないため現在は何も出ません）、`shadow`、`glow`、`scale`（0.75〜1.5）、`opacity`（0.5〜1.0）。項目が増えるとプレートの幅が合わせて伸びます。ゲーム画面の背景ブラーは描画基盤が対応していないため使わず、塗りと影で質感を出しています。DynaPuff は同梱の太さが Medium だけなので、太字にはしていません。
 
-`mode` を `Japanese` にするとプレートの代わりに、注入アニメーションのタイトルと同じ見た目（`kawai.otf`、白い塗りに `#9C6BB8` の縁取り）で「めじこん」（30px）を出し、`glow` がオンなら周りに淡い紫の光を足します。光は文字をずらして重ねたリングで作るので、文字の形に沿います。詳細は文字の右に、読めるよう同じ縁取りを付けて並べます。動きは `Plate` と同じで、`shadow` は対象のプレートがないため設定から隠れます。
+`mode` は既定が `medicon` です。`めじこん` にするとプレートの代わりに、注入アニメーションのタイトルと同じ見た目（`kawai.otf`、白い塗りに `#9C6BB8` の縁取り）で「めじこん」（30px）を出し、`glow` がオンなら周りに淡い紫の光を足します。光は文字をずらして重ねたリングで作るので、文字の形に沿います。詳細は文字の右に、読めるよう同じ縁取りを付けて並べます。動きは `medicon` と同じで、`shadow` は対象のプレートがないため設定から隠れます。
 
 ArrayList 自体の設定は `accentA`（`#FF4FA0`）、`accentB`（`#8B6BFF`）、`glow`（1.0、0〜1.6）、`shadow`（1.0、0〜1.6）、`pulse`（ON）、`scale`（1.0、0.5〜2.0）の 6 つです。行は高さ 24・隙間 0、名前は Geist SemiBold 15px・モードは Geist Mono Medium 12px、右揃えの幅順。すべての寸法は実画面 px に `scale` だけを掛け、GUI Scale や DPI から独立しています。従来の位置・文字サイズ・背景表示・Suffix 表示などの個別設定は使いません。
 
@@ -82,6 +82,8 @@ edge_lit.render(device, immediate_context, back_buffer, render_target, error);
 キーは Win32 virtual-key で `overlay.key_event(vk, down, repeat)` に渡します（GUI → Module ホットキーの順にルーティング）。戻り値が `true` のキーはゲームに渡さないでください。Mouse4/5 は `VK_XBUTTON1/2` として渡すと Module のキーに使えます。フォーカス喪失時は `modules.reset_keys()`。DLL では同じ順序を C API（`MediconPrepareFrame` → `MediconFrame` → `MediconRenderEdgeLitD3D11`、入力は `MediconKeyEvent`）で行います。
 
 ClickGUI 表示中も `W/A/S/D`、Space、Shift、Ctrl で移動できます。文字入力欄・キー割り当て中、Social 画面、Medicon のメインメニューでは移動入力を遮断します。GUI 内のマウス操作は通常メッセージ・Raw Input・ボタン状態の直接取得を通じてゲームへ漏れないよう処理し、閉じる際は実カーソルをゲーム側の基準位置へ戻してから視点入力を再開します。GUI で押したボタンは、閉じた後も離すまで GUI 側が所有します。
+
+ClickGUI / Social / Medicon メインメニューの表示中はカーソルのウィンドウ内固定を解除します。Raw Input の相対座標も仮想デスクトップ全体を移動でき、ウィンドウ外へ出ても中央へ戻しません。ウィンドウ外で始まったクリック・ホイールは Raw Input から GUI に転送せず、GUI 内で始めたドラッグのボタン解放は外側でも処理します。
 
 ゲーム内部にもマウス入力のキューと視点更新があるため、対応する1.26.52.3では両方の入口でも遮断します。根拠とテストは [native-gui-input.md](native-gui-input.md) を参照してください。
 

@@ -1,3 +1,4 @@
+#include <medicon/gui/Accessibility.hpp>
 #include <medicon/gui/EdgeLit.hpp>
 #include <medicon/gui/LiquidGlass.hpp>
 
@@ -70,12 +71,12 @@ struct Image {
 };
 
 Image render_once(const Target& target, LiquidGlassD3D11& glass, ID3D11RenderTargetView* view,
-                  const LiquidGlassFrame& frame, ID3D11Texture2D* staging) {
+                  std::span<const LiquidGlassFrame> frames, ID3D11Texture2D* staging) {
     const auto scene = stripes();
     target.acquire();
     target.context->UpdateSubresource(target.texture, 0, nullptr, scene.data(), width * 4, 0);
     std::string error;
-    const bool drawn = glass.render(target.device, target.context, target.texture, view, frame, error);
+    const bool drawn = glass.render(target.device, target.context, target.texture, view, frames, error);
     if (drawn) target.context->CopyResource(staging, target.texture);
     target.release();
     target.context->Flush();
@@ -92,6 +93,10 @@ Image render_once(const Target& target, LiquidGlassD3D11& glass, ID3D11RenderTar
                     static_cast<const std::uint8_t*>(map.pData) + static_cast<std::size_t>(y) * map.RowPitch, width * 4);
     target.context->Unmap(staging, 0);
     return image;
+}
+Image render_once(const Target& target,LiquidGlassD3D11& glass,ID3D11RenderTargetView* view,
+                  const LiquidGlassFrame& frame,ID3D11Texture2D* staging) {
+    return render_once(target,glass,view,std::span<const LiquidGlassFrame>(&frame,1),staging);
 }
 
 void verify(const Target& target) {
@@ -166,11 +171,35 @@ void verify(const Target& target) {
     // The pane lays a shadow on the scene just below it.
     check(scene_at(280) == light && image.at(280, 168)[0] < light - 12, "The pane has no shadow");
 
+    // Windows transparency off keeps the native pane; High Contrast removes it.
+    using medicon::gui::AccessibilityPreferences;
+    using medicon::gui::override_accessibility_preferences;
+    override_accessibility_preferences(AccessibilityPreferences{false, true, false});
+    const Image reduced = render_once(target, glass, view.Get(), frame, staging.Get());
+    override_accessibility_preferences(AccessibilityPreferences{false, false, true});
+    const Image contrast = render_once(target, glass, view.Get(), frame, staging.Get());
+    override_accessibility_preferences(AccessibilityPreferences{});
+    check(reduced.at(256, 128)[1] != scene_at(256), "Reduced transparency removed the pane");
+    check(contrast.at(256, 128)[1] == scene_at(256), "High Contrast still drew the pane");
+
     // Fully dissolved, nothing of it is left on the scene.
     frame.lens = 0.0F;
     frame.opacity = 0.0F;
     const Image gone = render_once(target, glass, view.Get(), frame, staging.Get());
     check(gone.at(256, 128)[1] == scene_at(256) && gone.at(280, 168)[0] == light, "A dissolved pane still covered the scene");
+    frame.lens=frame.opacity=1;
+    const std::array< LiquidGlassFrame,2> overlap{frame,frame};
+    const auto overlapped=render_once(target,glass,view.Get(),std::span<const LiquidGlassFrame>(overlap),staging.Get());
+    check(overlapped.at(256,128)==image.at(256,128),"Overlapping panes resampled a previously composited pane");
+    for(int count:{1,5,20}) {
+        std::vector<LiquidGlassFrame> panes(static_cast<size_t>(count),frame);
+        for(int i=0;i<count;++i) {panes[i].center={40.F+(i%5)*100.F,40.F+(i/5)*55.F};panes[i].size={70,40};panes[i].radius=12;}
+        const auto batch=render_once(target,glass,view.Get(),std::span<const LiquidGlassFrame>(panes),staging.Get());
+        for(const auto& pane:panes)check(batch.at(static_cast<UINT>(pane.center.x),static_cast<UINT>(pane.center.y))[1]!=scene_at(static_cast<UINT>(pane.center.x)),"Batch omitted a pane");
+    }
+    glass.reset();check(!glass.loaded(),"Device reset releases native resources");
+    const auto restored=render_once(target,glass,view.Get(),frame,staging.Get());
+    check(restored.at(256,128)==image.at(256,128),"Device recreation changed native optics");
 }
 
 void d3d11_route() {

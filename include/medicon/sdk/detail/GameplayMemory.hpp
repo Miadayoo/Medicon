@@ -29,6 +29,9 @@ bool write_gameplay_sprint_speed(std::uintptr_t component, bool sprinting) noexc
 // and optionally PlayerAuthInput's interact rotation and movement vectors.
 bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch,
                                    bool vector_fix = false) noexcept;
+// Flareon MoveFix for the validated PlayerAuthInput layout. Sprint history is
+// committed only after all packet writes succeed; idle packets are unchanged.
+bool write_gameplay_move_fix_input(std::uintptr_t packet, bool& sprinting) noexcept;
 bool read_gameplay_motion(std::uintptr_t packet, std::uint64_t local_runtime_id, Vec3& motion) noexcept;
 bool write_gameplay_motion(std::uintptr_t packet, Vec3 motion) noexcept;
 // StateVectorComponent is position / previous position / velocity (3 x Vec3).

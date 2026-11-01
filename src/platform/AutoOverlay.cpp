@@ -13,6 +13,7 @@
 #include <medicon/modules/AimbotModule.hpp>
 #include <medicon/modules/KillauraModule.hpp>
 #include <medicon/modules/RotationsModule.hpp>
+#include <medicon/modules/DisablerModule.hpp>
 #include <medicon/modules/RegenModule.hpp>
 #include <medicon/modules/SprintModule.hpp>
 #include <medicon/modules/VelocityModule.hpp>
@@ -277,6 +278,8 @@ public:
     YawInterpolationFn head_yaw_interpolator{};
     std::atomic_bool rotation_override_enabled{};
     std::atomic_bool rotation_vector_fix_enabled{};
+    std::atomic_bool disabler_move_fix_enabled{};
+    std::atomic_bool disabler_layout_error_reported{};
     std::atomic<std::uintptr_t> rotation_override_actor{};
     std::atomic_bool rotation_render_pitch_reported{};
     std::atomic<std::uint64_t> rotation_override_yaws{};
@@ -366,6 +369,7 @@ public:
     bool chat_installed{};
     bool chat_registered{};
     bool tick_installed{};
+    std::atomic_bool script_chat_ready{};
     bool tick_registered{};
     std::string feedback_error;
     HANDLE worker{};
@@ -423,6 +427,7 @@ public:
     // Window thread only. -1 unknown, 0 legacy mouse messages exist, 1 RIDEV_NOLEGACY.
     int raw_mouse_nolegacy = -1;
     RelativeMousePointer relative_menu_pointer;
+    RECT relative_cursor_bounds{}; // Virtual desktop in client coordinates; window thread only.
     std::uint64_t relative_pointer_epoch = 0; // Window thread only
     int os_cursor_show_boost = 0;
     bool hw_cursor_valid = false;
@@ -957,7 +962,7 @@ void reset_relative_cursor(Runtime& state) noexcept;
 void reveal_os_cursor(Runtime& state);
 void conceal_os_cursor(Runtime& state, bool restore_arrow);
 void warp_os_cursor(Runtime& state, HWND window, int x, int y);
-bool clip_cursor_to_client(Runtime& state, HWND window);
+void update_relative_cursor_bounds(Runtime& state, HWND window);
 bool raw_mouse_suppresses_legacy();
 void present_safe_imgui_new_frame(IDXGISwapChain* swap);
 
@@ -1033,6 +1038,7 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
         } else if (success) mouse_error.clear();
     }
     if (open && focused) {
+        update_relative_cursor_bounds(*this, target);
         raw_mouse_nolegacy = raw_mouse_suppresses_legacy() ? 1 : 0;
         if (raw_mouse_nolegacy != 1) reset_relative_cursor(*this);
         cache_client_cursor(*this, target);
@@ -1051,8 +1057,9 @@ bool Runtime::sync_mouse(HWND target, bool reset) {
                 y = height / 2;
                 publish_client_cursor(x, y);
             }
-            // Confine to the client once. Later game ClipCursor calls are swallowed.
-            clip_cursor_to_client(*this, target);
+            // Release the gameplay clip once. Later game ClipCursor calls are
+            // swallowed, so a windowed menu never confines the desktop cursor.
+            if (clip) clip(nullptr);
             reveal_os_cursor(*this);
             if (raw_mouse_nolegacy == 1 || outside)
                 warp_os_cursor(*this, target, static_cast<int>(x), static_cast<int>(y));
@@ -1206,15 +1213,15 @@ void warp_os_cursor(Runtime& state, HWND window, int x, int y) {
     state.hw_cursor_valid = true;
 }
 
-bool clip_cursor_to_client(Runtime& state, HWND window) {
-    if (!state.clip) return false;
-    RECT bounds{};
-    if (!GetClientRect(window, &bounds)) return false;
-    POINT top_left{bounds.left, bounds.top};
-    POINT bottom_right{bounds.right, bounds.bottom};
-    if (!ClientToScreen(window, &top_left) || !ClientToScreen(window, &bottom_right)) return false;
-    RECT screen{top_left.x, top_left.y, bottom_right.x, bottom_right.y};
-    return state.clip(&screen) != FALSE;
+void update_relative_cursor_bounds(Runtime& state, HWND window) {
+    POINT top_left{GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN)};
+    POINT bottom_right{top_left.x + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                       top_left.y + GetSystemMetrics(SM_CYVIRTUALSCREEN)};
+    if (!ScreenToClient(window, &top_left) || !ScreenToClient(window, &bottom_right)) {
+        state.relative_cursor_bounds = {};
+        return;
+    }
+    state.relative_cursor_bounds = {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
 }
 
 void present_safe_imgui_new_frame(IDXGISwapChain* swap) {
@@ -1351,9 +1358,10 @@ bool consume_raw_input(Runtime& state, HWND window, LPARAM lparam, const InputCa
             cache_client_cursor(state, window);
             state.read_client_cursor(seed_x, seed_y);
         }
-        RECT bounds{};
-        if (GetClientRect(window, &bounds) && state.relative_menu_pointer.move(raw.data.mouse.lLastX, raw.data.mouse.lLastY,
-                bounds.right - bounds.left, bounds.bottom - bounds.top, seed_x, seed_y)) {
+        if (IsRectEmpty(&state.relative_cursor_bounds)) update_relative_cursor_bounds(state, window);
+        const auto& bounds = state.relative_cursor_bounds;
+        if (state.relative_menu_pointer.move_within(raw.data.mouse.lLastX, raw.data.mouse.lLastY,
+                bounds.left, bounds.top, bounds.right, bounds.bottom, seed_x, seed_y)) {
             const int x = state.relative_menu_pointer.x();
             const int y = state.relative_menu_pointer.y();
             state.publish_client_cursor(x, y);
@@ -1365,30 +1373,38 @@ bool consume_raw_input(Runtime& state, HWND window, LPARAM lparam, const InputCa
     }
     if (state.raw_mouse_nolegacy != 1) return true;
     const auto buttons = raw.data.mouse.usButtonFlags;
+    long cursor_x = 0, cursor_y = 0;
+    RECT client_bounds{};
+    const bool inside = focused && state.read_client_cursor(cursor_x, cursor_y) &&
+        GetClientRect(window, &client_bounds) && PtInRect(&client_bounds, POINT{cursor_x, cursor_y});
     // Legacy clicks capture on the window thread. NOLEGACY never delivers
     // WM_LBUTTONDOWN, so capture here. Present must not call SetCapture.
     bool held_before = false;
     for (const bool down : state.raw_buttons_down) held_before = held_before || down;
-    for (std::size_t i = 0; i < down_flags.size(); ++i) {
-        if (buttons & down_flags[i]) state.raw_buttons_down[i] = true;
-        if (buttons & up_flags[i]) state.raw_buttons_down[i] = false;
-    }
+    const auto raw_button = [&](std::size_t i, UINT down_message, UINT up_message, WPARAM key) {
+        // Raw input can still arrive over the title bar or another application.
+        // Only start UI presses inside; finish an existing drag even outside.
+        if ((buttons & down_flags[i]) && inside) {
+            state.raw_buttons_down[i] = true;
+            queue_input(state, window, down_message, key, 0, capture.epoch);
+        }
+        if ((buttons & up_flags[i]) && state.raw_buttons_down[i]) {
+            state.raw_buttons_down[i] = false;
+            queue_input(state, window, up_message, key, 0, capture.epoch);
+        }
+    };
+    raw_button(0, WM_LBUTTONDOWN, WM_LBUTTONUP, 0);
+    raw_button(1, WM_RBUTTONDOWN, WM_RBUTTONUP, 0);
+    raw_button(2, WM_MBUTTONDOWN, WM_MBUTTONUP, 0);
+    raw_button(3, WM_XBUTTONDOWN, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON1));
+    raw_button(4, WM_XBUTTONDOWN, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON2));
     bool held_after = false;
     for (const bool down : state.raw_buttons_down) held_after = held_after || down;
     if (focused && !held_before && held_after) SetCapture(window);
-    if (focused && held_before && !held_after && GetCapture() == window) ReleaseCapture();
-    const auto raw_button = [&](USHORT down_flag, USHORT up_flag, UINT down_message, UINT up_message, WPARAM key) {
-        if (buttons & down_flag) queue_input(state, window, down_message, key, 0, capture.epoch);
-        if (buttons & up_flag) queue_input(state, window, up_message, key, 0, capture.epoch);
-    };
-    raw_button(RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, WM_LBUTTONDOWN, WM_LBUTTONUP, 0);
-    raw_button(RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, WM_RBUTTONDOWN, WM_RBUTTONUP, 0);
-    raw_button(RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, WM_MBUTTONDOWN, WM_MBUTTONUP, 0);
-    raw_button(RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, WM_XBUTTONDOWN, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON1));
-    raw_button(RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP, WM_XBUTTONDOWN, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON2));
+    if (held_before && !held_after && GetCapture() == window) ReleaseCapture();
     const auto wheel = wheel_from_raw_mouse(raw.data.mouse.usButtonFlags, raw.data.mouse.usButtonData);
-    if (wheel.vertical) queue_raw_wheel(state, window, WM_MOUSEWHEEL, wheel.vertical_delta, capture.epoch);
-    if (wheel.horizontal) queue_raw_wheel(state, window, WM_MOUSEHWHEEL, wheel.horizontal_delta, capture.epoch);
+    if (inside && wheel.vertical) queue_raw_wheel(state, window, WM_MOUSEWHEEL, wheel.vertical_delta, capture.epoch);
+    if (inside && wheel.horizontal) queue_raw_wheel(state, window, WM_MOUSEHWHEEL, wheel.horizontal_delta, capture.epoch);
     return true;
 }
 
@@ -1444,6 +1460,10 @@ LRESULT overlay_window_proc_body(HWND window, UINT message, WPARAM wparam, LPARA
     }
     if (message == WM_SIZE)
         state.window_iconic.store(wparam == SIZE_MINIMIZED, std::memory_order_release);
+    if (window == state.mouse_window && (message == WM_MOVE || message == WM_SIZE || message == WM_DISPLAYCHANGE)) {
+        reset_relative_cursor(state);
+        update_relative_cursor_bounds(state, window);
+    }
     if (message == WM_NCDESTROY && window == state.mouse_window.load(std::memory_order_acquire))
         state.window_gone.store(true, std::memory_order_release);
     if (state.cursor_message && message == state.cursor_message) {
@@ -1735,6 +1755,15 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         ClickGui::apply_theme();
         client = std::make_unique<Client>(config_path);
+        client->set_script_chat([this](std::string_view message) {
+            if (!script_chat_ready.load(std::memory_order_acquire) || stopping) return false;
+            std::lock_guard lock(feedback_mutex);
+            if (pending_feedback.size() >= 64) return false;
+            pending_feedback.emplace_back(message);
+            feedback_count = static_cast<unsigned>(pending_feedback.size());
+            return true;
+        }, [this] { return script_chat_ready.load(std::memory_order_acquire); });
+        client->set_script_player_support([this] { return gameplay_ready.load(std::memory_order_acquire); });
         client->overlay().set_alt_choice_handler([this](bool retry) {
             report(retry?"AltManager: account choice completed; automatic reconnect requested (v2).":
                          "AltManager: account choice completed; switch only, no reconnect (v2).");
@@ -1852,14 +1881,6 @@ bool Runtime::draw(IDXGISwapChain* swap, UINT flags) {
     present_safe_imgui_new_frame(swap);
     if (input_open() || recovery_visible.load()) {
         const auto submit_cursor = [&](long x, long y) {
-            const auto size = ImGui::GetIO().DisplaySize;
-            if (menu_visible.load(std::memory_order_acquire) &&
-                (x < 0 || y < 0 || x >= size.x || y >= size.y)) {
-                // Before the first relative packet, a free OS cursor may be
-                // outside this window. Seed a visible pointer for the menu.
-                x = static_cast<long>(size.x * 0.5F);
-                y = static_cast<long>(size.y * 0.5F);
-            }
             ImGui::GetIO().AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
         };
         long x = 0, y = 0;
@@ -2789,12 +2810,23 @@ bool hold_velocity_latency(Runtime& state, void* sender, void* packet) {
     return held;
 }
 
+void apply_disabler_move_fix(Runtime& state, void* packet) {
+    if (state.stopping.load(std::memory_order_acquire)) return;
+    const bool enabled = state.disabler_move_fix_enabled.load(std::memory_order_acquire) &&
+        !state.input_open() && state.window_focused_cached.load(std::memory_order_acquire);
+    const auto result = state.gameplay.rewrite_move_fix_input(packet, enabled);
+    if (result == sdk::MoveFixInputRewrite::layout_rejected &&
+        !state.disabler_layout_error_reported.exchange(true, std::memory_order_acq_rel))
+        state.report("Disabler MoveFix PlayerAuthInput layout check failed; packet left unchanged.", true);
+}
+
 void hook_send_server_packet(void* sender, void* packet) {
     CallbackScope callback;
     auto& state = callback.state;
     // 1.26.52.3's automatic NSL echo uses this slot directly. It never
     // visits hook_send_packet; the replay also uses this original trampoline.
     if (!hold_velocity_latency(state, sender, packet)) {
+        apply_disabler_move_fix(state, packet);
         trace_outgoing_movement(state, packet, "sendToServer");
         state.send_server_packet(sender, packet);
     }
@@ -2876,6 +2908,9 @@ void hook_send_packet(void* sender, void* packet) {
             !state.sprint_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
             state.report("Sprint PlayerAuthInput layout check failed; packet left unchanged.", true);
     }
+    // MoveFix must see the final yaw and Sprint flags. It also works when no
+    // module has requested a silent rotation. Direct sendToServer is covered above.
+    apply_disabler_move_fix(state, packet);
     // Observe both validated entries. General send is not assumed to forward
     // every movement packet through slot 4; route/pointer identify nested calls.
     trace_outgoing_movement(state, packet, state.send_server_packet == state.send_packet ? "shared" : "general");
@@ -2962,7 +2997,7 @@ void hook_base_tick(void* actor) {
     // CustomModel sharing selects nearby players from this snapshot. Without
     // it, nobody was announced or watched unless another module was ON.
     bool wanted = (sprint && sprint->needs_restore()) || (velocity && velocity->needs_restore()) || state.model_sync_wanted;
-    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "regen", "esp", "rotations", "sprint", "velocity",
+    for (const auto* id : {"chinahat", "derp", "aimbot", "killaura", "scaffold", "regen", "esp", "rotations", "sprint", "velocity", "disabler",
                            "cheststealer", "invmanager"}) {
         const auto* module = state.client->modules().find(id);
         if (module && module->enabled()) { wanted = true; break; }
@@ -2972,12 +3007,15 @@ void hook_base_tick(void* actor) {
         state.client->modules().find(RotationsModule::module_id));
     state.rotation_vector_fix_enabled.store(rotations_module && rotations_module->enabled(),
         std::memory_order_release);
+    const auto* disabler = dynamic_cast<const DisablerModule*>(state.client->modules().find(DisablerModule::module_id));
+    state.disabler_move_fix_enabled.store(disabler && disabler->move_fix_enabled(), std::memory_order_release);
     state.regen_packet_trace_enabled.store(regen_module &&
         (regen_module->enabled() || regen_module->needs_restore()), std::memory_order_release);
     if (regen_module && regen_module->needs_restore()) wanted = true;
     // A slot Scaffold's Auto Select switched to is put back by a later capture,
     // also after every gameplay module was turned off.
     if (!wanted && !state.gameplay.slot_restore_pending()) {
+        state.disabler_move_fix_enabled.store(false, std::memory_order_release);
         state.velocity_reply_route_enabled.store(false, std::memory_order_release);
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
         state.sprint_packet_requested.store(false, std::memory_order_release);
@@ -2999,6 +3037,7 @@ void hook_base_tick(void* actor) {
         const bool visibility = (aim && aim->enabled() && aim->visible_only.get<bool>()) ||
             (aura && aura->enabled() && aura->visible_only.get<bool>());
         if (!state.gameplay.capture(state.bedrock_chat.mouse_client(), actor, visibility)) {
+            state.disabler_move_fix_enabled.store(false, std::memory_order_release);
             state.sprint_packet_override_enabled.store(false, std::memory_order_release);
             state.sprint_packet_requested.store(false, std::memory_order_release);
             state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
@@ -3264,6 +3303,7 @@ void hook_base_tick(void* actor) {
         }
     } catch (const std::exception& error) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        state.disabler_move_fix_enabled.store(false, std::memory_order_release);
         state.sprint_packet_requested.store(false, std::memory_order_release);
         state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
         state.rotation_override_component.store(0, std::memory_order_release);
@@ -3272,6 +3312,7 @@ void hook_base_tick(void* actor) {
         state.report(std::string("Gameplay update: ") + error.what(), true);
     } catch (...) {
         state.sprint_packet_override_enabled.store(false, std::memory_order_release);
+        state.disabler_move_fix_enabled.store(false, std::memory_order_release);
         state.sprint_packet_requested.store(false, std::memory_order_release);
         state.rotation_vector_fix_enabled.store(false, std::memory_order_release);
         state.rotation_override_component.store(0, std::memory_order_release);
@@ -3607,6 +3648,7 @@ void Runtime::connect_chat_feedback() {
     if (tick_registered) {
         std::string error;
         tick_installed = tick_hooks.enable_all(error);
+        script_chat_ready.store(tick_installed && bedrock_chat.feedback_available(), std::memory_order_release);
         if (!tick_installed) report("Native chat feedback hook: " + error, true);
         return;
     }
@@ -3651,6 +3693,7 @@ void Runtime::connect_chat_feedback() {
                 report("Velocity MovePlayer observation unavailable: dispatcher identity check failed.", true);
             }
             tick_installed = tick_hooks.enable_all(error);
+            script_chat_ready.store(tick_installed && bedrock_chat.feedback_available(), std::memory_order_release);
             if (!tick_installed) report("Native chat feedback hook: " + error, true);
             else report("Minecraft local-player gameplay and chat tick ready.");
             return;
@@ -4306,6 +4349,7 @@ int MediconStopOverlay() {
     auto& state = runtime();
     std::lock_guard lifecycle(state.lifecycle_mutex);
     state.stopping = true;
+    state.script_chat_ready.store(false, std::memory_order_release);
     state.rotation_override_enabled.store(false, std::memory_order_release);
     state.model_probe.set_enabled(false);
     state.model_box.set_options(false,0,1);

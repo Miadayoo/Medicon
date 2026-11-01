@@ -9,11 +9,13 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
+#include <medicon/gui/Accessibility.hpp>
 
 namespace medicon::gui {
 namespace {
 using Microsoft::WRL::ComPtr;
-struct PublishedFrame { LiquidGlassFrame frame; int number = -1; };
+struct PublishedFrame { std::vector<LiquidGlassFrame> frames; int number = -1; bool ready=false; };
 thread_local std::unordered_map<ImGuiContext*, PublishedFrame> published;
 
 bool check(HRESULT result, const char* operation, std::string& error) {
@@ -212,13 +214,36 @@ struct Surface {
 };
 } // namespace
 
-void publish_liquid_glass(const LiquidGlassFrame& frame) {
-    if (auto* context = ImGui::GetCurrentContext()) published[context] = {frame, ImGui::GetFrameCount()};
+bool publish_liquid_glass(const LiquidGlassFrame& frame) {
+    if(auto* context=ImGui::GetCurrentContext()) {
+        auto& state=published[context];
+        if(state.number!=ImGui::GetFrameCount()) { state.frames.clear(); state.number=ImGui::GetFrameCount(); }
+        // Keep one slot available to native HUD widgets regardless of script order.
+        if(state.frames.size()>=(frame.owner.empty()?64u:63u)) return false;
+        state.frames.push_back(frame); return true;
+    }
+    return false;
 }
 const LiquidGlassFrame* current_liquid_glass() {
+    auto frames=current_liquid_glass_frames();
+    return frames.empty()?nullptr:&frames.back();
+}
+std::span<const LiquidGlassFrame> current_liquid_glass_frames() {
     const auto found = published.find(ImGui::GetCurrentContext());
-    if (found == published.end() || found->second.number != ImGui::GetFrameCount()) return nullptr;
-    return &found->second.frame;
+    if(found==published.end() || found->second.number!=ImGui::GetFrameCount()) return {};
+    return found->second.frames;
+}
+void remove_liquid_glass(std::string_view owner,std::uint64_t generation) {
+    if(auto found=published.find(ImGui::GetCurrentContext());found!=published.end())
+        std::erase_if(found->second.frames,[&](const auto& pane){return pane.owner==owner&&pane.generation==generation;});
+}
+bool liquid_glass_warm() {
+    if(accessibility_preferences.high_contrast) return true;
+    const auto found=published.find(ImGui::GetCurrentContext());
+    return found!=published.end()&&found->second.ready;
+}
+bool liquid_glass_ready() {
+    return liquid_glass_warm()&&!accessibility_preferences.reduced_transparency&&!accessibility_preferences.high_contrast;
 }
 void forget_liquid_glass(ImGuiContext* context) { published.erase(context); }
 
@@ -321,24 +346,29 @@ struct LiquidGlassD3D11::Impl {
     }
 
     bool render(ID3D11DeviceContext* immediate, ID3D11Texture2D* backBuffer, ID3D11RenderTargetView* target,
-                const LiquidGlassFrame& frame, std::string& error) {
+                std::span<const LiquidGlassFrame> frames, std::string& error) {
+        if(frames.empty()) return true;
         D3D11_TEXTURE2D_DESC back{};
         backBuffer->GetDesc(&back);
         // Flip-model swap chains are never multisampled; the digits still draw.
         if (back.SampleDesc.Count > 1) return true;
-        const float s = frame.scale;
-        const float margin = 60.0F * s;
         const auto extent = [](float pixels) { return (static_cast<UINT>(std::max(pixels, 2.0F)) + 63U) & ~63U; };
-        const UINT width = extent(frame.size.x + margin * 2.0F), height = extent(frame.size.y + margin * 2.0F);
+        float left=static_cast<float>(back.Width),top=static_cast<float>(back.Height),right=0,bottom=0,s=1;
+        // One union of the same native capture regions. Never capture already composited panes.
+        for(const auto& frame:frames) {
+            s=std::max(s,frame.scale);
+            const float width=static_cast<float>(extent(frame.size.x+120*frame.scale));
+            const float height=static_cast<float>(extent(frame.size.y+120*frame.scale));
+            left=std::min(left,std::floor(frame.center.x-width*.5F)); top=std::min(top,std::floor(frame.center.y-height*.5F));
+            right=std::max(right,std::floor(frame.center.x-width*.5F)+width); bottom=std::max(bottom,std::floor(frame.center.y-height*.5F)+height);
+        }
+        const auto clamped = [](float value, UINT limit) { return static_cast<UINT>(std::clamp(value, 0.0F, static_cast<float>(limit))); };
+        const D3D11_BOX box{clamped(left,back.Width),clamped(top,back.Height),0,clamped(right,back.Width),clamped(bottom,back.Height),1};
+        if(box.right<=box.left || box.bottom<=box.top) return true;
+        const UINT width=extent(static_cast<float>(box.right-box.left)),height=extent(static_cast<float>(box.bottom-box.top));
         if (!ensure_capture(back, width, height, error) ||
             !blur[0].create(device.Get(), captureWidth / 2, captureHeight / 2, error) ||
             !blur[1].create(device.Get(), captureWidth / 2, captureHeight / 2, error)) return false;
-        const auto clamped = [](float value, UINT limit) { return static_cast<UINT>(std::clamp(value, 0.0F, static_cast<float>(limit))); };
-        const D3D11_BOX box{clamped(std::floor(frame.center.x - width * 0.5F), back.Width),
-                            clamped(std::floor(frame.center.y - height * 0.5F), back.Height), 0,
-                            clamped(std::floor(frame.center.x - width * 0.5F) + width, back.Width),
-                            clamped(std::floor(frame.center.y - height * 0.5F) + height, back.Height), 1};
-        if (box.right <= box.left || box.bottom <= box.top) return true;
 
         commands->ClearState();
         commands->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -362,22 +392,26 @@ struct LiquidGlassD3D11::Impl {
             if (!draw(blur[0].target.Get(), halfWidth, halfHeight, blurPS.Get(), blur[1].source.Get(), nullptr, false, error)) return false;
         }
 
+        for(const auto& frame:frames) {
         const float halfSizeX = frame.size.x * 0.5F, halfSizeY = frame.size.y * 0.5F;
-        const float radius = std::min(halfSizeX, halfSizeY);
+        const float radius = frame.radius<0 ? std::min(halfSizeX,halfSizeY) : std::clamp(frame.radius,0.F,std::min(halfSizeX,halfSizeY));
         p.shape[0] = frame.center.x; p.shape[1] = frame.center.y; p.shape[2] = halfSizeX; p.shape[3] = halfSizeY;
         p.form[0] = radius; p.form[1] = frame.waist;
         // Past the corner radius the bezels of opposite sides would meet on the flat.
-        p.form[2] = radius * 0.85F; p.form[3] = p.form[2] * 1.43F;
+        p.form[2] = std::max(.001F,radius * 0.85F); p.form[3] = p.form[2] * 1.43F;
         p.optics[0] = std::cos(frame.light); p.optics[1] = std::sin(frame.light);
         p.optics[2] = std::clamp(frame.lens, 0.0F, 1.0F); p.optics[3] = std::clamp(frame.energy, 0.0F, 1.0F);
         p.region[0] = static_cast<float>(box.left); p.region[1] = static_cast<float>(box.top);
         p.region[2] = static_cast<float>(box.right - box.left); p.region[3] = static_cast<float>(box.bottom - box.top);
         p.misc[0] = 1.0F / static_cast<float>(captureWidth); p.misc[1] = 1.0F / static_cast<float>(captureHeight);
-        p.misc[2] = std::clamp(frame.opacity, 0.0F, 1.0F); p.misc[3] = s;
-        clip = {static_cast<LONG>(box.left), static_cast<LONG>(box.top), static_cast<LONG>(box.right), static_cast<LONG>(box.bottom)};
+        p.misc[2] = std::clamp(frame.opacity, 0.0F, 1.0F); p.misc[3] = frame.scale;
+        const float margin=60*frame.scale;
+        clip = {static_cast<LONG>(clamped(frame.center.x-halfSizeX-margin,back.Width)),static_cast<LONG>(clamped(frame.center.y-halfSizeY-margin,back.Height)),
+                static_cast<LONG>(clamped(std::ceil(frame.center.x+halfSizeX+margin),back.Width)),static_cast<LONG>(clamped(std::ceil(frame.center.y+halfSizeY+margin),back.Height))};
         commands->RSSetScissorRects(1, &clip);
         if (!draw(target, static_cast<float>(back.Width), static_cast<float>(back.Height), glassPS.Get(),
                   captureView.Get(), blur[0].source.Get(), true, error)) return false;
+        }
 
         ID3D11ShaderResourceView* unbound[2]{};
         commands->PSSetShaderResources(0, 2, unbound);
@@ -390,24 +424,34 @@ struct LiquidGlassD3D11::Impl {
 };
 
 LiquidGlassD3D11::LiquidGlassD3D11() = default;
-LiquidGlassD3D11::~LiquidGlassD3D11() = default;
-void LiquidGlassD3D11::reset() { impl_.reset(); }
+LiquidGlassD3D11::~LiquidGlassD3D11() { reset(); }
+void LiquidGlassD3D11::reset() { impl_.reset(); if(auto f=published.find(context_);f!=published.end()) f->second.ready=false; }
 bool LiquidGlassD3D11::loaded() const noexcept { return impl_ && impl_->loaded; }
 
 bool LiquidGlassD3D11::render(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* backBuffer,
                               ID3D11RenderTargetView* target, const LiquidGlassFrame& frame, std::string& error) {
+    return render(device,context,backBuffer,target,std::span<const LiquidGlassFrame>(&frame,1),error);
+}
+bool LiquidGlassD3D11::render(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11Texture2D* backBuffer,
+                              ID3D11RenderTargetView* target,std::span<const LiquidGlassFrame> frames,std::string& error) {
+    context_=ImGui::GetCurrentContext();
+    if(accessibility_preferences.high_contrast) {
+        if(context_) published[context_].ready=false;
+        return true;
+    }
     if (!device || !context || !backBuffer || !target) { error = "Liquid Glass requires a complete D3D11 render target."; return false; }
     if (!impl_ || impl_->device.Get() != device) {
         impl_ = std::make_unique<Impl>();
         if (!impl_->initialize(device, error)) { impl_.reset(); return false; }
     }
-    if (!impl_->render(context, backBuffer, target, frame, error)) {
+    if (!impl_->render(context, backBuffer, target, frames, error)) {
         // Drop a partially recorded command list: it may otherwise retain a
         // swap-chain resource through ResizeBuffers.
-        impl_.reset();
+        reset();
         return false;
     }
     impl_->loaded = true;
+    if(context_) published[context_].ready=true;
     return true;
 }
 

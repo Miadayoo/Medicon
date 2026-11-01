@@ -4,8 +4,8 @@ namespace medicon {
 
 WatermarkModule::WatermarkModule()
     : Module(module_id, "Watermark", "Medicon tag at the top left while playing.", Category::Client),
-      mode(add_setting({"mode", "Mode", "Plate is the glass tag; Japanese is the glowing title of the inject animation.",
-                        Choice{0, {"Plate", "Japanese"}}})),
+      mode(add_setting({"mode", "Mode", "medicon is the glass tag; めじこん is the glowing title of the inject animation.",
+                        Choice{0, {"medicon", "めじこん"}}})),
       show_version(add_setting({"version", "Show Version", "Client version after the name.", true})),
       show_fps(add_setting({"fps", "Show FPS", "Frames per second, updated twice a second.", false})),
       show_ping(add_setting({"ping", "Show Ping", "Server latency, when the client can read it.", false})),

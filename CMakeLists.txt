@@ -125,9 +125,25 @@ if(BUILD_TESTING)
     medicon_target(medicon_alt_tests)
     target_link_libraries(medicon_alt_tests PRIVATE medicon_social_core)
     add_test(NAME alt COMMAND medicon_alt_tests)
+    add_executable(medicon_script_sdk_tests tests/script_sdk_tests.cpp)
+    medicon_target(medicon_script_sdk_tests)
+    target_include_directories(medicon_script_sdk_tests PRIVATE "${PROJECT_SOURCE_DIR}/sdk/include")
+    add_test(NAME script_sdk COMMAND medicon_script_sdk_tests)
 endif()
 
 if(MEDICON_BUILD_WINDOWS)
+    include(cmake/EmbedScriptSdk.cmake)
+    add_library(medicon_scripts STATIC
+        src/scripts/ScriptServices.cpp
+        src/scripts/ScriptCompiler.cpp
+        src/scripts/ScriptPluginInspector.cpp
+        src/scripts/ScriptRuntime.cpp
+        src/scripts/ScriptExtendedRuntime.cpp
+        src/scripts/ScriptStorage.cpp
+        src/scripts/ScriptManager.cpp)
+    medicon_target(medicon_scripts)
+    target_include_directories(medicon_scripts PUBLIC "${PROJECT_SOURCE_DIR}/sdk/include" PRIVATE "${MEDICON_EMBEDDED_SCRIPT_DIR}")
+    target_link_libraries(medicon_scripts PUBLIC medicon_core bcrypt version)
     enable_language(RC)
     # Older build trees can reload a bare "windres" from CMakeRCCompiler.cmake
     # even after -DCMAKE_RC_COMPILER supplies an absolute path. Resolve the
@@ -188,6 +204,7 @@ if(MEDICON_BUILD_WINDOWS)
 
     # Shared by the DLL and the Preview: no host-specific code or #ifdefs here.
     add_library(medicon_gui STATIC
+        src/gui/Accessibility.cpp
         src/gui/AltScreen.cpp
         src/gui/DisconnectScreen.cpp
         src/gui/ArrayList.cpp
@@ -209,6 +226,8 @@ if(MEDICON_BUILD_WINDOWS)
         src/gui/NativeFileDialog.cpp
         src/gui/Overlay.cpp
         src/gui/Shadow.cpp
+        src/gui/ScriptScreen.cpp
+        src/gui/ScriptGlassBridge.cpp
         src/gui/SocialBackground.cpp
         src/gui/SocialChat.cpp
         src/gui/SocialFonts.cpp
@@ -223,7 +242,7 @@ if(MEDICON_BUILD_WINDOWS)
     target_include_directories(medicon_gui PRIVATE "${MEDICON_EMBEDDED_FONTS_DIR}")
     # The Watermark shows it; the DLL and the Preview define the same value.
     target_compile_definitions(medicon_gui PRIVATE MEDICON_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(medicon_gui PUBLIC medicon_core medicon_social_core medicon_music medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32)
+    target_link_libraries(medicon_gui PUBLIC medicon_core medicon_scripts medicon_social_core medicon_music medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32 shell32)
 
     # Social networking (spec 4.2): WinHTTP REST/WebSocket, DPAPI license, notification sound.
     add_library(medicon_social_net STATIC
@@ -280,6 +299,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/preview/DemoModules.cpp
         src/preview/ImageIO.cpp
         src/preview/Scenarios.cpp
+        src/preview/ScriptScenario.cpp
         ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
         ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
     medicon_target(MediconPreview)
@@ -296,6 +316,44 @@ if(MEDICON_BUILD_WINDOWS)
     target_link_libraries(medicon_shadow_reference PRIVATE windowscodecs ole32)
 
     if(BUILD_TESTING)
+        add_executable(medicon_script_tests tests/script_tests.cpp)
+        medicon_target(medicon_script_tests)
+        target_include_directories(medicon_script_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/scripts")
+        target_compile_definitions(medicon_script_tests PRIVATE MEDICON_TEST_CXX="${CMAKE_CXX_COMPILER}")
+        target_link_libraries(medicon_script_tests PRIVATE medicon_scripts)
+        add_test(NAME scripts COMMAND medicon_script_tests)
+        add_library(medicon_script_legacy_fixture SHARED tests/fixtures/script-v01/legacy.cpp)
+        target_include_directories(medicon_script_legacy_fixture PRIVATE "${PROJECT_SOURCE_DIR}/tests/fixtures/script-v01/include")
+        add_library(medicon_script_extended_fixture SHARED tests/fixtures/script_extended.cpp)
+        target_include_directories(medicon_script_extended_fixture PRIVATE "${PROJECT_SOURCE_DIR}/sdk/include")
+        if(MINGW)
+            target_link_options(medicon_script_legacy_fixture PRIVATE -static)
+            target_link_options(medicon_script_extended_fixture PRIVATE -static)
+        endif()
+        add_executable(medicon_script_extended_tests tests/script_extended_tests.cpp)
+        medicon_target(medicon_script_extended_tests)
+        target_link_libraries(medicon_script_extended_tests PRIVATE medicon_scripts)
+        target_compile_definitions(medicon_script_extended_tests PRIVATE
+            MEDICON_EXTENDED_FIXTURE="$<TARGET_FILE:medicon_script_extended_fixture>"
+            MEDICON_LEGACY_FIXTURE="$<TARGET_FILE:medicon_script_legacy_fixture>")
+        add_dependencies(medicon_script_extended_tests medicon_script_legacy_fixture medicon_script_extended_fixture)
+        add_test(NAME script_extended COMMAND medicon_script_extended_tests)
+        add_library(medicon_script_unregistered_fixture SHARED tests/fixtures/script_unregistered.cpp)
+        target_include_directories(medicon_script_unregistered_fixture PRIVATE "${PROJECT_SOURCE_DIR}/sdk/include")
+        if(MINGW)
+            target_link_options(medicon_script_unregistered_fixture PRIVATE -static -Wl,--exclude-all-symbols)
+        endif()
+        add_executable(medicon_script_inspector_tests tests/script_inspector_tests.cpp)
+        medicon_target(medicon_script_inspector_tests)
+        target_link_libraries(medicon_script_inspector_tests PRIVATE medicon_scripts)
+        target_compile_definitions(medicon_script_inspector_tests PRIVATE
+            MEDICON_VALID_FIXTURE="$<TARGET_FILE:medicon_script_extended_fixture>"
+            MEDICON_UNREGISTERED_FIXTURE="$<TARGET_FILE:medicon_script_unregistered_fixture>")
+        add_dependencies(medicon_script_inspector_tests medicon_script_extended_fixture medicon_script_unregistered_fixture)
+        add_test(NAME script_inspector COMMAND medicon_script_inspector_tests)
+        set_tests_properties(scripts PROPERTIES TIMEOUT 180)
+        add_test(NAME preview_scripts COMMAND MediconPreview --scenario scripts --size 1920x1080 --fixed-dt 0.016666667)
+        set_tests_properties(preview_scripts PROPERTIES TIMEOUT 100 ENVIRONMENT "MEDICON_SCRIPT_CXX=${CMAKE_CXX_COMPILER}")
         add_executable(medicon_alt_clipboard_tests tests/alt_clipboard_tests.cpp)
         medicon_target(medicon_alt_clipboard_tests)
         target_link_libraries(medicon_alt_clipboard_tests PRIVATE user32)
@@ -358,6 +416,15 @@ if(MEDICON_BUILD_WINDOWS)
         medicon_target(medicon_liquid_glass_tests)
         target_link_libraries(medicon_liquid_glass_tests PRIVATE medicon_gui d3d12 dxgi)
         add_test(NAME liquid_glass COMMAND medicon_liquid_glass_tests)
+        add_executable(medicon_script_gui_tests tests/script_gui_tests.cpp)
+        medicon_target(medicon_script_gui_tests)
+        target_link_libraries(medicon_script_gui_tests PRIVATE medicon_gui)
+        add_test(NAME script_gui COMMAND medicon_script_gui_tests)
+        add_executable(medicon_script_glass_performance tests/script_glass_performance.cpp)
+        medicon_target(medicon_script_glass_performance)
+        target_link_libraries(medicon_script_glass_performance PRIVATE medicon_gui dxgi)
+        add_test(NAME script_glass_performance COMMAND medicon_script_glass_performance "${PROJECT_BINARY_DIR}/artifacts/script-glass-performance.csv")
+        set_tests_properties(script_glass_performance PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
         add_executable(medicon_dll_tests tests/dll_tests.cpp)
         medicon_target(medicon_dll_tests)
         target_link_libraries(medicon_dll_tests PRIVATE medicon_imgui)

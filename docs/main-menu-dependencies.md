@@ -8,7 +8,7 @@
 | --- | --- |
 | Menu判定 | `sdk::BedrockMenu` が現在のprimary ClientInstanceからSceneStack最上位を読み、検証済みUISceneの画面IDが `start_screen` の場合だけ有効化。実行ファイル1.26.52.3と観測したコードを照合。未知の画面型・読み取り失敗・版違いは無効化してログを記録。詳細は [SDK検証記録](main-menu-sdk-validation.md)。ゲーム関数やゲームの文字列アロケータは呼ばない。 |
 | 純正UI非表示 | 既存DXGI Present / Present1、ImGui、D3D11 / D3D12による最前面の不透明な全面オーバーレイ。`ScreenView_setupAndRender` のスキップ安全性が未確認なので、純正描画のスキップhookは追加しない。 |
-| 入力 | 既存WndProc・入力キュー・MouseCaptureController・native grab抑止を再利用。最新対策ではOSカーソルを表示し、位置更新をウィンドウスレッドで処理してPresent周期による見た目のカクつきを抑える。キー、文字/IME、マウス、raw keyboard / mouseを遮断。Main Menuのraw no-legacyモードでは相対移動を画面内に制限し、OSカーソル位置へ反映。フォーカス喪失・退場で状態をリセット。メニュー世代が異なる入力は破棄し、押下後のrepeat/upも新画面へ通さない。 |
+| 入力 | 既存WndProc・入力キュー・MouseCaptureController・native grab抑止を再利用。最新対策ではOSカーソルを表示し、位置更新をウィンドウスレッドで処理してPresent周期による見た目のカクつきを抑える。キー、文字/IME、マウス、raw keyboard / mouseを遮断。ウィンドウ内のカーソル固定は解除し、raw no-legacyの相対移動も仮想デスクトップ全体へ反映する。ウィンドウ外で始まるRaw Inputのクリック・ホイールはGUIに転送しない。フォーカス喪失・退場・ウィンドウ移動／サイズ変更で相対座標をリセット。メニュー世代が異なる入力は破棄し、押下後のrepeat/upも新画面へ通さない。 |
 | 背景 | 不透明 `#D9F2FF` と5個の放射グラデーションメッシュ。使用色は指定3色だけ。中心α0.8、外周α0、減衰は `0.8*(1-r²)²`。既存ImGui backendの通常source-over。加算なし。 |
 | ロゴ | 上部中央のMedicon。既存DynaPuff Medium。薄ピンクと白の周期グラデーションを頂点色で表現し、`x/波長 + t/3.6` の位相で右から左へ流す。水色の薄い縁取り。D2D等の別描画方式やブラシは追加しない。 |
 | ボタン | 左余白を取った縦3列のPlay / Settings / Quit。同幅・同高・同間隔、半透明の白、角丸、ホバー。押下と解放が同じボタンで成立した場合だけ要求を1件記録し、350msの連打抑制。 |

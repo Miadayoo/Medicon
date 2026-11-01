@@ -8,6 +8,7 @@
 #include <medicon/hooks/HookManager.hpp>
 #include <medicon/memory/signature_registry.hpp>
 #include <medicon/sdk/Gameplay.hpp>
+#include <medicon/scripts/ScriptManager.hpp>
 #include <filesystem>
 #include <string>
 
@@ -51,6 +52,11 @@ public:
     bool scan_signatures(); // Explicit, potentially expensive; never calls a game function.
     [[nodiscard]] bool running() const noexcept { return running_; }
     [[nodiscard]] ModuleManager& modules() noexcept { return modules_; }
+    [[nodiscard]] scripts::ScriptManager& scripts() noexcept { return scripts_; }
+    void set_script_chat(std::function<bool(std::string_view)> handler, std::function<bool()> available) {
+        scripts_.host().chat = std::move(handler); script_chat_available_ = std::move(available);
+    }
+    void set_script_player_support(std::function<bool()> available) { script_player_available_ = std::move(available); }
     [[nodiscard]] ClickGui& gui() noexcept { return overlay_.gui(); }
     [[nodiscard]] gui::Overlay& overlay() noexcept { return overlay_; }
     [[nodiscard]] HookManager& hooks() noexcept { return hooks_; }
@@ -65,6 +71,8 @@ private:
     ConfigStore config_;
     CommandManager commands_;
     gui::Overlay overlay_;
+    scripts::ScriptManager scripts_;
+    std::function<bool()> script_chat_available_, script_player_available_;
     HookManager hooks_;
     memory::SignatureRegistry signatures_;
     sdk::GameplayFrame gameplay_frame_;

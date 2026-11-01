@@ -14,6 +14,7 @@ const char* category_name(Category category) noexcept {
     case Category::Player: return "Player";
     case Category::Misc: return "Misc";
     case Category::Client: return "Client";
+    case Category::Scripts: return "Scripts";
     }
     return "Misc";
 }
@@ -25,6 +26,7 @@ const char* category_id(Category category) noexcept {
     case Category::Player: return "player";
     case Category::Misc: return "misc";
     case Category::Client: return "client";
+    case Category::Scripts: return "scripts";
     }
     return "misc";
 }

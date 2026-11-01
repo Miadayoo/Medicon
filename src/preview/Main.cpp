@@ -23,6 +23,8 @@
 #include <medicon/gui/Textures.hpp>
 #include <medicon/gui/Theme.hpp>
 #include <medicon/modules/BuiltinModules.hpp>
+#include <medicon/gui/ScriptScreen.hpp>
+#include <medicon/scripts/ScriptManager.hpp>
 #include <medicon/modules/ClientModules.hpp>
 #include <medicon/social/Service.hpp>
 
@@ -399,7 +401,7 @@ double percentile(std::vector<double> values, double p) {
 class PreviewApplication final : public medicon::preview::ScenarioHost {
 public:
     explicit PreviewApplication(Options options)
-        : options_(std::move(options)), config_(config_path()), overlay_(modules_) {
+        : options_(std::move(options)), config_(config_path()), overlay_(modules_), scripts_(modules_, config_.path()) {
         medicon::register_builtin_modules(modules_);
         if (options_.demo || options_.input_test || !options_.scenario.empty() || options_.gpu_timing) {
             medicon::preview::register_demo_modules(modules_);
@@ -410,6 +412,8 @@ public:
         }
         overlay_.set_owns_font_atlas(true);
         overlay_.set_save_handler([this] { if (uses_config()) save_config(); });
+        medicon::gui::attach_script_gui(scripts_, overlay_.gui(), &overlay_.fonts(),&overlay_);
+        scripts_.set_save_handler([this] { if (uses_config()) save_config(); });
         if (options_.dpi > 0.0F) overlay_.set_dpi_override(options_.dpi);
         if (options_.fixed_dt > 0.0F) overlay_.clock().set_fixed_step(options_.fixed_dt);
         if (!options_.log_file.empty()) log_stream_.open(options_.log_file, std::ios::out | std::ios::trunc);
@@ -423,6 +427,7 @@ public:
         }
         if (!options_.hidden() && log_stream_) report_shadow_stats();
         medicon::gui::set_log_sink({});
+        scripts_.stop();
         modules_.shutdown();
         if (dx11_initialized_) ImGui_ImplDX11_Shutdown();
         if (win32_initialized_) ImGui_ImplWin32_Shutdown();
@@ -478,6 +483,7 @@ public:
         }
         load_background();
         if (uses_config()) load_config();
+        if (uses_config()) scripts_.start();
         if (options_.arraylist_scale != 1.0F) {
             if (auto* cfg = dynamic_cast<medicon::ArrayListModule*>(modules_.find(medicon::ArrayListModule::module_id)))
                 cfg->scale.get<float>() = options_.arraylist_scale;
@@ -540,6 +546,10 @@ public:
 
     // --- ScenarioHost --------------------------------------------------------
     medicon::ModuleManager& modules() override { return modules_; }
+    void script_key_event(int key, bool down, bool repeat) {
+        scripts_.record_key_event(key,down);
+        if (!overlay_.key_event(key, down, repeat)) scripts_.key_event(key, down, repeat);
+    }
     medicon::gui::Overlay& overlay() override { return overlay_; }
     void recreate_graphics() override { recreate_device(); }
     float dt() const override { return options_.fixed_dt > 0.0F ? options_.fixed_dt : 1.0F / 60.0F; }
@@ -547,6 +557,7 @@ public:
     float height() const override { return static_cast<float>(target_height_); }
     LRESULT send(UINT message, WPARAM wparam, LPARAM lparam) override { return SendMessageW(window_, message, wparam, lparam); }
     void set_frame_hook(std::function<void()> hook) override { frame_hook_ = std::move(hook); }
+    void set_ui_hook(std::function<void()> hook) override { ui_hook_=std::move(hook); }
     void log(const std::string& line) override {
         // Social reports from its network threads.
         std::lock_guard lock(log_mutex_);
@@ -612,9 +623,12 @@ public:
                 medicon::gui::draw_inject_splash(ImGui::GetForegroundDrawList(), overlay_.fonts(), io.DisplaySize,
                                                 *options_.splash_time);
         } else {
+            if (uses_config()) scripts_.pump();
             modules_.tick(delta);
             modules_.render();
             overlay_.render();
+            scripts_.render_ui();
+            if(ui_hook_) ui_hook_();
             if (const auto action = overlay_.main_menu().consume_action()) {
                 const char* label = *action == medicon::gui::MainMenuAction::Play ? "Play" :
                     (*action == medicon::gui::MainMenuAction::Settings ? "Settings" : "Quit");
@@ -1024,11 +1038,11 @@ private:
                 break;
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
-                app->overlay_.key_event(virtual_key(wparam, lparam), true, (lparam & (1LL << 30)) != 0);
+                app->script_key_event(virtual_key(wparam, lparam), true, (lparam & (1LL << 30)) != 0);
                 break;
             case WM_KEYUP:
             case WM_SYSKEYUP:
-                app->overlay_.key_event(virtual_key(wparam, lparam), false, false);
+                app->script_key_event(virtual_key(wparam, lparam), false, false);
                 break;
             case WM_CHAR:
                 app->overlay_.char_event(static_cast<wchar_t>(wparam));
@@ -1037,7 +1051,7 @@ private:
             case WM_XBUTTONDBLCLK:
             case WM_XBUTTONUP: {
                 const int key = GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2;
-                app->overlay_.key_event(key, message != WM_XBUTTONUP, false);
+                app->script_key_event(key, message != WM_XBUTTONUP, false);
                 break;
             }
             case WM_SYSCOMMAND:
@@ -1075,6 +1089,7 @@ private:
     int frame_index_ = 0;
     int font_uploads_ = 0;
     std::function<void()> frame_hook_;
+    std::function<void()> ui_hook_;
     medicon::gui::ImeBridge ime_;
     int device_recreations_ = 0;
     int resizes_ = 0;
@@ -1092,6 +1107,7 @@ private:
     medicon::ModuleManager modules_;
     medicon::ConfigStore config_;
     medicon::gui::Overlay overlay_;
+    medicon::scripts::ScriptManager scripts_;
     std::unique_ptr<medicon::gui::D3D11TextureHost> textures_;
     medicon::gui::EdgeLitD3D11 edge_lit_;
     std::string config_error_;

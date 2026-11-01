@@ -43,6 +43,9 @@ public:
     enum class State { waiting, ready, unsupported };
 
     State locate(std::string& diagnostic);
+    [[nodiscard]] bool feedback_available() const noexcept {
+        return profile_ready_.load(std::memory_order_acquire) && display_target_ != 0;
+    }
     [[nodiscard]] std::uintptr_t send_target() const noexcept { return send_target_; }
     // Native automatic latency echoes call sendToServer (slot 4) directly,
     // bypassing the chat/general send entry (slot 2).

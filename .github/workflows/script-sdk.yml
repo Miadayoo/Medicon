@@ -1,0 +1,26 @@
+name: Script SDK
+on:
+  push:
+    paths: ['sdk/**', 'include/medicon/scripts/**', 'src/scripts/**', 'src/gui/**', 'include/medicon/gui/**', 'docs/**', 'tests/script*', 'tests/fixtures/script*/**', 'tests/liquid_glass_tests.cpp', 'cmake/EmbedScriptSdk.cmake', 'CMakeLists.txt', '.github/workflows/script-sdk.yml']
+  pull_request:
+    paths: ['sdk/**', 'include/medicon/scripts/**', 'src/scripts/**', 'src/gui/**', 'include/medicon/gui/**', 'docs/**', 'tests/script*', 'tests/fixtures/script*/**', 'tests/liquid_glass_tests.cpp', 'cmake/EmbedScriptSdk.cmake', 'CMakeLists.txt', '.github/workflows/script-sdk.yml']
+permissions:
+  contents: read
+jobs:
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Windows x64
+        run: cmake -S . -B out/script-sdk-ci -A x64 -DBUILD_TESTING=ON -DMEDICON_BUILD_WINDOWS=ON
+      - name: Build SDK and integration tests
+        run: cmake --build out/script-sdk-ci --config Release --target medicon_script_sdk_tests medicon_script_tests medicon_script_extended_tests medicon_script_inspector_tests medicon_script_gui_tests medicon_liquid_glass_tests --parallel 4
+      - name: Compile samples and verify native lifecycle
+        run: ctest --test-dir out/script-sdk-ci -C Release -R "^(script_sdk|scripts|script_extended|script_inspector|script_gui|liquid_glass)$" --output-on-failure
+  portable-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B out/script-sdk-ci -DMEDICON_BUILD_WINDOWS=OFF -DBUILD_TESTING=ON
+      - run: cmake --build out/script-sdk-ci --target medicon_script_sdk_tests --parallel 2
+      - run: ctest --test-dir out/script-sdk-ci -R '^script_sdk$' --output-on-failure

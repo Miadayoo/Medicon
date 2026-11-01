@@ -543,7 +543,7 @@ void EdgeLitD3D11::reset() { impl_.reset(); glass_.reset(); }
 void EdgeLitD3D11::invalidate_fonts() { if(impl_) { impl_->fontView.Reset(); impl_->atlas=nullptr; } }
 bool EdgeLitD3D11::render(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11Texture2D* backBuffer,ID3D11RenderTargetView* target,std::string& error) {
     const auto* frame=current_edge_lit_frame();
-    const auto* pane=current_liquid_glass();
+    const auto panes=current_liquid_glass_frames();
     if(frame && frame->height>0) {
         if(!device || !context || !backBuffer || !target) { error="Edge-lit requires a complete D3D11 render target."; return false; }
         if(!impl_ || impl_->device.Get()!=device) {
@@ -557,8 +557,8 @@ bool EdgeLitD3D11::render(ID3D11Device* device,ID3D11DeviceContext* context,ID3D
             return false;
         }
     }
-    if(pane) return glass_.render(device,context,backBuffer,target,*pane,error);
-    if(glass_.loaded() || !device || !context || !backBuffer || !target) return true;
+    if(!panes.empty()) return glass_.render(device,context,backBuffer,target,panes,error);
+    if((glass_.loaded()&&liquid_glass_warm()) || !device || !context || !backBuffer || !target) return true;
     // Load at injection, while nothing is on screen to hitch: D3D11On12 builds its
     // pipeline at the first draw, so one real, fully transparent pane goes through.
     D3D11_TEXTURE2D_DESC back{}; backBuffer->GetDesc(&back);

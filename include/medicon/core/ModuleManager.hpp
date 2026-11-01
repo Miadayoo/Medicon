@@ -36,6 +36,10 @@ public:
     Module* find(std::string_view id) noexcept;
     const Module* find(std::string_view id) const noexcept;
 
+    // Runtime modules are inserted/removed only at a serialized frame boundary.
+    Module& adopt(std::unique_ptr<Module> module);
+    std::unique_ptr<Module> extract(std::string_view id);
+
     // Win32 virtual-key codes; 0 means unbound. Dispatch only on a fresh press.
     void key_event(int key, bool down, bool repeat = false) noexcept;
     // Release remembered key state when focus changes or a GUI captures input.

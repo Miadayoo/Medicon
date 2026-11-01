@@ -59,6 +59,7 @@ public:
     SocialUi& social() noexcept { return social_; }
     const SocialUi& social() const noexcept { return social_; }
     const FrameInfo& frame() const noexcept { return frame_; }
+    void set_script_ui_focused(bool focused) noexcept { script_ui_focused_=focused; }
     // The client draws its own cursor: the Medicon menu, the ClickGUI or the
     // Social screen is open. Everything else counts as playing for Social (see SocialUi).
     bool in_menu() const noexcept { return main_menu_.active() || disconnect_.visible() || gui_.open() || social_.screen_open(); }
@@ -101,6 +102,7 @@ private:
     FontSizes prepared_sizes_{};
     float dpi_override_ = 0.0F;
     bool sizes_ready_ = false;
+    bool script_ui_focused_ = false;
     // Glyph discovery is frozen after the first splash prepare. A suffix that
     // appears mid-intro must not rebuild the atlas while the last frames play.
     bool splash_glyphs_sealed_ = false;

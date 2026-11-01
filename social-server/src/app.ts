@@ -8,6 +8,7 @@ import type { ErrorCode } from './errors.ts'
 import { installErrorHandlers } from './http/common.ts'
 import { registerAuthRoutes } from './http/routes/auth.ts'
 import { registerChatRoutes } from './http/routes/chat.ts'
+import { registerDocsRoutes } from './http/routes/docs.ts'
 import { registerNewsRoutes } from './http/routes/news.ts'
 import { registerReleaseRoutes } from './http/routes/releases.ts'
 
@@ -23,6 +24,7 @@ export function createApp(ctx: AppContext): FastifyInstance {
   registerNewsRoutes(app, ctx)
   registerChatRoutes(app, ctx)
   registerReleaseRoutes(app, ctx)
+  registerDocsRoutes(app)
 
   // ws shares Fastify's HTTP server. The token is checked before the upgrade
   // completes, so an invalid one gets a plain HTTP 401 (spec 2.4).

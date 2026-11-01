@@ -8,8 +8,8 @@
 namespace medicon {
 
 // Declaration order is the display order of category panels.
-enum class Category { Visual, Movement, Player, Misc, Client };
-inline constexpr std::size_t category_count = 5;
+enum class Category { Visual, Movement, Player, Misc, Client, Scripts };
+inline constexpr std::size_t category_count = 6;
 
 struct Color {
     float r = 1.0F;

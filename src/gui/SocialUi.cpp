@@ -90,6 +90,7 @@ void SocialUi::choose_alt(bool reconnect) {
 }
 
 void SocialUi::open_from_toast(const Toast& toast) {
+    if(!toast.owner.empty()) return;
     // Spec 4.7: the clicked notification opens what it is about.
     switch (toast.target) {
     case ToastTarget::News: open_news(social::NewsKind::News); break;
@@ -372,6 +373,20 @@ void SocialUi::notify(Toast toast, FontManager& fonts, bool in_menu, bool enable
         last_sound_ = now;
         play_sound_();
     }
+}
+
+bool SocialUi::script_sound(bool in_menu) {
+    const auto now=std::chrono::steady_clock::now();
+    if((!in_menu&&!store_.notify().in_game)||!store_.notify().sound||!play_sound_||now-last_sound_<500ms) return false;
+    last_sound_=now; play_sound_(); return true;
+}
+bool SocialUi::script_notification(std::string_view owner,std::uint64_t generation,std::string_view title,std::string_view body,
+                                   FontManager& fonts,bool in_menu) {
+    const auto now=std::chrono::steady_clock::now();
+    if((!in_menu&&!store_.notify().in_game)||now-last_script_notification_<500ms) return false;
+    last_script_notification_=now;
+    Toast toast; toast.kind=ToastKind::System; toast.title=title; toast.body=body; toast.owner=owner; toast.generation=generation;
+    notify(std::move(toast),fonts,in_menu,true); return true;
 }
 
 } // namespace medicon::gui

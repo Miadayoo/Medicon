@@ -311,7 +311,7 @@ public:
         }
         if (!data || data->DisplaySize.x <= 0.0f || data->DisplaySize.y <= 0.0f) return true;
         const auto* edge_frame = gui::current_edge_lit_frame();
-        if (data->CmdListsCount == 0 && (!edge_frame || edge_frame->height <= 0.0F)) return true;
+        if (data->CmdListsCount == 0 && (!edge_frame || edge_frame->height <= 0.0F) && !gui::current_liquid_glass() && effects_ && effects_->loaded() && gui::liquid_glass_warm()) return true;
         const UINT index = swap_->GetCurrentBackBufferIndex();
         if (index >= frames_.size()) {
             error = "The D3D12 swap-chain back-buffer index changed; recreate the renderer after resizing.";
@@ -332,7 +332,7 @@ public:
             return true;
         }
         if (!retired_.empty()) collect_retired();
-        if ((edge_frame && edge_frame->height > 0) || gui::current_liquid_glass() || !effects_ || !effects_->loaded()) {
+        if ((edge_frame && edge_frame->height > 0) || gui::current_liquid_glass() || !effects_ || !effects_->loaded() || !gui::liquid_glass_warm()) {
             const auto effects_start = perf_now();
             if (!ensure_effects(error)) return false;
             ID3D11Resource* wrapped = frame.wrapped.Get();

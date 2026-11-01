@@ -155,7 +155,7 @@ public:
         }
         if (!data || data->DisplaySize.x <= 0.0F || data->DisplaySize.y <= 0.0F) return true;
         const auto* edge_frame = gui::current_edge_lit_frame();
-        if (data->CmdListsCount == 0 && (!edge_frame || edge_frame->height <= 0.0F)) return true;
+        if (data->CmdListsCount == 0 && (!edge_frame || edge_frame->height <= 0.0F) && !gui::current_liquid_glass() && effects_.loaded() && gui::liquid_glass_warm()) return true;
         if (!update_render_target(error)) return false;
         const auto effects_start = perf_now();
         if (!effects_.render(device_.Get(), context_.Get(), back_buffer_.Get(), render_target_.Get(), error)) return false;

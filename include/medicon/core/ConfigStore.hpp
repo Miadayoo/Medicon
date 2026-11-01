@@ -8,6 +8,7 @@
 namespace medicon {
 
 class ModuleManager;
+class Module;
 
 // Schema v1. Unknown module/setting IDs are ignored for forward compatibility.
 // A missing file succeeds with defaults; malformed known values never apply.
@@ -17,6 +18,8 @@ public:
     explicit ConfigStore(std::filesystem::path path) : path_(std::move(path)) {}
     const std::filesystem::path& path() const noexcept { return path_; }
     bool load(ModuleManager& modules, std::string& error) const;
+    // Restore one newly loaded script without changing existing module state.
+    bool load_module(Module& module, std::string& error, bool* requested_enabled = nullptr) const;
     bool save(const ModuleManager& modules, std::string& error) const;
 
 private:

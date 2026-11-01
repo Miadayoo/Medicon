@@ -19,7 +19,7 @@ constexpr Color rgb(std::uint32_t hex, float alpha = 1.0F) {
 
 // Category order follows the existing persistence IDs, from violet to vermilion.
 inline constexpr std::array<Color, category_count> category_accents{
-    rgb(0x9916FF), rgb(0xD51BE8), rgb(0xF016B7), rgb(0xFF286B), rgb(0xFF4028)};
+    rgb(0x9916FF), rgb(0xD51BE8), rgb(0xF016B7), rgb(0xFF286B), rgb(0xFF4028), rgb(0xFF8040)};
 constexpr Color category_accent(Category category) {
     return category_accents[static_cast<std::size_t>(category)];
 }

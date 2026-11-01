@@ -13,6 +13,12 @@
 #include <utility>
 
 namespace medicon::gui {
+void ToastManager::remove_owner(std::string_view owner,std::uint64_t generation) {
+    const auto match=[&](const auto& entry){return entry.toast.owner==owner&&entry.toast.generation==generation;};
+    std::erase_if(visible_,match); std::erase_if(queued_,match);
+    if(clicked_&&clicked_->owner==owner&&clicked_->generation==generation) clicked_.reset();
+    pressed_id_=0; hit_areas_.clear(); music_anchor_.reset();
+}
 namespace {
 
 namespace style = theme::social;
@@ -107,7 +113,7 @@ void ToastManager::advance(float dt, bool in_menu, int hovered) {
     const float hold = in_menu ? timing::toast_hold_menu : timing::toast_hold_game;
     // Animations step at most 100 ms per frame so a stall does not skip them;
     // the shown timer keeps wall time.
-    const float step = clamp_dt(dt) * animation_speed_;
+    const float step = accessibility_preferences.reduced_motion ? timing::toast_enter : clamp_dt(dt) * animation_speed_;
     for (std::size_t i = 0; i < visible_.size();) {
         auto& entry = visible_[i];
         const bool under = in_menu && static_cast<int>(i) == hovered;

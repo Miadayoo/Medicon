@@ -22,6 +22,7 @@ struct RotationDiagnostic {
 
 enum class SprintInputRewrite { ignored, rewritten, layout_rejected };
 enum class RotationInputRewrite { ignored, rewritten, layout_rejected };
+enum class MoveFixInputRewrite { ignored, rewritten, layout_rejected };
 struct MovementReport {
     Vec3 position, delta;
     std::uint64_t input_tick{}, flags[2]{};
@@ -189,6 +190,8 @@ public:
     SprintInputRewrite rewrite_sprint_input(void* packet, bool override_enabled, bool sprinting) noexcept;
     // Send-thread safe: uses a copied angle pair, independent of render settings.
     RotationInputRewrite rewrite_rotation_input(void* packet, bool vector_fix = false) noexcept;
+    // Runs after rotation and Sprint rewrites, including without a rotation request.
+    MoveFixInputRewrite rewrite_move_fix_input(void* packet, bool enabled) noexcept;
     // Send-thread safe snapshot for diagnosing yaw/vector compensation.
     [[nodiscard]] bool read_rotation_movement(void* packet, RotationMovementSample& sample) const noexcept;
     bool swing() override;

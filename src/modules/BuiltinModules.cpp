@@ -6,6 +6,7 @@
 #include "medicon/modules/ExampleModule.hpp"
 #include "medicon/modules/ChinaHatModule.hpp"
 #include "medicon/modules/DerpModule.hpp"
+#include "medicon/modules/DisablerModule.hpp"
 #include "medicon/modules/AimbotModule.hpp"
 #include "medicon/modules/KillauraModule.hpp"
 #include "medicon/modules/ScaffoldModule.hpp"
@@ -17,6 +18,7 @@
 #include "medicon/modules/SprintModule.hpp"
 #include "medicon/modules/VelocityModule.hpp"
 #include "medicon/modules/CustomModelProbeModule.hpp"
+#include "medicon/modules/ScriptManagerModule.hpp"
 #include "medicon/core/ModuleManager.hpp"
 
 namespace medicon {
@@ -39,7 +41,9 @@ void register_builtin_modules(ModuleManager& modules) {
     modules.add<RotationsModule>();
     modules.add<SprintModule>();
     modules.add<VelocityModule>();
+    modules.add<DisablerModule>();
     modules.add<CustomModelProbeModule>();
+    modules.add<ScriptManagerModule>();
 }
 
 } // namespace medicon

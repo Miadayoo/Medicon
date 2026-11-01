@@ -1,0 +1,3 @@
+[module]
+id = "multi_file"
+description = "Two C++ translation units linked into one script module."

@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Medicon Script SDK</title>
+<meta name="description" content="Medicon Script SDK 0.4 のドキュメント">
+<style>
+:root {
+  --bg: #0d0e10;
+  --surface: #16181b;
+  --line: #26292e;
+  --text: #e6e7e9;
+  --muted: #9a9fa8;
+  --accent: #8ab4ff;
+  --mono: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.75 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.layout {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  max-width: 1040px;
+  margin: 0 auto;
+}
+nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 40px 16px 40px 24px;
+}
+nav .brand { display: block; color: var(--text); font-weight: 600; }
+nav .version { display: block; margin-bottom: 20px; color: var(--muted); font-size: 13px; }
+nav ul { margin: 0; padding: 0; list-style: none; }
+nav li a { display: block; padding: 3px 0; color: var(--muted); font-size: 14px; }
+nav li a:hover { color: var(--text); text-decoration: none; }
+main { min-width: 0; padding: 40px 24px 96px; }
+h1 { margin: 0 0 8px; font-size: 28px; line-height: 1.3; }
+h2 {
+  margin: 56px 0 12px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  font-size: 21px;
+  line-height: 1.4;
+}
+h3 { margin: 28px 0 8px; font-size: 16px; }
+p, ol, ul { margin: 0 0 14px; }
+main ol, main ul { padding-left: 22px; }
+.lead { color: var(--muted); }
+code { font-family: var(--mono); font-size: .9em; }
+:not(pre) > code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  overflow-wrap: break-word;
+}
+pre {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  line-height: 1.6;
+}
+.table { margin: 0 0 16px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+.note {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface);
+}
+@media (max-width: 760px) {
+  .layout { display: block; }
+  nav {
+    position: static;
+    height: auto;
+    padding: 24px 16px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  nav .version { margin-bottom: 10px; }
+  nav ul { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+  main { padding: 24px 16px 64px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav aria-label="目次">
+  <a class="brand" href="#top">Medicon Script SDK</a>
+  <span class="version">0.4 / API 400 / ABI 1</span>
+  <ul>
+    <li><a href="#start">はじめに</a></li>
+    <li><a href="#project">ファイル構成</a></li>
+    <li><a href="#module">Module</a></li>
+    <li><a href="#settings">設定</a></li>
+    <li><a href="#events">イベント</a></li>
+    <li><a href="#timers">タイマー</a></li>
+    <li><a href="#render">描画</a></li>
+    <li><a href="#glass">Liquid Glass</a></li>
+    <li><a href="#ui">UI パネル</a></li>
+    <li><a href="#tween">アニメーション</a></li>
+    <li><a href="#services">サービス</a></li>
+    <li><a href="#storage">Storage</a></li>
+    <li><a href="#types">型</a></li>
+    <li><a href="#build">ビルド</a></li>
+    <li><a href="#trust">承認とリロード</a></li>
+    <li><a href="#limits">制限</a></li>
+    <li><a href="#examples">サンプル</a></li>
+    <li><a href="#compat">互換性</a></li>
+  </ul>
+</nav>
+<main id="top">
+<h1>Medicon Script SDK</h1>
+<p class="lead">C++20 でモジュールを書いて、Medicon にそのまま読み込めます。スクリプトは Windows x64 のネイティブ DLL として動きます。</p>
+
+<h2 id="start">はじめに</h2>
+<p>コンパイラは同梱していません。Visual Studio 2022 以降の C++ Build Tools(「C++ によるデスクトップ開発」、MSVC x64、Windows SDK)を入れてください。SDK とサンプルは Medicon に埋め込まれているので、別途ダウンロードは不要です。</p>
+<ol>
+  <li>Medicon を起動します。<code>%LOCALAPPDATA%\Medicon</code> に <code>Scripts</code>、<code>SDK</code>、<code>Cache\build</code>、<code>Logs</code> が作られます。</li>
+  <li><code>Scripts\Hello.cpp</code> を保存します。Script Manager の Create Script からテンプレートで作ることもできます。</li>
+  <li>保存から 500 ms 後に自動でビルドされます。</li>
+  <li>Insert で ClickGUI を開き、<strong>Scripts → Script Manager</strong> を右クリックします。</li>
+  <li>ソースパスとハッシュ、診断を確認して <strong>Approve &amp; Load</strong> を押します。</li>
+  <li>Scripts に出た名前をクリックすると ON になります。</li>
+</ol>
+<pre><code>#include &lt;medicon.hpp&gt;
+using namespace medicon;
+
+class Hello : public Module {
+    void on_enable() override { chat::print("Hello, Medicon!"); }
+};
+MEDICON_MODULE(Hello, "my_hello", "My Hello", Category::Utility);</code></pre>
+<p>スクリプトは普通のモジュールと同じように扱えます。左クリックで ON/OFF、右クリックで設定、中央クリックでキーバインドです。</p>
+
+<h2 id="project">ファイル構成</h2>
+<ul>
+  <li><code>Scripts</code> 直下の <code>.cpp</code> は、それぞれが独立したモジュールです。直下の <code>.h</code> / <code>.hpp</code> / <code>.inl</code> は共有できます。</li>
+  <li><code>Scripts</code> 直下のフォルダは 1 モジュールです。中の <code>.cpp</code> を再帰的にすべてリンクします。</li>
+  <li><code>MEDICON_MODULE</code> は 1 モジュールにつき 1 回だけ書きます。</li>
+  <li>シンボリックリンクとジャンクションはソースに使えません。</li>
+  <li><code>SDK</code> フォルダは Medicon が上書きします。編集せず、<code>Scripts</code> にコピーして使ってください。</li>
+</ul>
+<pre><code>Scripts/
+  Hello.cpp
+  MyProject/
+    medicon.toml
+    main.cpp
+    helpers.cpp
+    helpers.hpp</code></pre>
+<p>フォルダには <code>medicon.toml</code> を置けます。</p>
+<pre><code>[module]
+id = "multi_file"
+description = "説明"
+required_features = ["render", "local_player"]</code></pre>
+<p><code>id</code> は <code>MEDICON_MODULE</code> の ID と一致させます。<code>required_features</code> は省略でき、指定できるのは <code>chat</code>、<code>render</code>、<code>local_player</code> です。必須機能が足りない DLL は実行前に拒否されます。</p>
+<p>エディタは VS Code + clangd が使えます。<code>SDK/compile_commands.json</code> と <code>Scripts/.clangd</code> が自動生成されるので、<code>Scripts</code> フォルダを開くだけで補完が効きます。</p>
+
+<h2 id="module">Module</h2>
+<p><code>Module</code> を継承し、必要なコールバックだけ override します。</p>
+<div class="table"><table>
+  <thead><tr><th>コールバック</th><th>呼ばれるとき</th></tr></thead>
+  <tbody>
+    <tr><td><code>on_enable()</code></td><td>OFF → ON のとき。設定の復元後です。<code>listen</code> はここで登録します</td></tr>
+    <tr><td><code>on_disable()</code></td><td>ON → OFF のとき。この後、イベントとタイマーは自動で解除されます</td></tr>
+    <tr><td><code>on_tick()</code></td><td>ホストの tick ごと。MCBE の baseTick とは別物です</td></tr>
+    <tr><td><code>on_render(RenderContext&amp;)</code></td><td>毎フレームの HUD 描画</td></tr>
+    <tr><td><code>on_ui(UIContext&amp;)</code></td><td>ClickGUI が開いている間の操作できる UI</td></tr>
+  </tbody>
+</table></div>
+<pre><code>MEDICON_MODULE(Type, "id", "表示名", Category::Visual);</code></pre>
+<ul>
+  <li>ID は 1〜63 バイト、表示名は 1〜95 バイトです。ID は他と重複させず、更新しても変えないでください。</li>
+  <li><code>Category</code> は <code>Visual</code>、<code>Movement</code>、<code>Player</code>、<code>Utility</code>、<code>Client</code>、<code>Misc</code> です。分類用のメタデータで、ClickGUI の表示先はすべて Scripts です。</li>
+</ul>
+<div class="note">SDK はホストが呼ぶコールバックの中でだけ使えます。自作スレッドや DLL 初期化処理からは呼べません。</div>
+
+<h2 id="settings">設定</h2>
+<p>型は <code>bool</code>、<code>int</code>、<code>float</code>、<code>Color</code>、<code>std::string</code> です。メンバーとして宣言すると ClickGUI に並び、自動で保存されます。</p>
+<pre><code>class Example : public Module {
+    Setting&lt;bool&gt; greeting = setting&lt;bool&gt;("greeting", "Greeting", true);
+    Setting&lt;float&gt; radius = setting&lt;float&gt;("radius", "Radius", 4).range(1, 20, .5F);
+    Setting&lt;int&gt; count = setting&lt;int&gt;("count", "Count", 1).range(1, 10);
+    Setting&lt;Color&gt; tint = setting&lt;Color&gt;("tint", "Tint", Color{1, .5F, .2F, 1});
+    Setting&lt;std::string&gt; label = setting&lt;std::string&gt;("label", "Label", "Medicon");
+
+    void on_render(RenderContext&amp; context) override {
+        context.fill_circle(context.center(), radius.get(), tint.get());
+    }
+};</code></pre>
+<ul>
+  <li><code>setting</code> と <code>range</code> は Module の構築中だけ使えます。値の取得は <code>.get()</code> です。</li>
+  <li>ID は 1〜63 文字の ASCII 英数字、<code>_</code>、<code>-</code>、<code>.</code> です。</li>
+  <li>モジュール ID と設定 ID を変えなければ、リロードや再起動をまたいで値が残ります。</li>
+  <li>範囲を変えると既存の値は新しい範囲に収まります。型を変えると初期値に戻ります。</li>
+</ul>
+
+<h2 id="events">イベント</h2>
+<p><code>on_enable</code> で <code>listen&lt;T&gt;</code> を呼んで購読します。OFF になると自動で解除されます。</p>
+<pre><code>void on_enable() override {
+    listen&lt;GameJoined&gt;([](const GameJoined&amp;) { log::info("Joined a world"); });
+    listen&lt;ScreenResized&gt;([](const ScreenResized&amp; e) {
+        log::info("Scale: " + std::to_string(e.scale));
+    });
+    listen&lt;KeyPressed&gt;([](const KeyPressed&amp; e) {
+        if (e.key == Key::F6 &amp;&amp; !e.repeat) notification::show("F6", "Event received");
+    });
+}</code></pre>
+<div class="table"><table>
+  <thead><tr><th>イベント</th><th>フィールド</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>TickEvent</code></td><td><code>delta_seconds</code></td><td>ホストの tick ごと</td></tr>
+    <tr><td><code>RenderEvent</code></td><td><code>context</code></td><td><code>on_render</code> の直後</td></tr>
+    <tr><td><code>KeyPressed</code></td><td><code>key</code>, <code>repeat</code></td><td>GUI に消費されなかったキーの押下</td></tr>
+    <tr><td><code>KeyEvent</code></td><td><code>key</code>, <code>down</code>, <code>repeat</code></td><td>GUI に消費されなかったキー入力。旧 API</td></tr>
+    <tr><td><code>GameJoined</code></td><td><code>world_identity</code></td><td>ワールドに入ったとき</td></tr>
+    <tr><td><code>GameLeft</code></td><td><code>world_identity</code></td><td>ワールドを出たとき</td></tr>
+    <tr><td><code>ScreenResized</code></td><td><code>width</code>, <code>height</code>, <code>scale</code></td><td>初回 tick と、サイズや scale が変わったとき。単位は論理 DIP</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="timers">タイマー</h2>
+<pre><code>using namespace std::chrono_literals;
+
+uint64_t timer_ = 0;
+
+void on_enable() override {
+    after(500ms, [] { notification::show("Ready", "Script enabled"); });
+    timer_ = every(2s, [] { log::info("periodic"); });
+}</code></pre>
+<ul>
+  <li><code>after</code> は 1 回、<code>every</code> は繰り返しです。どちらもタイマー ID を返し、失敗すると 0 を返します。</li>
+  <li><code>cancel_timer(id)</code> で止めます。OFF やリロードでも自動で解放されます。</li>
+  <li>発火はホストの tick です。止まっていた間の分をまとめて連続実行することはありません。</li>
+</ul>
+
+<h2 id="render">描画</h2>
+<p><code>on_render</code> に渡される <code>RenderContext</code> で描きます。そのままだと単位は物理ピクセルです。<code>logical()</code> を通すと UI スケールに従う論理 DIP になるので、HUD はこちらを使うのがおすすめです。</p>
+<pre><code>void on_render(RenderContext&amp; render) override {
+    auto draw = render.logical();
+    draw.fill_rounded_rect({24, 24, 200, 60}, 12, Color::rgba(20, 20, 24, 200));
+    draw.text({40, 40}, "Hello", Color::white(), 20);
+}</code></pre>
+<div class="table"><table>
+  <thead><tr><th>メソッド</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>logical()</code></td><td>論理 DIP で描く <code>RenderContext</code> を返す</td></tr>
+    <tr><td><code>viewport_size()</code></td><td>画面サイズ</td></tr>
+    <tr><td><code>center()</code></td><td>画面中央</td></tr>
+    <tr><td><code>text(pos, message, color, size = 16)</code></td><td>UTF-8 文字列</td></tr>
+    <tr><td><code>fill_circle(pos, radius, color)</code></td><td>塗りつぶしの円</td></tr>
+    <tr><td><code>fill_rounded_rect(rect, radius, color)</code></td><td>塗りつぶしの角丸矩形</td></tr>
+    <tr><td><code>stroke_rounded_rect(rect, radius, color, thickness = 1)</code></td><td>角丸矩形の枠線</td></tr>
+    <tr><td><code>line(from, to, color, thickness = 1)</code></td><td>線分</td></tr>
+    <tr><td><code>glass(rect, style)</code></td><td><a href="#glass">Liquid Glass</a> のパネル</td></tr>
+  </tbody>
+</table></div>
+<p><code>RenderContext</code> はコールバックの間だけ有効です。メンバーに保存しないでください。座標や色に NaN、inf、範囲外の値を渡すと拒否されます。</p>
+
+<h2 id="glass">Liquid Glass</h2>
+<p>BlockCount などの本体 UI と同じ Liquid Glass を描けます。</p>
+<pre><code>auto draw = render.logical();
+draw.glass({24, 24, 300, 86}, Glass::regular().radius(24).refraction(.7F));
+draw.text({44, 54}, "Medicon", Color::white(), 20);</code></pre>
+<div class="table"><table>
+  <thead><tr><th>指定</th><th>対応</th></tr></thead>
+  <tbody>
+    <tr><td><code>Glass::regular()</code></td><td>対応</td></tr>
+    <tr><td><code>radius(value)</code></td><td>対応。短辺の半分までに丸められます</td></tr>
+    <tr><td><code>refraction(0..1)</code></td><td>対応。屈折と吸収の両方が変わります</td></tr>
+    <tr><td><code>opacity(0..1)</code></td><td>対応</td></tr>
+    <tr><td><code>quality(GlassQuality::Inherit)</code></td><td>対応。他の値は非対応</td></tr>
+    <tr><td><code>clear()</code> / <code>frosted()</code> / <code>prominent()</code></td><td>非対応</td></tr>
+    <tr><td><code>blur</code> / <code>tint</code> / <code>saturation</code> / <code>highlight</code> / <code>border</code> / <code>shadow</code></td><td>非対応</td></tr>
+  </tbody>
+</table></div>
+<p>非対応の指定を使うと、診断が出て読みやすい GlassPlate 表示にフォールバックします。<code>glass()</code> は本物の Glass で描けたら <code>true</code>、フォールバックや拒否なら <code>false</code> を返します。</p>
+<p>Windows の透明効果が OFF のときやハイコントラストのときも、Glass は止まって不透明なプレートになります。</p>
+
+<h2 id="ui">UI パネル</h2>
+<p><code>on_ui</code> ではボタンなどの操作できる UI を作れます。単位は論理 DIP です。</p>
+<pre><code>float progress_ = 0;
+
+void on_ui(UIContext&amp; ui) override {
+    auto panel = ui.glass_panel("quick", {34, 380, 300, 160}, Glass::regular().radius(20));
+    panel.label("Quick controls");
+    if (panel.button("advance", "Advance")) progress_ = std::min(1.F, progress_ + .1F);
+    panel.progress("progress", progress_);
+}</code></pre>
+<ul>
+  <li><code>on_ui</code> が呼ばれるのは、ClickGUI が開いていてゲームにフォーカスがあり、Main Menu / Social / Disconnect / Splash が前面にない間です。</li>
+  <li><code>button</code> はクリックかキー操作 1 回につき 1 度だけ <code>true</code> を返します。</li>
+  <li>パネルと widget の ID は固定してください。毎フレーム新しい ID を作ると上限で拒否されます。</li>
+  <li><code>Panel</code> と <code>UIContext</code> は保存しないでください。関数を抜けるとパネルは自動で閉じます。</li>
+  <li>ClickGUI に重ならない位置に置いてください。</li>
+</ul>
+
+<h2 id="tween">アニメーション</h2>
+<p><code>Tween&lt;T&gt;</code> は <code>float</code>、<code>double</code>、<code>Vec2</code>、<code>Color</code> を補間します。</p>
+<pre><code>Tween&lt;float&gt; opacity_{0};
+
+void on_enable() override {
+    opacity_.to(1.F, std::chrono::milliseconds(260), Easing::OutCubic);
+}
+
+void on_render(RenderContext&amp; render) override {
+    render.logical().text({24, 24}, "Fade", Color{1, 1, 1, opacity_.value()}, 20);
+}</code></pre>
+<ul>
+  <li>Easing は <code>Linear</code>、<code>OutCubic</code>、<code>OutExpo</code>、<code>InOutCubic</code> です。</li>
+  <li>途中で <code>to</code> を呼ぶと、現在値から続きます。</li>
+  <li>Windows のアニメーション効果が OFF のときは、すぐ目標値になります。</li>
+</ul>
+
+<h2 id="services">サービス</h2>
+<div class="table"><table>
+  <thead><tr><th>API</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>chat::print(message)</code></td><td>自分にだけ見えるチャット表示。送信はしません。失敗すると <code>false</code></td></tr>
+    <tr><td><code>log::info / warn / error(message)</code></td><td><code>Logs/script-manager.log</code> に記録</td></tr>
+    <tr><td><code>game::local_player()</code></td><td>ローカルプレイヤーのコピーを <code>optional</code> で返す。ワールド外では <code>nullopt</code></td></tr>
+    <tr><td><code>notification::show(title, body, level)</code></td><td>Medicon の通知を表示。<code>level</code> は省略可で、見た目は変わりません</td></tr>
+    <tr><td><code>sound::play_ui(Builtin::Success)</code></td><td>通知音を再生。<code>Success</code> のみ対応</td></tr>
+    <tr><td><code>theme::color(Token)</code></td><td><code>TextPrimary</code>、<code>TextSecondary</code>、<code>Accent</code>、<code>Surface</code>、<code>Outline</code></td></tr>
+    <tr><td><code>theme::reduced_motion()</code> など</td><td><code>reduced_transparency()</code>、<code>high_contrast()</code> も同様。Windows のアクセシビリティ設定</td></tr>
+    <tr><td><code>input::cursor_position()</code></td><td><code>on_ui</code> のフォーカス中パネルだけ。無効時は <code>{-1, -1}</code></td></tr>
+    <tr><td><code>input::key_down(Key)</code></td><td>同上。無効時は <code>false</code></td></tr>
+    <tr><td><code>clock::delta_seconds()</code></td><td>tick の経過秒</td></tr>
+    <tr><td><code>clock::now_seconds()</code></td><td>単調増加の秒数。時刻ではありません</td></tr>
+    <tr><td><code>feature::available(Capability)</code></td><td>今の環境で使える機能か調べる</td></tr>
+    <tr><td><code>features::is_available("chat")</code></td><td><code>chat</code>、<code>render</code>、<code>local_player</code> を調べる旧 API</td></tr>
+    <tr><td><code>sdk::api_version</code>, <code>sdk::abi_version</code></td><td>SDK のバージョン定数</td></tr>
+  </tbody>
+</table></div>
+<pre><code>if (auto player = game::local_player()) {
+    log::info("HP: " + std::to_string(player-&gt;health));
+}</code></pre>
+<p><code>PlayerSnapshot</code> のフィールドは <code>x</code>、<code>y</code>、<code>z</code>、<code>velocity_x</code>、<code>velocity_y</code>、<code>velocity_z</code>、<code>health</code>、<code>yaw</code>、<code>pitch</code>、<code>alive</code> です。<code>health</code> が負のときは不明を意味します。</p>
+<p><code>Capability</code> は <code>Glass</code>、<code>Refraction</code>、<code>UI</code>、<code>Animation</code>、<code>Notifications</code>、<code>Storage</code>、<code>Timers</code>、<code>Theme</code>、<code>Input</code>、<code>Sound</code>、<code>GlassRadius</code>、<code>GlassOpacity</code>、<code>GlassBlur</code>、<code>GlassTint</code>、<code>GlassQuality</code> です。<code>GlassBlur</code>、<code>GlassTint</code>、<code>GlassQuality</code> は現在 <code>false</code> です。今の値は Script Manager の Capabilities でも確認できます。</p>
+
+<h2 id="storage">Storage</h2>
+<p>モジュールごとの文字列データを保存できます。</p>
+<pre><code>auto label = storage::get("label").value_or("Medicon");
+storage::set("label", label);</code></pre>
+<ul>
+  <li><code>get</code> は読み込み済みのメモリから <code>optional</code> で返します。</li>
+  <li><code>set</code> の <code>true</code> は「保存を予約できた」という意味です。ディスクへの書き込みは別スレッドで行います。</li>
+  <li>キーはファイルパスではありません。<code>..</code>、スラッシュ、バックスラッシュ、NUL は拒否されます。値は UTF-8 です。</li>
+  <li><code>on_disable</code> の中からの <code>set</code> も保存されます。</li>
+</ul>
+<div class="note">Storage は暗号化されません。パスワードやトークンなどの秘密情報は保存しないでください。</div>
+
+<h2 id="types">型</h2>
+<div class="table"><table>
+  <thead><tr><th>型</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vec2</code></td><td><code>x</code>, <code>y</code></td></tr>
+    <tr><td><code>Vec3</code></td><td><code>x</code>, <code>y</code>, <code>z</code></td></tr>
+    <tr><td><code>Size</code></td><td><code>width</code>, <code>height</code></td></tr>
+    <tr><td><code>Rect</code></td><td><code>x</code>, <code>y</code>, <code>width</code>, <code>height</code></td></tr>
+    <tr><td><code>Insets</code></td><td><code>left</code>, <code>top</code>, <code>right</code>, <code>bottom</code></td></tr>
+    <tr><td><code>Color</code></td><td><code>r</code>, <code>g</code>, <code>b</code>, <code>a</code>。0〜1 の RGBA。<code>Color::rgb(255, 128, 0)</code> と <code>Color::rgba(...)</code> は 0〜255 で指定</td></tr>
+    <tr><td><code>Key</code></td><td><code>A</code>〜<code>Z</code>、<code>F1</code>〜<code>F12</code>、<code>Enter</code>、<code>Escape</code>、<code>Space</code>、<code>Left</code>、<code>Up</code>、<code>Right</code>、<code>Down</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="build">ビルド</h2>
+<ul>
+  <li>コンパイラは MSVC <code>cl.exe</code>(C++20、Windows x64、<code>/MT</code>)です。<code>/sourceDependencies</code> に対応した版が必要です。</li>
+  <li>LLVM-MinGW の <code>clang++</code> も開発・テスト用に使えます。PATH にないときは <code>MEDICON_SCRIPT_CXX</code> にフルパスを設定します。<code>clang-cl</code> は非対応です。</li>
+  <li><strong>Build / Reload</strong> は現在のソースを再評価し、<strong>Rebuild</strong> はキャッシュなしでビルドします。</li>
+  <li>エラーはファイル・行・列つきで Script Manager に出ます。コンパイラの出力は <code>Cache/build/work-*/build.log</code> に残ります。</li>
+  <li>ビルドに失敗しても、最後に動いていた版が動き続けます。</li>
+</ul>
+
+<h2 id="trust">承認とリロード</h2>
+<div class="note">スクリプトはゲームと同じ権限で動くネイティブコードです。サンドボックスではありません。信頼できるコードだけを承認してください。</div>
+<ul>
+  <li>未承認の DLL は読み込まれません。<code>DllMain</code> も承認前には実行されません。</li>
+  <li>承認はソースと DLL のハッシュの組に対して保存されます。コードが変わると再承認が必要です。</li>
+  <li><strong>Revoke approval</strong> で承認を取り消すと、そのモジュールは解除されます。</li>
+  <li>リロードで新しい版の有効化に失敗すると、元の版に戻ります。</li>
+  <li>外部 DLL や遅延ロード DLL に依存するスクリプトには対応していません。</li>
+  <li>標準 C++ 例外は捕捉され、そのスクリプトだけが OFF になります。アクセス違反や無限ループは防げず、ゲームごと巻き込みます。</li>
+  <li>DLL 内で自作スレッドを動かし続ける設計には対応していません。</li>
+</ul>
+<p>監査ログは <code>Logs/script-manager.log</code> に JSON Lines で記録されます。</p>
+
+<h2 id="limits">制限</h2>
+<div class="table"><table>
+  <thead><tr><th>対象</th><th>上限</th></tr></thead>
+  <tbody>
+    <tr><td>描画コマンド</td><td>コールバックごとに 2048</td></tr>
+    <tr><td>Glass / UI パネル</td><td>モジュールごとに 20 枚、全体で 64 枚</td></tr>
+    <tr><td>タイマー</td><td>モジュールごとに 64 個</td></tr>
+    <tr><td>タイマーの遅延</td><td>0〜7 日</td></tr>
+    <tr><td>タイマーの間隔</td><td>1 ms〜7 日</td></tr>
+    <tr><td>Storage</td><td>モジュールごとに 256 KiB、1024 キー、キー長 128 バイト</td></tr>
+    <tr><td>通知</td><td>同時表示 3 件、キュー 32 件、共通 500 ms の rate limit</td></tr>
+    <tr><td>ログ</td><td>1 メッセージ 16 KiB</td></tr>
+    <tr><td>ソース</td><td>1 ファイル 8 MiB、1 モジュール 2048 入力</td></tr>
+    <tr><td>DLL</td><td>128 MiB</td></tr>
+    <tr><td>コンパイラ</td><td>各工程の実時間 60 秒、CPU 時間 60 秒、プロセス 1 GiB、ジョブ 2 GiB、子プロセス 16 個、出力 4 MiB</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="examples">サンプル</h2>
+<p><code>%LOCALAPPDATA%\Medicon\SDK\examples</code> にあります。ファイルまたはフォルダを <code>Scripts</code> にコピーして使えます。</p>
+<div class="table"><table>
+  <thead><tr><th>名前</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>HelloWorld.cpp</code></td><td>最小のモジュール</td></tr>
+    <tr><td><code>Settings.cpp</code></td><td>設定の全型</td></tr>
+    <tr><td><code>CustomHUD.cpp</code></td><td>HUD 描画</td></tr>
+    <tr><td><code>Events.cpp</code></td><td>イベントの購読</td></tr>
+    <tr><td><code>Storage.cpp</code></td><td>データの保存</td></tr>
+    <tr><td><code>Motion.cpp</code></td><td>アニメーション</td></tr>
+    <tr><td><code>AnimatedToast.cpp</code></td><td>通知とアニメーション</td></tr>
+    <tr><td><code>GlassHUD.cpp</code></td><td>Glass の HUD</td></tr>
+    <tr><td><code>FullscreenGlass.cpp</code></td><td>全画面の Glass</td></tr>
+    <tr><td><code>GlassFallback.cpp</code></td><td>Glass のフォールバック</td></tr>
+    <tr><td><code>GlassQuickPanel.cpp</code></td><td>操作できる UI パネル</td></tr>
+    <tr><td><code>MultiFile/</code></td><td>複数ファイルのモジュール</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compat">互換性</h2>
+<div class="table"><table>
+  <thead><tr><th>SDK</th><th>API</th><th>ABI</th><th>備考</th></tr></thead>
+  <tbody>
+    <tr><td>0.4.0</td><td>400</td><td>1</td><td>現行</td></tr>
+    <tr><td>0.1.0</td><td>100</td><td>1</td><td>バイナリ互換でロード</td></tr>
+  </tbody>
+</table></div>
+<p>これ以外の API / ABI のバイナリは拒否されます。MCBE の対応は Medicon 本体の検証済みプロファイルに従います。</p>
+</main>
+</div>
+</body>
+</html>

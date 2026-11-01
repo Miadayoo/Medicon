@@ -27,6 +27,8 @@ struct Toast {
     std::string title;       // sender name, Friend request, News ...
     std::string body;        // one line; ellipsized to fit
     std::int64_t sender = 0; // later DMs from the same sender merge into this toast
+    std::string owner;
+    std::uint64_t generation = 0;
 };
 
 struct ToastFrame {
@@ -86,6 +88,7 @@ public:
     static Morph morph(float anim);
 
     void push(Toast toast);
+    void remove_owner(std::string_view owner, std::uint64_t generation);
     bool empty() const noexcept { return visible_.empty() && queued_.empty(); }
     // Draws, handles hover and click, then advances the timers by frame.dt.
     void render(ImDrawList* list, const SocialFonts& fonts, IShadowRenderer& shadows, const ToastFrame& frame);
