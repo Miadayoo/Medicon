@@ -19,7 +19,7 @@ struct MenuSessionIdentity {
     bool operator==(const MenuSessionIdentity&) const = default;
 };
 
-// Read-only, fail-closed reader for the exact 1.26.52.3 image inspected for this
+// Read-only, fail-closed reader for the exact 1.26.60.5 image inspected for this
 // feature. No foreign C++ method, string allocator or reference count is called.
 class BedrockMenu {
 public:

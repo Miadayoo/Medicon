@@ -4,6 +4,7 @@
 #include <medicon/memory/signature_catalog.hpp>
 #include <medicon/memory/signature_registry.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
 
 #include <Windows.h>
 
@@ -105,6 +106,15 @@ BedrockAuth::State BedrockAuth::locate(std::string& diagnostic) {
     };
     auto module = memory::current_process_module(&diagnostic);
     if (!module) return unsupported(diagnostic);
+    // Resolve account hooks only in the image whose serializer/layout was inspected.
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 pe{};
+    if (!copy_bytes(module->image.address, &dos, sizeof(dos)) || dos.e_lfanew <= 0 ||
+        !module->image.contains(module->image.address + dos.e_lfanew, sizeof(pe)) ||
+        !copy_bytes(module->image.address + dos.e_lfanew, &pe, sizeof(pe)) ||
+        pe.Signature != IMAGE_NT_SIGNATURE || pe.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        !bedrock_1_26_60_5::known_image(pe.FileHeader.TimeDateStamp, pe.OptionalHeader.SizeOfImage))
+        return unsupported("Alt Manager auth SDK requires its reviewed 1.26.60.5 profile.");
 
     memory::SignatureRegistry signatures;
     signatures.scan(memory::medicon_auth_signatures(), module->executable_regions, module->image);
@@ -121,7 +131,7 @@ BedrockAuth::State BedrockAuth::locate(std::string& diagnostic) {
     // UserImpl::create anchors the version: without it the layout offsets this
     // SDK reads are not the ones that were analysed, so stay unsupported.
     if (!user_impl_create_)
-        return unsupported("Social::UserImpl::create signature did not resolve; auth SDK is 1.26.52.03 only.");
+        return unsupported("Social::UserImpl::create signature did not resolve; auth SDK is 1.26.60.05 only.");
     state_ = State::ready;
     return state_;
 }
@@ -133,9 +143,9 @@ std::uintptr_t BedrockAuth::login_serialization_target(std::string& diagnostic) 
     if (!copy_bytes(module, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew <= 0 ||
         dos.e_lfanew > 1048576 || !copy_bytes(module + dos.e_lfanew, &pe, sizeof(pe)) ||
         pe.Signature != IMAGE_NT_SIGNATURE || pe.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        pe.FileHeader.TimeDateStamp != 0x6ab54e37 || pe.OptionalHeader.SizeOfImage != 0x12c02000 ||
-        connection_auth_info_to_json_ != module + 0x46add0) {
-        diagnostic = "Server login bridge requires the reviewed Minecraft 1.26.52.03 executable.";
+        !bedrock_1_26_60_5::known_image(pe.FileHeader.TimeDateStamp, pe.OptionalHeader.SizeOfImage) ||
+        connection_auth_info_to_json_ != module + 0x4B9A30) {
+        diagnostic = "Server login bridge requires the reviewed Minecraft 1.26.60.05 executable.";
         return 0;
     }
     diagnostic.clear();

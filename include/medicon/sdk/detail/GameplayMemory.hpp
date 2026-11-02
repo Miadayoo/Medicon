@@ -25,7 +25,7 @@ bool read_gameplay_move_input(std::uintptr_t component, GameplayMoveInput& input
 bool write_gameplay_sprint_input(std::uintptr_t component, bool sprinting) noexcept;
 bool write_gameplay_sprinting_flag(std::uintptr_t component, bool sprinting) noexcept;
 bool write_gameplay_sprint_speed(std::uintptr_t component, bool sprinting) noexcept;
-// Validated 1.26.52.3 movement packet layouts; touches pitch/yaw/head yaw,
+// Validated 1.26.60.5 movement packet layouts; touches pitch/yaw/head yaw,
 // and optionally PlayerAuthInput's interact rotation and movement vectors.
 bool write_gameplay_rotation_input(std::uintptr_t packet, int packet_id, float yaw, float pitch,
                                    bool vector_fix = false) noexcept;
@@ -49,12 +49,12 @@ bool enqueue_gameplay_knockback(void* component, void* controller, Vec3 velocity
 // ItemStackBase: the Item sits behind the WeakPtr at +8, count at +0x22.
 // Zero for an empty stack; readable layouts only.
 bool read_gameplay_stack_item(std::uintptr_t stack, std::uintptr_t& item, std::uint8_t& count) noexcept;
-// 1.26.52.3 AttributesComponent: ascending attribute ids at +0 and their
+// 1.26.60.5 AttributesComponent: ascending attribute ids at +0 and their
 // 0x88-byte AttributeInstances at +0x18. Instance max +0x78, current +0x7C.
 inline constexpr std::size_t attributes_component_size = 0x50;
 bool read_gameplay_attribute(std::uintptr_t component, std::uint32_t attribute_id, float& value) noexcept;
 
-// 1.26.52.3 InventoryAction owns complete copies of both ItemStacks, including
+// 1.26.60.5 InventoryAction owns complete copies of both ItemStacks, including
 // their tags and network identifiers. No DLL STL object crosses this ABI.
 struct NativeInventorySource {
     std::int32_t type = 0;
@@ -86,7 +86,7 @@ struct NativeInventoryPacketCalls {
     void (*destroy_packet)(void*, unsigned);
     void (*send)(void*, void*);
 };
-// Native 1.26.52.3 constructors consume the unique_ptr and payload respectively.
+// Native 1.26.60.5 constructors consume the unique_ptr and payload respectively.
 // The independent packet must have mIsClientSide=false, like Solstice's factory
 // packet. LocalPlayer::sendComplexInventoryTransaction instead sets it from the
 // level's server-authoritative-inventory flag.

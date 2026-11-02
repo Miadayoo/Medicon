@@ -1,5 +1,8 @@
 #include <medicon/sdk/BedrockGameplay.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
+#include <medicon/sdk/GameplayProfile.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
+#include <medicon/sdk/detail/ReplayMotion.hpp>
 
 #include <Windows.h>
 
@@ -15,6 +18,22 @@
 #include <vector>
 
 namespace {
+namespace profile = medicon::sdk::bedrock_1_26_60_5;
+static_assert(profile::known_image(0x6AD79EE4, 0x1383B000));
+static_assert(profile::known_image(0x6AD79EE4, 0x1383C000));
+static_assert(profile::known_packaging(0x6AD79EE4, 0x1383B000, 0x134D2DEF));
+static_assert(profile::known_packaging(0x6AD79EE4, 0x1383C000, 0x134D3CBA));
+static_assert(!profile::known_packaging(0x6AD79EE4, 0x1383B000, 0x134D3CBA));
+static_assert(!profile::known_packaging(0x6AD79EE4, 0x1383C000, 0x134D2DEF));
+static_assert(!profile::known_packaging(0x6AB54E37, 0x1383C000, 0x134D3CBA));
+static_assert(!profile::known_image(0x6AD79EE4, 0x1383D000));
+static_assert(!profile::known_image(0x6AB54E37, 0x1383B000));
+static_assert(!profile::known_image(0x6AD79EE4, 0x12C02000));
+static_assert(profile::known_gameplay_entry(0x376B290));
+static_assert(!profile::known_gameplay_entry(0x259BC60));
+static_assert(!profile::known_gameplay_entry(0x2888190)); // Former prediction queue.
+static_assert(profile::known_gameplay_entry(0x2CD9D60));
+
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -766,10 +785,70 @@ void inventory_transaction_boundary() {
     InventoryFixture::current = nullptr;
 }
 
+struct ReplayFixture {
+    static inline ReplayFixture* current{};
+    alignas(8) std::array<std::uint64_t,3> control{};
+    medicon::sdk::Vec3 payload{};
+    int component{}, actor{};
+    unsigned allocated{}, created{}, released{}, admitted{};
+    bool allocation_fails{}, creation_fails{}, creation_throws{};
+    int admission_result{2};
+    std::uint64_t tick{};
+    medicon::sdk::detail::ReplayMotionCalls calls() {
+        current=this;
+        return {this, [](void* context,std::size_t size)->void* {
+                auto& f=*static_cast<ReplayFixture*>(context); ++f.allocated;
+                require(size==24,"Native replay control allocation size changed");
+                return f.allocation_fails?nullptr:f.control.data();
+            }, [](std::uintptr_t* out,const medicon::sdk::Vec3* value)->void* {
+                auto& f=*current; ++f.created;
+                require(f.control==std::array<std::uint64_t,3>{123,0x100000001ULL,0},
+                        "Replay owner counts/type must be initialized before native construction");
+                if(f.creation_throws) throw std::runtime_error("native constructor fixture");
+                if(!f.creation_fails) {f.payload=*value;*out=reinterpret_cast<std::uintptr_t>(&f.payload);}
+                return out;
+            }, [](medicon::sdk::detail::ReplayMotionOwner* owner) {
+                auto& f=*current; ++f.released;
+                require(owner->control==reinterpret_cast<std::uintptr_t>(f.control.data()) &&
+                        f.control[2]==owner->object,"Native owner lost its payload or control block");
+            }, [](void* component,void* actor,medicon::sdk::detail::ReplayMotionOwner* owner,std::uint64_t tick) {
+                auto& f=*current; ++f.admitted; f.tick=tick;
+                require(component==&f.component && actor==&f.actor &&
+                        owner->object==reinterpret_cast<std::uintptr_t>(&f.payload),"Replay admission context changed");
+                // Native admission consumes references without clearing the borrowed input.
+                f.calls().release(owner);
+                return f.admission_result;
+            }, 123};
+    }
+};
+
+void replay_motion_boundary() {
+    using medicon::sdk::detail::enqueue_replay_motion;
+    for(int outcome=0;outcome<=3;++outcome) {
+        ReplayFixture f; f.admission_result=outcome;
+        require(enqueue_replay_motion(f.calls(),&f.component,&f.actor,{1,2,3},400)==(outcome<=2) &&
+                f.allocated==1 && f.created==1 && f.admitted==1 && f.released==1 && f.tick==400 && f.payload.y==2,
+                "Replay admission lost scalar arguments, leaked, or destroyed a consumed owner twice");
+    }
+    ReplayFixture f; f.allocation_fails=true;
+    require(!enqueue_replay_motion(f.calls(),&f.component,&f.actor,{1,2,3},1) && !f.created && !f.released,
+            "Failed replay allocation reached a native constructor");
+    f={}; f.creation_fails=true;
+    require(!enqueue_replay_motion(f.calls(),&f.component,&f.actor,{1,2,3},1) && f.released==1 && !f.admitted,
+            "Failed event construction leaked its native control block");
+    f={}; f.creation_throws=true;
+    try { (void)enqueue_replay_motion(f.calls(),&f.component,&f.actor,{1,2,3},1); }
+    catch(const std::runtime_error&) {}
+    require(f.released==1 && !f.admitted,"Constructor exception leaked its native control block");
+    f={};
+    require(!enqueue_replay_motion(f.calls(),&f.component,&f.actor,{1,2,3},UINT64_MAX) && !f.allocated,
+            "Replay tick overflow reached native admission");
+}
+
 } // namespace
 
 int main() {
-    try { components(); pools(); native_boundary(); predicted_motion_boundary(); incoming_motion(); velocity_packet_observations(); delayed_velocity_memory(); latency_packet_copy(); movement_input(); render_pitch_scope(); server_rotation_packets(); move_fix_packets(); item_stack_reader(); attribute_reader(); inventory_transaction_boundary(); }
+    try { components(); pools(); native_boundary(); predicted_motion_boundary(); replay_motion_boundary(); incoming_motion(); velocity_packet_observations(); delayed_velocity_memory(); latency_packet_copy(); movement_input(); render_pitch_scope(); server_rotation_packets(); move_fix_packets(); item_stack_reader(); attribute_reader(); inventory_transaction_boundary(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Bedrock gameplay ABI tests passed\n";
 }

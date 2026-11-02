@@ -355,7 +355,7 @@ void AltService::State::use(const UseAccount& command) {
                 const std::wstring wide(text);
                 const std::string device(wide.begin() + 1, wide.end() - 1);
                 auto host = make_sign_in_host ? make_sign_in_host(channel) : std::make_unique<Host<State>>(*this);
-                result = prepare_session(*host, *found, application_id, device, "1.26.52");
+                result = prepare_session(*host, *found, application_id, device, "1.26.60");
                 // Persist refresh-token rotation even if a later Xbox/MC stage fails.
                 if (!save()) report("AltManager: refreshed credential could not be saved.");
             }

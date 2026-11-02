@@ -8,7 +8,7 @@
 
 namespace medicon::sdk::input {
 
-// Windows x64 ABI verified against the 1.26.52.3 executable. Opaque game
+// Windows x64 ABI verified against the 1.26.60.5 executable. Opaque game
 // objects are forwarded only; no game input/component layout is accessed.
 struct LookDelta { float x, y; };
 using MouseFeedFn = void(*)(void*, std::uint8_t, int, std::int16_t, std::int16_t,

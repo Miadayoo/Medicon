@@ -1,4 +1,5 @@
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
 
 #include <medicon/memory/module_view.hpp>
 #include <medicon/memory/signature_catalog.hpp>
@@ -18,12 +19,13 @@ namespace medicon::sdk {
 namespace {
 
 // Layout/protocol reference only; this bridge does not import the upstream SDK:
-// https://github.com/surukotonai/solstice/tree/1d7808f52ef4ba6e34a7fbcc65294907a7761611/src
-// SDK/OffsetProvider.hpp: MinecraftGame +0x970, ClientInstance sender +0x1D0.
+// https://github.com/surukotonai/solstice/tree/cc6463dcadfeadb9049c235134c6b46efdc12b7e/src
+// SDK/OffsetProvider.hpp and the independently inspected 1.26.60.5 image.
 // Hook/Hooks/NetworkHooks/PacketSendHook.cpp: sender vtable[2], Text packet ID 9.
 // SDK/Minecraft/Network/Packets/TextPacket.hpp: AuthorAndMessage variant.
-// The upstream hints target 1.26.51; this bridge additionally limits versions,
-// checks both candidate map layouts, and withholds unverified/ambiguous targets.
+// The primary-client path is read without calling the upstream getter: its
+// output owns native shared_ptr references. Never synthesize those in this DLL.
+namespace profile = bedrock_1_26_60_5;
 constexpr std::size_t maximum_message = 1024;
 constexpr std::size_t body_offset = 0xA0;
 constexpr std::size_t message_offset = 0xC8;
@@ -59,7 +61,7 @@ std::optional<std::string> supported_executable_version(std::string& error) {
     const auto separator = full_path.find_last_of(L"\\/");
     const auto name = full_path.substr(separator == std::wstring_view::npos ? 0 : separator + 1);
     if (_wcsicmp(std::wstring(name).c_str(), L"Minecraft.Windows.exe") != 0) {
-        error = "Chat SDK bridge is only supported in Minecraft.Windows.exe 1.26.52.*.";
+        error = "Chat SDK bridge is only supported in Minecraft.Windows.exe 1.26.60.5.";
         return std::nullopt;
     }
     DWORD ignored = 0;
@@ -86,14 +88,37 @@ std::optional<std::string> supported_executable_version(std::string& error) {
     const unsigned revision = LOWORD(info->dwFileVersionLS);
     const auto version = std::to_string(major) + "." + std::to_string(minor) + "." +
                          std::to_string(build) + "." + std::to_string(revision);
-    if (major != 1 || minor != 26 || build != 52) {
-        error = "Chat SDK bridge does not support Minecraft " + version + "; expected 1.26.52.*.";
+    if (major != 1 || minor != 26 || build != 60 || revision != 5) {
+        error = "Chat SDK bridge does not support Minecraft " + version + "; expected 1.26.60.5.";
         return std::nullopt;
     }
     return version;
 }
 
 } // namespace
+
+std::uintptr_t detail::read_primary_client(std::uintptr_t game) noexcept {
+    std::uintptr_t head = 0, node = 0;
+    std::uint8_t sentinel = 0;
+    if (!read_at(game, profile::primary_clients, head) || !head ||
+        !read_at(head, 0x19, sentinel) || sentinel != 1 || !read_at(head, 8, node)) return 0;
+    // The getter at 0x8BCFC0 reads (game+0x30)+0x9A0, walks root->left,
+    // selects key 0, then returns node+0x38 after checking client+8's flag.
+    for (unsigned depth = 0; depth < 256; ++depth) {
+        if (!node || node == head || !read_at(node, 0x19, sentinel)) return 0;
+        if (sentinel != 0) return 0;
+        std::uintptr_t left = 0;
+        if (!read_at(node, 0, left) || !left || !read_at(left, 0x19, sentinel) || sentinel > 1) return 0;
+        if (sentinel == 0) { node = left; continue; }
+        std::uint8_t key = 255, alive = 0;
+        std::uintptr_t client = 0, lifetime = 0;
+        if (!read_at(node, 0x20, key) || key != 0 ||
+            !read_at(node, profile::primary_client_node, client) || !client ||
+            !read_at(client, 8, lifetime) || !read_at(lifetime, 0, alive) || alive != 1) return 0;
+        return client;
+    }
+    return 0;
+}
 
 std::optional<std::string> read_msvc_string(const void* object, std::size_t maximum) {
     // Microsoft release x64 basic_string<char>: 16-byte buffer/pointer union,
@@ -181,6 +206,14 @@ BedrockChat::State BedrockChat::locate(std::string& diagnostic) {
         auto module = memory::current_process_module(&diagnostic);
         if (!module) return unsupported(diagnostic);
         image_ = module->image;
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS64 nt{};
+        if (!copy_bytes(image_.address, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+            dos.e_lfanew <= 0 || !image_.contains(image_.address + dos.e_lfanew, sizeof(nt)) ||
+            !copy_bytes(image_.address + dos.e_lfanew, &nt, sizeof(nt)) || nt.Signature != IMAGE_NT_SIGNATURE ||
+            nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+            !profile::known_image(nt.FileHeader.TimeDateStamp, nt.OptionalHeader.SizeOfImage))
+            return unsupported("Chat SDK bridge requires the inspected 1.26.60.5 PE profile.");
         for (const auto& region : module->executable_regions)
             executable_regions_.push_back({region.address, region.bytes.size()});
         const auto definitions = memory::solstice_signatures();
@@ -208,45 +241,22 @@ BedrockChat::State BedrockChat::locate(std::string& diagnostic) {
         // mouse calls never read the subsequently changing chat state fields.
         profile_ready_.store(true, std::memory_order_release);
     }
-    std::uintptr_t game = 0, head = 0, count = 0, node = 0;
-    std::uint8_t head_sentinel = 0, node_sentinel = 1;
-    if (!read_at(game_global_, 0, game) || !game || !read_at(game, 0x970, head) ||
-        !read_at(game, 0x978, count) || !head || !count || count > 256 ||
-        !read_at(head, 0x19, head_sentinel) || head_sentinel != 1 ||
-        !read_at(head, 0, node) || !node || node == head ||
-        !read_at(node, 0x19, node_sentinel) || node_sentinel != 0) {
+    const auto instance = primary_client(false);
+    if (!instance) {
         diagnostic = "Waiting for a valid Minecraft primary client instance.";
         return State::waiting;
     }
-    std::uintptr_t verified_target = 0;
-    std::uintptr_t verified_server_target = 0;
-    std::uintptr_t verified_client = 0;
-    std::size_t verified_offset = 0;
-    unsigned valid_candidates = 0;
-    for (const std::size_t offset : {std::size_t{0x28}, std::size_t{0x30}}) {
-        std::uintptr_t instance = 0, sender = 0;
-        std::array<std::uintptr_t, 5> instance_methods{}, sender_methods{};
-        if (read_at(node, offset, instance) && object_vtable(instance, instance_methods) &&
-            read_at(instance, 0x1D0, sender) && object_vtable(sender, sender_methods)) {
-            ++valid_candidates;
-            verified_target = sender_methods[2];
-            verified_server_target = sender_methods[4];
-            verified_client = instance;
-            verified_offset = offset;
-        }
-    }
-    if (valid_candidates > 1)
-        return unsupported("Primary-client map layouts +0x28 and +0x30 are ambiguous; chat hook withheld.");
-    if (!valid_candidates) {
+    std::uintptr_t sender = 0;
+    std::array<std::uintptr_t, 5> sender_methods{};
+    if (!read_at(instance, profile::client_sender, sender) || !object_vtable(sender, sender_methods)) {
         diagnostic = "Waiting for a validated client/packet-sender vtable for Minecraft " + version_ + ".";
         return State::waiting;
     }
-    send_target_ = verified_target;
-    server_send_target_ = verified_server_target;
-    verified_client_ = verified_client;
+    send_target_ = sender_methods[2];
+    server_send_target_ = sender_methods[4];
+    verified_client_ = instance;
     state_ = State::ready;
-    terminal_diagnostic_ = "Chat SDK bridge ready for Minecraft " + version_ +
-        (verified_offset == 0x28 ? " (validated client node +0x28)." : " (validated client node +0x30).");
+    terminal_diagnostic_ = "Chat SDK bridge ready for Minecraft " + version_ + " (validated primary client node +0x38).";
     diagnostic = terminal_diagnostic_;
     return state_;
 }
@@ -292,7 +302,7 @@ bool invoke_client_mouse(void* client, ClientMouseAction action, const ChatCodeV
     try {
         if (!client || !validate || (action != ClientMouseAction::grab && action != ClientMouseAction::release))
             return false;
-        const std::size_t slot = action == ClientMouseAction::grab ? 310 : 311;
+        const std::size_t slot = action == ClientMouseAction::grab ? profile::grab_mouse_slot : profile::release_mouse_slot;
         std::uintptr_t table = 0, function = 0;
         if (!read_at(reinterpret_cast<std::uintptr_t>(client), 0, table) || !table ||
             !read_at(table, slot * sizeof(std::uintptr_t), function) || !validate(table, function)) return false;
@@ -309,32 +319,25 @@ std::uintptr_t BedrockChat::current_client() const noexcept {
 
 std::uintptr_t BedrockChat::primary_client(bool require_sender) const noexcept {
     if (!profile_ready_.load(std::memory_order_acquire)) return 0;
-    std::uintptr_t game = 0, head = 0, count = 0, node = 0;
-    std::uint8_t sentinel = 0;
-    if (!read_at(game_global_, 0, game) || !game || !read_at(game, 0x970, head) || !head ||
-        !read_at(game, 0x978, count) || !count || count > 256 ||
-        !read_at(head, 0x19, sentinel) || sentinel != 1 || !read_at(head, 0, node) ||
-        !node || node == head || !read_at(node, 0x19, sentinel) || sentinel != 0) return 0;
-    std::uintptr_t selected = 0;
-    unsigned matches = 0;
-    for (const std::size_t offset : {std::size_t{0x28}, std::size_t{0x30}}) {
-        std::uintptr_t candidate = 0, sender = 0, associated_game = 0;
-        std::array<std::uintptr_t, 5> client_methods{}, sender_methods{};
-        if (!read_at(node, offset, candidate) || !object_vtable(candidate, client_methods) ||
-            !read_at(candidate, 0x1A8, associated_game) || associated_game != game) continue;
-        if (require_sender) {
-            if (!read_at(candidate, 0x1D0, sender) || !object_vtable(sender, sender_methods) ||
-                sender_methods[2] != send_target_) continue;
-        } else {
-            std::uintptr_t table = 0, grab = 0, release = 0;
-            if (!read_at(candidate, 0, table) || !image_.contains(table, 312 * sizeof(std::uintptr_t)) ||
-                !read_at(table, 310 * sizeof(std::uintptr_t), grab) || !executable(grab) ||
-                !read_at(table, 311 * sizeof(std::uintptr_t), release) || !executable(release)) continue;
-        }
-        selected = candidate;
-        ++matches;
+    std::uintptr_t game = 0, game_table = 0;
+    if (!read_at(game_global_, 0, game) || !read_at(game, 0, game_table) ||
+        game_table != image_.address + profile::game_vtable) return 0;
+    const auto candidate = detail::read_primary_client(game);
+    std::uintptr_t table = 0, associated_game = 0, grab = 0, release = 0;
+    if (!candidate || !read_at(candidate, 0, table) || table != image_.address + profile::client_vtable ||
+        !image_.contains(table, (profile::release_mouse_slot + 1) * sizeof(std::uintptr_t)) ||
+        !read_at(candidate, profile::client_game, associated_game) || associated_game != game ||
+        !read_at(table, profile::grab_mouse_slot * sizeof(std::uintptr_t), grab) ||
+        grab != image_.address + profile::grab_mouse || !executable(grab) ||
+        !read_at(table, profile::release_mouse_slot * sizeof(std::uintptr_t), release) ||
+        release != image_.address + profile::release_mouse || !executable(release)) return 0;
+    if (require_sender) {
+        std::uintptr_t sender = 0;
+        std::array<std::uintptr_t, 5> methods{};
+        if (!read_at(candidate, profile::client_sender, sender) || !object_vtable(sender, methods) ||
+            methods[2] != send_target_ || methods[4] != server_send_target_) return 0;
     }
-    return matches == 1 ? selected : 0;
+    return candidate;
 }
 
 std::uintptr_t BedrockChat::local_player() const noexcept {
@@ -342,9 +345,10 @@ std::uintptr_t BedrockChat::local_player() const noexcept {
         const auto client = current_client();
         std::uintptr_t table = 0, getter = 0;
         if (!client || !read_at(client, 0, table) || !image_.contains(table, 32 * sizeof(std::uintptr_t)) ||
-            !read_at(table, 31 * sizeof(std::uintptr_t), getter) || !executable(getter)) return 0;
-        // Actual 1.26.52.3 getter31 RVA 0x5DAED30 uses the client's internal
-        // weak-handle +0x248 and returns a raw pointer in RAX. All temporary
+            !read_at(table, profile::local_player_slot * sizeof(std::uintptr_t), getter) ||
+            getter != image_.address + profile::local_player_getter || !executable(getter)) return 0;
+        // 1.26.60.5 getter30 RVA 0x659E470 uses the client's internal
+        // weak-handle +0x268 and returns a raw pointer in RAX. All temporary
         // handle ownership remains inside the native function.
         using Getter = void*(__fastcall*)(void*);
         return reinterpret_cast<std::uintptr_t>(reinterpret_cast<Getter>(getter)(reinterpret_cast<void*>(client)));
@@ -387,7 +391,7 @@ bool BedrockChat::display_message(void* actor, std::string_view message, std::st
         std::uintptr_t gui = 0;
         std::array<std::byte, 8> gui_probe{};
         if (!display_target_ || !executable(display_target_) || !client ||
-            !read_at(client, 0x650, gui) || !gui || !copy_bytes(gui, gui_probe.data(), gui_probe.size())) {
+            !read_at(client, profile::client_gui, gui) || !gui || !copy_bytes(gui, gui_probe.data(), gui_probe.size())) {
             set_diagnostic(diagnostic, "The current Minecraft GUI data is unavailable for native feedback.");
             return false;
         }
@@ -398,7 +402,7 @@ bool BedrockChat::display_message(void* actor, std::string_view message, std::st
         const std::string backing(message);
         alignas(8) const auto header = borrowed_msvc_string(backing);
         alignas(8) const std::array<std::byte, 0x120> metadata{};
-        // Verified offline in 1.26.52.3 at display RVA 0x155EEA0: the message
+        // Inspected in 1.26.60.5 at display RVA 0xE927B0: the message
         // envelope is read and copied; never modified or freed. Metadata has a
         // disengaged optional<string> marker at +0x20. Native copies allocate
         // and release using the game's allocator, not the DLL's libc++ runtime.
@@ -416,27 +420,26 @@ std::uintptr_t BedrockChat::mouse_game(std::string& diagnostic) const noexcept {
         const auto client = primary_client(false);
         std::uintptr_t game = 0, associated_game = 0, table = 0, grab = 0, release = 0;
         if (!client || !read_at(game_global_, 0, game) || !game ||
-            !read_at(client, 0x1A8, associated_game) || associated_game != game ||
+            !read_at(client, profile::client_game, associated_game) || associated_game != game ||
             !read_at(game, 0, table) || !image_.contains(table, 137 * sizeof(std::uintptr_t)) ||
             !read_at(table, 135 * sizeof(std::uintptr_t), grab) || !executable(grab) ||
             !read_at(table, 136 * sizeof(std::uintptr_t), release) || !executable(release)) {
             set_diagnostic(diagnostic, "The current Minecraft mouse context is unavailable.");
             return 0;
         }
-        // Proven in the actual 1.26.52.3 image: game grab135 (RVA 0x821230)
-        // tests capture byte +0x1E8 then writes 1 after it can acquire. Release136
-        // (RVA 0x821700) tests ==1 and writes 0 before the native platform call.
+        // 1.26.60.5 game grab135 (RVA 0x8BF910) tests capture byte +0x1F8.
+        // Release136 (0x8BFB00) tests ==1 and clears it before the platform call.
         // Check those field accesses before reading the byte, rather than trust
         // the upstream's formerly uncertain offset or manually writing a flag.
         std::array<std::byte, 64> grab_code{}, release_code{};
         constexpr std::array<std::byte, 7> grab_check{
-            std::byte{0x80}, std::byte{0xB9}, std::byte{0xE8}, std::byte{0x01},
+            std::byte{0x80}, std::byte{0xB9}, std::byte{0xF8}, std::byte{0x01},
             std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
         constexpr std::array<std::byte, 7> release_check{
-            std::byte{0x80}, std::byte{0xB9}, std::byte{0xE8}, std::byte{0x01},
+            std::byte{0x80}, std::byte{0xB9}, std::byte{0xF8}, std::byte{0x01},
             std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
         constexpr std::array<std::byte, 7> release_write{
-            std::byte{0xC6}, std::byte{0x81}, std::byte{0xE8}, std::byte{0x01},
+            std::byte{0xC6}, std::byte{0x81}, std::byte{0xF8}, std::byte{0x01},
             std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
         const auto contains = [](const auto& code, const auto& pattern) {
             return std::search(code.begin(), code.end(), pattern.begin(), pattern.end()) != code.end();
@@ -457,19 +460,20 @@ std::uintptr_t BedrockChat::mouse_game(std::string& diagnostic) const noexcept {
 
 std::uintptr_t BedrockChat::mouse_target(std::size_t slot, std::string& diagnostic) const noexcept {
     diagnostic.clear();
-    if (slot != 310 && slot != 311) return 0;
+    if (slot != profile::grab_mouse_slot && slot != profile::release_mouse_slot) return 0;
     try {
         if (!mouse_game(diagnostic)) return 0;
         const auto client = primary_client(false);
         std::uintptr_t table = 0, target = 0, primary_check = 0;
         if (!client || !read_at(client, 0, table) || !image_.contains(table, (slot + 1) * sizeof(std::uintptr_t)) ||
             !read_at(table, slot * sizeof(std::uintptr_t), target) || !executable(target) ||
-            !read_at(table, 162 * sizeof(std::uintptr_t), primary_check) || !executable(primary_check)) {
+            !read_at(table, profile::primary_test_slot * sizeof(std::uintptr_t), primary_check) ||
+            primary_check != image_.address + profile::primary_test || !executable(primary_check)) {
             set_diagnostic(diagnostic, "Minecraft's native mouse method is unavailable.");
             return 0;
         }
         // The native wrappers themselves perform the primary-client check
-        // (vtable162) and dispatch to MinecraftGame. No guessed state is written.
+        // (vtable160) and dispatch to MinecraftGame. No guessed state is written.
         return target;
     } catch (...) {
         set_diagnostic(diagnostic, "Could not resolve Minecraft's native mouse method.");
@@ -478,7 +482,7 @@ std::uintptr_t BedrockChat::mouse_target(std::size_t slot, std::string& diagnost
 }
 
 std::uintptr_t BedrockChat::grab_mouse_target(std::string& diagnostic) const noexcept {
-    return mouse_target(310, diagnostic);
+    return mouse_target(profile::grab_mouse_slot, diagnostic);
 }
 
 bool BedrockChat::is_current_client(void* client) const noexcept {
@@ -495,12 +499,12 @@ std::optional<bool> BedrockChat::mouse_grabbed(std::string& diagnostic) const no
         std::uintptr_t table = 0;
         std::uint8_t state = 0;
         if (read_at(cached_mouse_game_, 0, table) && table == cached_mouse_table_ &&
-            read_at(cached_mouse_game_, 0x1E8, state) && state <= 1) return state == 1;
+            read_at(cached_mouse_game_, profile::mouse_grabbed, state) && state <= 1) return state == 1;
         cached_mouse_game_ = cached_mouse_table_ = 0;
     }
     const auto game = mouse_game(diagnostic);
     std::uint8_t state = 0;
-    if (!game || !read_at(game, 0x1E8, state) || state > 1) {
+    if (!game || !read_at(game, profile::mouse_grabbed, state) || state > 1) {
         if (diagnostic.empty()) diagnostic = "Native mouse capture state is not readable.";
         return std::nullopt;
     }
@@ -515,7 +519,7 @@ std::optional<bool> BedrockChat::mouse_grabbed(std::string& diagnostic) const no
 bool BedrockChat::change_mouse(ClientMouseAction action, std::string& diagnostic) const noexcept {
     diagnostic.clear();
     try {
-        const auto slot = action == ClientMouseAction::grab ? std::size_t{310} : std::size_t{311};
+        const auto slot = action == ClientMouseAction::grab ? profile::grab_mouse_slot : profile::release_mouse_slot;
         const auto target = mouse_target(slot, diagnostic);
         const auto client = primary_client(false);
         if (!target || !client) return false;

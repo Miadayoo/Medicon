@@ -144,12 +144,12 @@ BoxTargets::operator bool() const noexcept {
 
 BoxTargets resolve_box_targets(std::uint32_t timestamp, std::uint32_t image_size,
     std::span<const memory::MemoryRegion> regions, memory::AddressRange image, std::string& diagnostic) {
-    if (!bedrock_1_26_52_3::known_image(timestamp, image_size)) {
-        diagnostic = bedrock_1_26_52_3::image_mismatch("P1", timestamp, image_size); return {};
+    if (!bedrock_1_26_60_5::known_image(timestamp, image_size)) {
+        diagnostic = bedrock_1_26_60_5::image_mismatch("P1", timestamp, image_size); return {};
     }
     using D = memory::SignatureDefinition;
     using R = memory::SignatureResolution;
-    constexpr auto version = bedrock_1_26_52_3::file_version;
+    constexpr auto version = bedrock_1_26_60_5::file_version;
     constexpr std::array definitions{
         D{"world", pattern::world_render_pattern,R::direct,0,0,version,false},
         D{"mesh", pattern::mesh_immediate_pattern,R::direct,0,0,version,false},
@@ -291,9 +291,11 @@ void BoxRenderer::observe_texture_group(void* group,TextureGetFn original) noexc
     state->requests.fetch_add(1,std::memory_order_relaxed);
     std::uintptr_t data{},gpu{};std::uint8_t flags{};
     std::memcpy(&data,output.data(),sizeof data);
-    // 1407EFExx and MeshSubmit case 1: TextureData +8 is GPU resource;
-    // native caller tests its +12 bit 0 before using the texture.
-    const bool ready=data&&read(data+8,gpu)&&gpu&&read(gpu+0x12,flags)&&(flags&1);
+    // 1.26.60: native caller 892052..89208C and MeshSubmit 4DEF400..419
+    // read GPU at TextureData+0, then its +12 bit 0. The former +8 field
+    // is no longer the resource pointer, even when the SIG entry matches.
+    const bool ready=data&&read(data+bedrock_1_26_60_5::texture_gpu_offset,gpu)&&
+        gpu&&read(gpu+0x12,flags)&&(flags&1);
     if (ready) {
         // Transfer the native-owned reference pairs without copying refs.
         texture.bytes=output;texture.owned=true;state->loaded.fetch_add(1,std::memory_order_release);
@@ -333,9 +335,10 @@ bool BoxRenderer::prepare(WorldScope& scope, void* context, void* actor) noexcep
     float alpha{};
     BoxVec3 origin{};
     // BaseActorRenderContext offsets are read in native camera/dispatcher;
-    // native dispatcher uses *context+A8 then +28 for camera origin, B0 alpha.
+    // Native DDR 59863A9..5986423 passes context+A8 then +20 as camera
+    // origin. The 1.26.52 +28 offset may read unrelated/non-finite fields.
     if (!c || !read(c+0x28, scope.screen_) || !scope.screen_ || !read(c+0xA8, camera) ||
-        !camera || !read(camera+0x28, origin) || !finite(origin) || !read(c+0xB0, alpha) ||
+        !camera || !read(camera+bedrock_1_26_60_5::camera_origin_offset, origin) || !finite(origin) || !read(c+0xB0, alpha) ||
         !std::isfinite(alpha) || alpha < 0 || alpha > 1) { fail(BoxFailure::context); return false; }
     std::uintptr_t top{};
     BoxMatrix base{};
@@ -456,9 +459,9 @@ void BoxRenderer::before_mesh_submit(void* render_context, const void* bindings,
     if (!bindings || !read(reinterpret_cast<std::uintptr_t>(bindings)+0x140,count) || !count || count>8) {
         fail(BoxFailure::texture); return;
     }
-    // Stock actor/item caller 0x14560200F loads the same ScreenContext +B8
+    // Native 1.26.60 actor/item caller 5A1CB97 loads ScreenContext+B0.
     // Tessellator. A busy tessellator is rejected without touching its mesh.
-    if (!read(reinterpret_cast<std::uintptr_t>(scope->screen_)+0xB8,tess) || !tess) {
+    if (!read(reinterpret_cast<std::uintptr_t>(scope->screen_)+bedrock_1_26_60_5::screen_tessellator,tess) || !tess) {
         fail(BoxFailure::tessellator); return;
     }
     after_submit(scope->screen_,tess,bindings,metadata,original);
@@ -492,7 +495,7 @@ void BoxRenderer::finish_world(MeshImmediateFn original) noexcept {
     if (static_mode_.load(std::memory_order_acquire)) { finish_static(*scope,original);return; }
     if (!texture_ready()) { fail(BoxFailure::texture); return; }
     void* tess{};
-    if (!read(reinterpret_cast<std::uintptr_t>(scope->screen_)+0xB8,tess) || !tess) {
+    if (!read(reinterpret_cast<std::uintptr_t>(scope->screen_)+bedrock_1_26_60_5::screen_tessellator,tess) || !tess) {
         fail(BoxFailure::tessellator); return;
     }
     // Borrow the immutable native-owned binding while this callback is alive.
@@ -520,7 +523,7 @@ void BoxRenderer::finish_static(WorldScope& scope,MeshImmediateFn original) noex
         state->generation.store(model.get(),std::memory_order_release);
     }
     void* tess{};const auto screen=reinterpret_cast<std::uintptr_t>(scope.screen_);
-    if (!read(screen+0xB8,tess)||!tess) { fail(BoxFailure::tessellator);return; }
+    if (!read(screen+bedrock_1_26_60_5::screen_tessellator,tess)||!tess) { fail(BoxFailure::tessellator);return; }
     const auto t=reinterpret_cast<std::uintptr_t>(tess);
     TessState saved{};std::uintptr_t top{};BoxMatrix matrix{};std::uint8_t alternative{};
     if (!read(scope.matrices_+0x70,alternative)||alternative||!matrix_top(scope.matrices_,top,matrix)) { fail(BoxFailure::matrix);return; }
@@ -551,7 +554,10 @@ void BoxRenderer::finish_static(WorldScope& scope,MeshImmediateFn original) noex
         state->uploaded.store(uploaded+1,std::memory_order_release);
         return; // At most 4095 vertices per world callback; keep vanilla visible.
     }
-    if (!texture_ready()||state->loaded.load(std::memory_order_acquire)!=model->textures.size()) return;
+    // Custom meshes own every PNG binding. A stock textured submit may never
+    // reach these hooks in this render pipeline; it is required only by the
+    // test box path. metadata_ starts as the valid native empty variant (tag 0).
+    if (state->loaded.load(std::memory_order_acquire)!=model->textures.size()) return;
     const bool entity=material_.load(std::memory_order_relaxed)==1;
     const auto* key=entity?native_.entity_key:native_.alpha_key;
     if (!key_valid(reinterpret_cast<std::uintptr_t>(key),entity)) { state->ready.store(false,std::memory_order_release);fail(BoxFailure::material);return; }

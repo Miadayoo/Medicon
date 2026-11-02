@@ -23,7 +23,7 @@ Function second_original;
 int detour() { return original() + 5; }
 int second_detour() { return second_original() + 9; }
 
-namespace native_model = medicon::sdk::custom_model::bedrock_1_26_52_3;
+namespace native_model = medicon::sdk::custom_model::bedrock_1_26_60_5;
 medicon::sdk::custom_model::Probe render_probe;
 native_model::NearActorQueueFn near_original;
 native_model::EcsActorQueueFn ecs_original;
@@ -214,9 +214,9 @@ void gameplay_dispatch_test(const std::filesystem::path& path) {
             current.local.velocity = velocity;
             return true;
         }
-        medicon::sdk::KnockbackApplyResult apply_knockback(medicon::sdk::Vec3 velocity, std::int64_t timestamp) override {
+        medicon::sdk::KnockbackApplyResult apply_knockback(medicon::sdk::Vec3 velocity, std::int64_t timestamp, std::uint64_t input_tick = 0) override {
             ++knockback_calls;
-            return GameplayAccess::apply_knockback(velocity, timestamp);
+            return GameplayAccess::apply_knockback(velocity, timestamp, input_tick);
         }
         bool send_latency_reply(const medicon::sdk::LatencyReply&) override { ++latency_sends; return true; }
         bool attack(std::uintptr_t) override { return true; }

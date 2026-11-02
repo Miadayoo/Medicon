@@ -183,7 +183,8 @@ public:
     bool attack(std::uintptr_t actor_id) override;
     bool set_sprinting(bool sprinting) override;
     bool set_velocity(Vec3 velocity) override;
-    KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp = 0) override;
+    KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp = 0,
+                                        std::uint64_t input_tick = 0) override;
     bool prepare_sprinting(bool sprinting) noexcept;
     // Updates the sprint state bits in a validated PlayerAuthInputPacket before
     // it is sent. Non-matching packets and unknown input layouts are untouched.

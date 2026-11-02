@@ -1,4 +1,5 @@
 #include <medicon/sdk/BedrockReconnect.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
 #include <medicon/sdk/detail/ReconnectDispatch.hpp>
 #include <Windows.h>
 #include <algorithm>
@@ -10,13 +11,13 @@
 
 namespace medicon::sdk {
 namespace {
-// Minecraft 1.26.52.03. Evidence and ownership/ABI notes:
+// Minecraft 1.26.60.05. Evidence and ownership/ABI notes:
 // docs/disconnect-recovery.md. The native retry consumes the complete saved
 // destination (including NetherNet); it also consumes its NonOwnerPointer arg.
-constexpr std::uintptr_t update_rva = 0x5DB4440, client_table = 0xE9731B0;
-constexpr std::uintptr_t get_handler = 0x5DD4550, release_owner = 0x758E0;
-constexpr std::uintptr_t get_scene_stack = 0x5DC6CA0, stack_table = 0xE8F7A40, push_scene = 0x4B23B00;
-constexpr std::uintptr_t retry = 0xBD68A0, clear_screen = 0xBD38D0, get_router = 0x5DC6F40;
+constexpr std::uintptr_t update_rva = 0x65A34A0, client_table = 0xF2B9330;
+constexpr std::uintptr_t get_handler = 0x65C06E0, release_owner = 0x78CE0;
+constexpr std::uintptr_t get_scene_stack = 0x65B4230, stack_table = 0xF0829B0, push_scene = 0x5685F0;
+constexpr std::uintptr_t retry = 0x162920, clear_screen = 0x15F2E0, get_router = 0x65B4640;
 template<class T> bool read(std::uintptr_t at, std::size_t offset, T& value) noexcept {
     if (!at || offset > std::numeric_limits<std::uintptr_t>::max()-at ||
         sizeof(T)-1 > std::numeric_limits<std::uintptr_t>::max()-(at+offset)) return false;
@@ -54,17 +55,17 @@ bool detail::dispatch_reconnect(const ReconnectCalls& calls,void* client,void* h
 
 bool BedrockReconnect::profile() const noexcept {
     const auto b=base_;
-    return b && equal(b+client_table,0x728,b+0x5DC6A30) && equal(b+client_table,0x790,b+get_router) &&
-        equal(b+client_table,0xC70,b+get_handler) && equal(b+0xE973F68,0,b+update_rva) &&
-        equal(b+client_table,0x770,b+get_scene_stack) && equal(b+stack_table,0xC8,b+push_scene) &&
-        equal(b+stack_table,44*8,b+0x4B28730) &&
-        bytes(b+get_scene_stack,{0x56,0x48,0x83,0xEC,0x20,0x48,0x89,0xD6,0x48,0x8B,0x89,0xA8,0x01,0,0}) &&
-        bytes(b+retry,{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x20,0x04,0,0}) &&
-        bytes(b+retry+0x20,{0x4C,0x89,0xC7,0x80,0xB9,0x40,0x05,0,0,0x01}) &&
-        bytes(b+get_handler+0x2F,{0x48,0x8B,0x9F,0xA0,0x0B,0,0}) &&
-        bytes(b+release_owner,{0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x89,0xCE,0x0F,0x57,0xC0}) &&
-        bytes(b+clear_screen+0x13,{0x80,0xB9,0x49,0x05,0,0,0x01}) &&
-        bytes(b+0x5DC6A30,{0x48,0x8B,0x81,0x08,0x02,0,0,0xC3});
+    return b && equal(b+client_table,0x718,b+0x8BC9E0) && equal(b+client_table,0x778,b+get_router) &&
+        equal(b+client_table,0xC58,b+get_handler) && equal(b+0xF2BA0C8,0,b+update_rva) &&
+        equal(b+client_table,0x758,b+get_scene_stack) && equal(b+stack_table,0xC8,b+push_scene) &&
+        equal(b+stack_table,44*8,b+0x56D000) &&
+        bytes(b+0x65B4230,{0x48,0x8B,0x89,0xC8,0x01,0x00,0x00,0x48,0x8B,0x01,0x48,0x8B,0x80,0xC8}) &&
+        bytes(b+0x162920,{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x00,0x04,0x00,0x00}) &&
+        bytes(b+0x162940,{0x4C,0x89,0xC7,0x80,0xB9,0xA0,0x05,0x00,0x00,0x01}) &&
+        bytes(b+0x65C070F,{0x48,0x8B,0x9F,0x90,0x0B,0x00,0x00}) &&
+        bytes(b+0x78CE0,{0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x89,0xCE,0x0F,0x57}) &&
+        bytes(b+0x15F2E5,{0x80,0xB9,0xA9,0x05,0x00,0x00,0x01}) &&
+        bytes(b+0x8BC9E0,{0x48,0x8B,0x81,0x28,0x02,0x00,0x00,0xC3});
 }
 bool BedrockReconnect::initialize(std::string& diagnostic) noexcept {
     try {
@@ -73,13 +74,11 @@ bool BedrockReconnect::initialize(std::string& diagnostic) noexcept {
         IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
         if (!read(base_,0,dos) || dos.e_magic!=IMAGE_DOS_SIGNATURE || dos.e_lfanew!=0x78 ||
             !read(base_,dos.e_lfanew,nt) || nt.Signature!=IMAGE_NT_SIGNATURE ||
-            nt.FileHeader.TimeDateStamp!=0x6AB54E37 ||
-            !((nt.OptionalHeader.SizeOfImage==0x12C02000 && nt.OptionalHeader.CheckSum==0x128DA293) ||
-              (nt.OptionalHeader.SizeOfImage==0x12C01000 && nt.OptionalHeader.CheckSum==0x128CD801)) ||
+            !bedrock_1_26_60_5::known_packaging(nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage,nt.OptionalHeader.CheckSum) ||
             !profile() || !bytes(base_+update_rva,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,
                 0x48,0x81,0xEC,0x48,0x06,0,0}) ||
             !bytes(base_+update_rva+0x30,{0x48,0x8D,0xB1,0x78,0xFF,0xFF,0xFF})) {
-            diagnostic="Reconnect requires the inspected Minecraft 1.26.52.03 code profile.";
+            diagnostic="Reconnect requires the inspected Minecraft 1.26.60.05 code profile.";
             ready_=false;return false;
         }
         ready_=menu_.prepare(diagnostic);
@@ -113,19 +112,19 @@ void BedrockReconnect::update(void* adjusted_client,void* current_client,std::st
     }
     std::uint8_t primary=1;
     std::uintptr_t handler=0,valid=0,factory=0;
-    bool alive=read(client,0x678,primary) && primary==0 && read(client,0xBA0,handler) &&
-        read(handler,8,valid) && read(valid,0,primary) && primary==1 && read(client,0x208,factory) && factory;
+    bool alive=read(client,0x690,primary) && primary==0 && read(client,0xB90,handler) &&
+        read(handler,8,valid) && read(valid,0,primary) && primary==1 && read(client,0x228,factory) && factory;
     MenuSessionIdentity scene{};
     std::string ignored;
     bool visible=alive && menu_.poll(current_client,ignored,&scene)==MenuScreenState::disconnected;
     std::uint8_t ore=0,saved=0;
-    if (alive && read(handler,0x549,ore) && ore==1) {
+    if (alive && read(handler,0x5A9,ore) && ore==1) {
         // Same native route test used by _handleDisconnectionScreenRequests.
         // Both calls execute on that original UI callback's thread.
         const auto router=reinterpret_cast<void*(*)(void*)>(base_+get_router)(current_client);
         visible=router && !reinterpret_cast<bool(*)(void*,void*)>(base_+clear_screen)(reinterpret_cast<void*>(handler),router);
     }
-    const bool available=visible && read(handler,0x540,saved) && saved==1;
+    const bool available=visible && read(handler,0x5A0,saved) && saved==1;
     if (state_.visible!=visible || (visible && (owner_!=handler || scene_!=scene))) {
         ++state_.generation;requested_=0;state_.error.clear();
         if (visible) diagnostic=available?"Reconnect: disconnect screen detected; saved destination ready.":
@@ -142,7 +141,7 @@ void BedrockReconnect::update(void* adjusted_client,void* current_client,std::st
     // returns NonOwnerPointer<SceneStack>. +C70 instead returns a handler owner;
     // its layout is the same but passing it here invokes the wrong vtable.
     std::uintptr_t game=0,stack=0,stack_valid=0;
-    if (!read(client,0x1A8,game) || !read(game,0x1D70,stack) || !read(stack,8,stack_valid) ||
+    if (!read(client,0x1C8,game) || !read(game,0x1DF8,stack) || !read(stack,8,stack_valid) ||
         !read(stack_valid,0,primary) || primary!=1 || !equal(stack,0,base_+stack_table)) {
         state_.error="The server screen changed. Try again.";return;
     }

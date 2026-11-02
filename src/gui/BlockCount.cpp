@@ -130,7 +130,11 @@ void BlockCount::render(GuiContext& context) {
         if (value < 0 || opacity <= 0.0F) return;
         const char text[]{static_cast<char>('0' + value), '\0'};
         const float inset = (cell - fonts.measure(FontRole::BlockCount, text)) * 0.5F;
-        fonts.draw(list, FontRole::BlockCount, x + inset, y + 1.0F * s, to_u32(Color{0.0F, 0.0F, 0.0F, 1.0F}, 0.45F * opacity), text, snap);
+        // Clear glass cannot darken a bright scene, so the digit carries its own edge.
+        const ImU32 edge = to_u32(Color{0.0F, 0.0F, 0.0F, 1.0F}, 0.26F * opacity);
+        for (const ImVec2 offset : {ImVec2{-s, 0.0F}, ImVec2{s, 0.0F}, ImVec2{0.0F, -s}})
+            fonts.draw(list, FontRole::BlockCount, x + inset + offset.x, y + offset.y, edge, text, snap);
+        fonts.draw(list, FontRole::BlockCount, x + inset, y + 1.0F * s, to_u32(Color{0.0F, 0.0F, 0.0F, 1.0F}, 0.55F * opacity), text, snap);
         fonts.draw(list, FontRole::BlockCount, x + inset, y, to_u32(Color{1.0F, 1.0F, 1.0F, 1.0F}, opacity), text, snap);
     };
     for (std::size_t place = 0; place < BlockCountAnimator::digit_capacity; ++place) {

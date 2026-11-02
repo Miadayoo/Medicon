@@ -1,7 +1,10 @@
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
+#include <medicon/sdk/GameplayProfile.hpp>
 #include <medicon/custom_model/PlayerName.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
+#include <medicon/sdk/detail/ReplayMotion.hpp>
 #include <medicon/memory/module_view.hpp>
 #include <medicon/memory/signature_registry.hpp>
 
@@ -28,7 +31,7 @@ namespace {
 
 // Release x64 layout reference, inspected at the pinned revision. No upstream
 // SDK code or game-owned STL object is linked into this bridge.
-// https://github.com/surukotonai/solstice/tree/1d7808f52ef4ba6e34a7fbcc65294907a7761611
+// https://github.com/surukotonai/solstice/tree/cc6463dcadfeadb9049c235134c6b46efdc12b7e
 // SDK/EnttHashs.hpp, OffsetProvider.hpp, Actor/EntityId.hpp,
 // include/entt/entity/{registry,sparse_set,storage}.hpp.
 constexpr std::uint32_t state_hash = 0x1B5D5238, bounds_hash = 0xBAC1B3CF;
@@ -40,16 +43,16 @@ constexpr std::uint32_t owner_hash = 0x85B93800, dead_hash = 0x710A62C4;
 constexpr std::uint32_t head_hash = 0xBABE7211, body_hash = 0xD7F64BBA;
 constexpr std::uint32_t render_position_hash = 0xE53C7221;
 constexpr std::uint32_t attributes_hash = 0xFD3B0613;
-// SharedAttributes::HEALTH: constructed at 0x31BD2F1, id at +4, name at +0x10.
-constexpr std::size_t health_attribute_rva = 0x11DC54F0;
+// SharedAttributes::HEALTH: constructed at 0x360207E, id at +4, name at +0x10.
+constexpr std::size_t health_attribute_rva = 0x129714C8;
 constexpr std::uint32_t runtime_id_hash = 0xFC0DBBB5;
-constexpr std::uint32_t predicted_movement_hash = 0x18513471;
+constexpr std::uint32_t replay_state_hash = 0x9FC78512;
 // PlayerAuthInputPacket/InputData values in the 1.26.50 protocol profile.
 // https://mojang.github.io/bedrock-protocol-docs/1.26.50/types/player-auth-input-data/
 constexpr int player_auth_input_packet_id = 144;
 constexpr int move_player_packet_id = 19;
 constexpr float degrees_to_radians = 0.01745329251994329577F;
-// Confirmed against 1.26.52.3 packet validation/serialization routines.
+// Confirmed against 1.26.60.5 packet validation/serialization routines.
 constexpr std::size_t player_auth_input_rotation_offset = 0x30;
 constexpr std::size_t player_auth_input_head_yaw_offset = 0x44;
 constexpr std::size_t player_auth_input_analog_move_offset = 0x5C;
@@ -150,7 +153,7 @@ bool supported_version(std::string& diagnostic) {
     const auto separator = full.find_last_of(L"\\/");
     const auto name = full.substr(separator == std::wstring_view::npos ? 0 : separator + 1);
     if (_wcsicmp(std::wstring(name).c_str(), L"Minecraft.Windows.exe")) {
-        diagnostic = "Gameplay SDK requires Minecraft.Windows.exe 1.26.52.3.";
+        diagnostic = "Gameplay SDK requires Minecraft.Windows.exe 1.26.60.5.";
         return false;
     }
     DWORD ignored = 0;
@@ -163,8 +166,8 @@ bool supported_version(std::string& diagnostic) {
     if (!VerQueryValueW(bytes.data(), L"\\", reinterpret_cast<void**>(&info), &info_size) ||
         !info || info_size < sizeof(*info) || info->dwSignature != 0xFEEF04BD ||
         HIWORD(info->dwFileVersionMS) != 1 || LOWORD(info->dwFileVersionMS) != 26 ||
-        HIWORD(info->dwFileVersionLS) != 52 || LOWORD(info->dwFileVersionLS) != 3) {
-        diagnostic = "Gameplay SDK withheld: executable is not Minecraft 1.26.52.3.";
+        HIWORD(info->dwFileVersionLS) != 60 || LOWORD(info->dwFileVersionLS) != 5) {
+        diagnostic = "Gameplay SDK withheld: executable is not Minecraft 1.26.60.5.";
         return false;
     }
     return true;
@@ -325,7 +328,7 @@ bool read_gameplay_attribute(std::uintptr_t component, std::uint32_t attribute_i
 bool read_gameplay_pools(std::uintptr_t registry, std::vector<GameplayPool>& output) noexcept {
     output.clear();
     try {
-        // Verified on 1.26.52.3: the pool map's packed node vector is +0x68.
+        // Verified on 1.26.60.5: the pool map's packed node vector is +0x68.
         // The reference EnTT source alone would incorrectly suggest +0x50.
         // Each dense-map node: next[8], hash[4]+padding[4], shared_ptr[16].
         ForeignVector packed{};
@@ -380,8 +383,8 @@ bool read_gameplay_move_input(std::uintptr_t component, GameplayMoveInput& input
     std::uint32_t flags{};
     std::uint16_t control{};
     Vec2 move{};
-    // 1.26.52.3: lookup at 0x283481B uses a 0x64-byte stride; reset at
-    // 0x449810 accesses input +0/+0x10, move +0x24 and control +0x60.
+    // MoveInputComponent retains Solstice's 0x64-byte layout. Earlier 1.26.52.3
+    // observations were lookup 0x283481B and reset 0x449810.
     if (!read_at(component, 0, flags) || (flags >> 27) != 0 ||
         !read_at(component, 0x24, move) || !read_at(component, 0x60, control) ||
         !std::isfinite(move.x) || !std::isfinite(move.y) ||
@@ -415,7 +418,7 @@ bool write_gameplay_sprinting_flag(std::uintptr_t component, bool sprinting) noe
 }
 
 bool write_gameplay_sprint_speed(std::uintptr_t component, bool sprinting) noexcept {
-    // 1.26.52.3 GetSpeedInAirWithSprint writes the selected speed at +0x0C.
+    // 1.26.60.5 GetSpeedInAirWithSprint writes the selected speed at +0x0C.
     constexpr float walking_speed = 0.020F;
     constexpr float sprint_speed = 0.026F;
     return write_at(component, 0x0C, sprinting ? sprint_speed : walking_speed);
@@ -676,7 +679,7 @@ struct BedrockGameplay::Impl {
         event.position = frame.local.position; event.velocity = frame.local.velocity;
         const auto vector = component(local_entity, state_hash, 36);
         std::uintptr_t cached{};
-        event.state_matches_cached = vector && read_at(player, 0x218, cached) && vector == cached;
+        event.state_matches_cached = vector && read_at(player, 0x240, cached) && vector == cached;
         (void)read_at(vector, 0, event.position);
         (void)read_at(vector, 24, event.velocity);
         velocity_observer(velocity_observer_context, event);
@@ -729,7 +732,8 @@ struct BedrockGameplay::Impl {
     bool native_identity(std::uintptr_t target, std::size_t rva,
                          const std::array<unsigned char, Size>& expected) const noexcept {
         std::array<unsigned char, Size> actual{};
-        return rva <= UINTPTR_MAX - image.address && target == image.address + rva &&
+        return bedrock_1_26_60_5::known_gameplay_entry(rva) &&
+               rva <= UINTPTR_MAX - image.address && target == image.address + rva &&
                executable(target) && copy_bytes(target, actual.data(), actual.size()) && actual == expected;
     }
 
@@ -745,6 +749,22 @@ struct BedrockGameplay::Impl {
 
     std::uintptr_t component(std::uint32_t entity, std::uint32_t hash, std::size_t size) const noexcept {
         return detail::gameplay_component(storage(hash), entity, size);
+    }
+
+    bool replay_profile() const noexcept {
+        constexpr std::array<unsigned char,16> create{
+            0x56,0x57,0x53,0x48,0x83,0xEC,0x20,0x48,0x89,0xD7,0x48,0x89,0xCE,0x48,0x8B,0x0D};
+        constexpr std::array<unsigned char,16> admit{
+            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x83,0xEC,0x70,0x48,0x8D,0x6C,0x24,0x70,0x48};
+        constexpr std::array<unsigned char,16> release{
+            0x56,0x48,0x83,0xEC,0x20,0x48,0x8B,0x71,0x08,0x48,0x85,0xF6,0x74,0x34,0xF0,0xFF};
+        std::array<std::uintptr_t,3> control{};
+        std::array<std::uintptr_t,3> event{};
+        const auto b=image.address;
+        return supported && native_identity(b+0x10CACD0,0x10CACD0,create) &&
+            native_identity(b+0x2CD9D60,0x2CD9D60,admit) && native_identity(b+0x7E6D0,0x7E6D0,release) &&
+            read_at(b,0xF0CBDA0,control) && control==std::array<std::uintptr_t,3>{b+0xABB90,b+0x76900,b+0xABBE0} &&
+            read_at(b,0xF0CBD50,event) && event==std::array<std::uintptr_t,3>{b+0xABBE0,b+0x1E5C80,b+0x10ED7F0};
     }
 
     bool context(std::uintptr_t actor, std::uint32_t& entity) const noexcept {
@@ -777,7 +797,7 @@ struct BedrockGameplay::Impl {
                   (type & 0xFF) == 63, (type & 0x100) != 0 &&
                   !(dead_pool && detail::gameplay_contains(dead_pool, entity)), actor == player, false};
         std::uintptr_t actor_data{};
-        if (result.player && model_name_getter && read_at(actor, 0x128, actor_data) && actor_data &&
+        if (result.player && model_name_getter && read_at(actor, 0x150, actor_data) && actor_data &&
             read_at(component(entity, 0x18F957AF, 8), 0, result.unique_id)) {
             if (const auto name = read_msvc_string(model_name_getter(reinterpret_cast<void*>(actor)), 512)) {
                 result.model_name = medicon::custom_model::model_player_name(*name);
@@ -801,13 +821,13 @@ struct BedrockGameplay::Impl {
 
     std::uintptr_t game_mode() const noexcept {
         std::uintptr_t mode = 0, owner = 0, table = 0;
-        if (!read_at(player, 0xAA0, mode) || !method(mode, 0) ||
+        if (!read_at(player, 0xAC8, mode) || !method(mode, 0) ||
             !read_at(mode, 8, owner) || owner != player || !read_at(mode, 0, table)) return 0;
-        // RVAs identify the two observed 1.26.52.3 implementations. Validate
+        // RVAs identify the two observed 1.26.60.5 implementations. Validate
         // the actual methods at each call site; unrelated attack/build slots
         // can differ across otherwise compatible GameMode instances.
-        const bool base = table == image.address + 0xE827560;
-        const bool survival = table == image.address + 0xE827600;
+        const bool base = table == image.address + 0xF1A8E90;
+        const bool survival = table == image.address + 0xF1A8F30;
         if (!base && !survival) return 0;
         return mode;
     }
@@ -829,7 +849,7 @@ struct BedrockGameplay::Impl {
         std::uintptr_t supplies = 0;
         int selected = -1;
         // Another player or world, or a slot the user picked: nothing to undo.
-        if (!read_at(player, 0x5B8, supplies) || supplies != switch_supplies ||
+        if (!read_at(player, 0x5E0, supplies) || supplies != switch_supplies ||
             !read_at(supplies, 0x10, selected) || selected != switch_to) { forget_switch(); return; }
         if (GetTickCount64() - switch_used < 1000) return;
         write_at(supplies, 0x10, switch_from);
@@ -839,7 +859,7 @@ struct BedrockGameplay::Impl {
     bool on_tick() const noexcept {
         if (!active || !supported || !frame.ready || GetCurrentThreadId() != thread) return false;
         std::uint32_t entity = 0;
-        const auto local_target = method(client, 31);
+        const auto local_target = method(client, 30);
         if (!local_target || reinterpret_cast<void*(__fastcall*)(void*)>(local_target)(
             reinterpret_cast<void*>(client)) != reinterpret_cast<void*>(player)) return false;
         return context(player, entity) && entity == local_entity;
@@ -849,22 +869,22 @@ struct BedrockGameplay::Impl {
     // screen ticks arrive outside the capture window.
     bool local_player_current() const noexcept {
         if (!supported || !frame.ready) return false;
-        const auto local_target = method(client, 31);
+        const auto local_target = method(client, 30);
         return local_target && reinterpret_cast<std::uintptr_t(__fastcall*)(void*)>(local_target)(
             reinterpret_cast<void*>(client)) == player;
     }
 
     // Player's shared_ptr<ContainerManagerModel>: assigned at 0x1EEE80, locked
-    // by the client network handlers at +0x5A0/+0x5A8. Type at +0x51, read by
+    // by the client network handlers at +0x5C8/+0x5A8. Type at +0x51, read by
     // the model's getContainerType (0xA3AF50).
     bool container_model(std::uintptr_t& model, std::int8_t& type) const noexcept {
         model = 0;
-        return read_at(player, 0x5A0, model) && model && method(model, 0) && read_at(model, 0x51, type);
+        return read_at(player, 0x5C8, model) && model && method(model, 0) && read_at(model, 0x51, type);
     }
 
     std::uintptr_t inventory_container() const noexcept {
         std::uintptr_t supplies{}, container{};
-        if (!read_at(player, 0x5B8, supplies) || !read_at(supplies, 0xB8, container)) {
+        if (!read_at(player, 0x5E0, supplies) || !read_at(supplies, 0xB8, container)) {
             inventory_diagnostic.stage = "inventory-container-unreadable";
             return 0;
         }
@@ -877,8 +897,9 @@ struct BedrockGameplay::Impl {
         // Inventory is not FillingContainer nor the transaction manager's
         // cloned working container. Its vector starts at +0x198, not +0x1A0.
         constexpr std::array<unsigned char, 16> get_prefix{
-            0x48,0x8D,0x05,0x49,0x0C,0x7C,0x0F,0x85,0xD2,0x78,0x2E,0x4C,0x8B,0x81,0x98,0x01};
-        if (table != image.address + 0xE6AFE10 || !native_identity(get, 0x25A5100, get_prefix) ||
+            0x48,0x8D,0x05,0x99,0x59,0xDD,0x0F,0x85,0xD2,0x78,0x2E,0x4C,0x8B,0x81,0x98,0x01
+        };
+        if (table != image.address + 0xEFD2600 || !native_identity(get, 0x2B654F0, get_prefix) ||
             !read_at(container, 0x1B0, owner) || owner != player) {
             inventory_diagnostic.stage = "inventory-type-or-owner-rejected";
             return 0;
@@ -916,16 +937,17 @@ struct BedrockGameplay::Impl {
 
     // ItemStack::EMPTY_ITEM, returned by getSlot for out-of-range slots (0x3440D19).
     std::uintptr_t empty_stack() const noexcept {
-        const auto stack = image.address + 0x11D65D50;
+        const auto stack = image.address + 0x1293AE90;
         std::uintptr_t table{};
-        return read_at(stack, 0, table) && table == image.address + 0xE6D6CD0 ? stack : 0;
+        return read_at(stack, 0, table) && table == image.address + 0xEFF9E80 ? stack : 0;
     }
 
     int enchant_level(std::uint8_t enchant, std::uintptr_t stack) const noexcept {
         // EnchantUtils::getEnchantLevel; a stack with no tag returns 0 before any allocation.
-        constexpr std::uintptr_t rva = 0x3260390;
+        constexpr std::uintptr_t rva = 0x36AC810;
         constexpr std::array<unsigned char, 16> prefix{
-            0x56,0x57,0x53,0x48,0x81,0xEC,0x80,0,0,0,0x89,0xCB,0x48,0x8B,0x4A,0x10};
+            0x56,0x57,0x53,0x48,0x81,0xEC,0x80,0x00,0x00,0x00,0x89,0xCB,0x48,0x8B,0x4A,0x10
+        };
         const auto target = image.address + rva;
         if (!native_identity(target, rva, prefix)) return 0;
         return reinterpret_cast<int(__fastcall*)(std::uint32_t, std::uintptr_t)>(target)(enchant, stack);
@@ -958,40 +980,47 @@ struct BedrockGameplay::Impl {
         trace.stage = "native-profile-rejected";
         const auto base = image.address;
         constexpr std::array<unsigned char, 16> action_construct_prefix{
-            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x83,0xEC,0x50,0x48,0x8D,0x6C,0x24,0x50,0x48};
+            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x83,0xEC,0x50,0x48,0x8D,0x6C,0x24,0x50,0x48
+        };
         constexpr std::array<unsigned char, 16> action_destroy_prefix{
-            0x56,0x57,0x53,0x48,0x83,0xEC,0x30,0x48,0x89,0xCE,0x48,0x8D,0xB9,0x68,0x01,0};
+            0x56,0x57,0x53,0x48,0x83,0xEC,0x30,0x48,0x89,0xCE,0x48,0x8D,0xB9,0x68,0x01,0x00
+        };
         constexpr std::array<unsigned char, 16> transaction_construct_prefix{
-            0x55,0x56,0x57,0x53,0x48,0x83,0xEC,0x58,0x48,0x8D,0x6C,0x24,0x50,0x0F,0x29,0x75};
+            0x55,0x56,0x57,0x53,0x48,0x83,0xEC,0x58,0x48,0x8D,0x6C,0x24,0x50,0x0F,0x29,0x75
+        };
         constexpr std::array<unsigned char, 16> add_action_prefix{
-            0x55,0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x60,0x02,0};
+            0x55,0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x60,0x02,0x00
+        };
         constexpr std::array<unsigned char, 16> payload_construct_prefix{
-            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x80,0x01,0,0,0x48,0x8D,0xAC};
+            0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x80,0x01,0x00,0x00,0x48,0x8D,0xAC
+        };
         constexpr std::array<unsigned char, 16> packet_construct_prefix{
-            0x55,0x56,0x48,0x83,0xEC,0x48,0x48,0x8D,0x6C,0x24,0x40,0x48,0xC7,0x45,0,0xFE};
+            0x55,0x56,0x48,0x83,0xEC,0x48,0x48,0x8D,0x6C,0x24,0x40,0x48,0xC7,0x45,0x00,0xFE
+        };
         constexpr std::array<unsigned char, 16> packet_destroy_prefix{
-            0x56,0x57,0x48,0x83,0xEC,0x28,0x89,0xD7,0x48,0x89,0xCE,0x48,0x8D,0x05,0x8E,0x33};
+            0x56,0x57,0x48,0x83,0xEC,0x28,0x89,0xD7,0x48,0x89,0xCE,0x48,0x8D,0x05,0x1E,0xC0
+        };
         std::uintptr_t transaction_destroy{}, packet_destroy{}, sender{};
-        if (!native_identity(base + 0x1D4AD0, 0x1D4AD0, action_construct_prefix) ||
-            !native_identity(base + 0x1D4C70, 0x1D4C70, action_destroy_prefix) ||
-            !native_identity(base + 0x23FB00, 0x23FB00, transaction_construct_prefix) ||
-            !native_identity(inventory_add_action, 0x266EE40, add_action_prefix) ||
-            inventory_transaction_vtable != base + 0xE6D6C00 ||
-            !read_at(inventory_transaction_vtable, 0, transaction_destroy) || transaction_destroy != base + 0x23FA10 ||
-            !native_identity(base + 0x2732240, 0x2732240, payload_construct_prefix) ||
-            !native_identity(base + 0x272C430, 0x272C430, packet_construct_prefix) ||
-            !read_at(base + 0xE6D5FD0, 0, packet_destroy) ||
-            !native_identity(packet_destroy, 0x222C30, packet_destroy_prefix)) return false;
+        if (!native_identity(base + 0x2AD9E0, 0x2AD9E0, action_construct_prefix) ||
+            !native_identity(base + 0x2ADB80, 0x2ADB80, action_destroy_prefix) ||
+            !native_identity(base + 0x314140, 0x314140, transaction_construct_prefix) ||
+            !native_identity(inventory_add_action, 0x29B1E20, add_action_prefix) ||
+            inventory_transaction_vtable != base + 0xEFF9D40 ||
+            !read_at(inventory_transaction_vtable, 0, transaction_destroy) || transaction_destroy != base + 0x314310 ||
+            !native_identity(base + 0x2A10970, 0x2A10970, payload_construct_prefix) ||
+            !native_identity(base + 0x2A0C600, 0x2A0C600, packet_construct_prefix) ||
+            !read_at(base + 0xEFF9380, 0, packet_destroy) ||
+            !native_identity(packet_destroy, 0x2FD350, packet_destroy_prefix)) return false;
         trace.stage = "packet-sender-unavailable";
-        if (!read_at(client, 0x1D0, sender)) return false;
+        if (!read_at(client, 0x1F0, sender)) return false;
         const auto send_target = method(sender, 4);
         if (!send_target) return false;
         const auto send = send_target == packet_send_target && packet_send_original ? packet_send_original
             : reinterpret_cast<void(*)(void*, void*)>(send_target);
         struct Context { const Impl& state; void* sender; void(*send)(void*, void*); } context{*this, reinterpret_cast<void*>(sender), send};
         const Calls calls{
-            reinterpret_cast<decltype(Calls::construct)>(base + 0x1D4AD0),
-            reinterpret_cast<decltype(Calls::destroy)>(base + 0x1D4C70),
+            reinterpret_cast<decltype(Calls::construct)>(base + 0x2AD9E0),
+            reinterpret_cast<decltype(Calls::destroy)>(base + 0x2ADB80),
             reinterpret_cast<decltype(Calls::add_action)>(inventory_add_action),
             [](void* opaque) -> void* {
                 const auto& state = static_cast<Context*>(opaque)->state;
@@ -1002,22 +1031,22 @@ struct BedrockGameplay::Impl {
                 std::memcpy(transaction, &table, sizeof(table));
                 const std::uint32_t seed = 0;
                 const std::uint8_t allocator_tag = 0;
-                reinterpret_cast<void(*)(void*, const std::uint32_t*, const std::uint8_t*)>(state.image.address + 0x23FB00)(
+                reinterpret_cast<void(*)(void*, const std::uint32_t*, const std::uint8_t*)>(state.image.address + 0x314140)(
                     static_cast<std::byte*>(transaction) + 0x10, &seed, &allocator_tag);
                 return transaction;
             },
             [](void* opaque, void* transaction) {
                 const auto& state = static_cast<Context*>(opaque)->state;
-                reinterpret_cast<void(*)(void*, unsigned)>(state.image.address + 0x23FA10)(transaction, 1);
+                reinterpret_cast<void(*)(void*, unsigned)>(state.image.address + 0x314310)(transaction, 1);
             },
             [](void* opaque, void** transaction) {
                 const auto& context = *static_cast<Context*>(opaque);
                 const auto base = context.state.image.address;
                 using PacketCalls = detail::NativeInventoryPacketCalls;
                 return detail::send_gameplay_inventory_packet(transaction, context.sender, {
-                    reinterpret_cast<decltype(PacketCalls::construct_payload)>(base + 0x2732240),
-                    reinterpret_cast<decltype(PacketCalls::construct_packet)>(base + 0x272C430),
-                    reinterpret_cast<decltype(PacketCalls::destroy_packet)>(base + 0x222C30), context.send});
+                    reinterpret_cast<decltype(PacketCalls::construct_payload)>(base + 0x2A10970),
+                    reinterpret_cast<decltype(PacketCalls::construct_packet)>(base + 0x2A0C600),
+                    reinterpret_cast<decltype(PacketCalls::destroy_packet)>(base + 0x2FD350), context.send});
             }};
         trace.stage = "transaction-allocation-or-send-failed";
         if (!detail::send_gameplay_inventory_changes(changes, &context, calls)) return false;
@@ -1031,9 +1060,10 @@ struct BedrockGameplay::Impl {
     // screen closes, so without this the client keeps showing what it gave away.
     bool set_inventory_slot(std::uintptr_t container, int slot, std::uintptr_t stack) const noexcept {
         constexpr std::array<unsigned char, 16> prefix{
-            0x48,0x8B,0x01,0x48,0x8B,0x40,0x68,0x4C,0x8B,0x15,0x4A,0x69,0xF2,0x0E,0x45,0x31};
+            0x48,0x8B,0x01,0x48,0x8B,0x40,0x68,0x4C,0x8B,0x15,0x02,0x0F,0x6F,0x0F,0x45,0x31
+        };
         const auto set = method(container, 12);
-        if (!stack || !native_identity(set, 0x1D5150, prefix)) return false;
+        if (!stack || !native_identity(set, 0x2AE060, prefix)) return false;
         reinterpret_cast<void(__fastcall*)(std::uintptr_t, int, std::uintptr_t)>(set)(container, slot, stack);
         return true;
     }
@@ -1041,9 +1071,10 @@ struct BedrockGameplay::Impl {
     // Actor::setArmor, the local half of Player's own armor setter (0x20A5B4),
     // which skips the InventoryTransactionManager action that the packet replaces.
     bool set_armor_slot(int slot, std::uintptr_t stack) const noexcept {
-        constexpr std::uintptr_t rva = 0x1A0B8E0;
+        constexpr std::uintptr_t rva = 0xBB5820;
         constexpr std::array<unsigned char, 16> prefix{
-            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x18};
+            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x18
+        };
         const auto target = image.address + rva;
         if (!stack || !native_identity(target, rva, prefix)) return false;
         reinterpret_cast<void(__fastcall*)(std::uintptr_t, int, std::uintptr_t)>(target)(player, slot, stack);
@@ -1058,10 +1089,10 @@ struct BedrockGameplay::Impl {
         using Calls = detail::NativeInventoryCalls;
         alignas(16) std::array<std::byte, 0x200> action;
         const detail::NativeInventorySource source{};
-        reinterpret_cast<decltype(Calls::construct)>(image.address + 0x1D4AD0)(action.data(), &source, 0, first, second);
+        reinterpret_cast<decltype(Calls::construct)>(image.address + 0x2AD9E0)(action.data(), &source, 0, first, second);
         const auto copies = reinterpret_cast<std::uintptr_t>(action.data());
         const bool written = write(copies + 0x168, copies + 0xD0);
-        reinterpret_cast<decltype(Calls::destroy)>(image.address + 0x1D4C70)(action.data());
+        reinterpret_cast<decltype(Calls::destroy)>(image.address + 0x2ADB80)(action.data());
         return written;
     }
 
@@ -1070,10 +1101,10 @@ struct BedrockGameplay::Impl {
     }
 
     // Native allocation for objects the game later frees itself. The pointer
-    // at 0x11805230 is what every inline operator new in the image reads.
+    // at 0x1233C1A8 is what every inline operator new in the image reads.
     void* native_allocate(std::size_t size) const noexcept {
         std::uintptr_t allocator{};
-        if (!read_at(image.address, 0x11805230, allocator)) return nullptr;
+        if (!read_at(image.address, 0x1233C1A8, allocator)) return nullptr;
         const auto allocate = method(allocator, 1);
         return allocate ? reinterpret_cast<void*(__fastcall*)(void*, std::size_t)>(allocate)(
             reinterpret_cast<void*>(allocator), size) : nullptr;
@@ -1100,18 +1131,23 @@ struct BedrockGameplay::Impl {
                         std::uintptr_t& proceed, std::uintptr_t& stop) const noexcept {
         std::uintptr_t table{};
         if (!mode || !read_at(mode, 0, table)) return false;
-        const auto base_table = image.address + 0xE827560;
-        const auto survival_table = image.address + 0xE827600;
+        const auto base_table = image.address + 0xF1A8E90;
+        const auto survival_table = image.address + 0xF1A8F30;
         constexpr std::array<unsigned char, 16> base_start_prefix{
-            0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x83,0xEC,0x78};
+            0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x83,0xEC,0x78
+        };
         constexpr std::array<unsigned char, 16> base_destroy_prefix{
-            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x83,0xEC,0x78};
+            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x83,0xEC,0x78
+        };
         constexpr std::array<unsigned char, 16> continue_prefix{
-            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0xD8};
+            0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0xD8
+        };
         constexpr std::array<unsigned char, 16> survival_start_prefix{
-            0x48,0x83,0xEC,0x28,0x80,0xB9,0xC8,0x00,0x00,0x00,0x01,0x75,0x17,0x80,0x3D,0x90};
+            0x48,0x83,0xEC,0x28,0x80,0xB9,0xC8,0x00,0x00,0x00,0x01,0x75,0x17,0x80,0x3D,0xF0
+        };
         constexpr std::array<unsigned char, 16> survival_destroy_prefix{
-            0x80,0xB9,0xC8,0x00,0x00,0x00,0x01,0x0F,0x85,0xF3,0xA5,0xFF,0xFF,0x80,0x3D,0xB0};
+            0x80,0xB9,0xC8,0x00,0x00,0x00,0x01,0x0F,0x85,0xC3,0xA1,0xFF,0xFF,0x80,0x3D,0x10
+        };
         if (table != base_table && table != survival_table) return false;
         start = method(mode, 1);
         destroy = method(mode, 2);
@@ -1121,16 +1157,16 @@ struct BedrockGameplay::Impl {
         // original signature was checked by destroy_stop_target() before the
         // hook was installed, so here validate the vtable slot's exact pinned
         // address instead of comparing the now-detoured function prologue.
-        constexpr std::uintptr_t stop_rva = 0x259BBF0;
+        constexpr std::uintptr_t stop_rva = 0x376B220;
         const bool stop_matches = stop == image.address + stop_rva && executable(stop);
         if (table == base_table) {
-            return native_identity(start, 0x259A320, base_start_prefix) &&
-                native_identity(destroy, 0x259ABB0, base_destroy_prefix) &&
-                native_identity(proceed, 0x259AFD0, continue_prefix) && stop_matches;
+            return native_identity(start, 0x3769980, base_start_prefix) &&
+                native_identity(destroy, 0x376A210, base_destroy_prefix) &&
+                native_identity(proceed, 0x376A630, continue_prefix) && stop_matches;
         }
-        return native_identity(start, 0x25A05D0, survival_start_prefix) &&
-            native_identity(destroy, 0x25A05B0, survival_destroy_prefix) &&
-            native_identity(proceed, 0x259AFD0, continue_prefix) && stop_matches;
+        return native_identity(start, 0x3770060, survival_start_prefix) &&
+            native_identity(destroy, 0x3770040, survival_destroy_prefix) &&
+            native_identity(proceed, 0x376A630, continue_prefix) && stop_matches;
     }
 
     bool clear_ray(Vec3 destination) const noexcept {
@@ -1185,10 +1221,10 @@ struct BedrockGameplay::Impl {
     bool read_view(std::uintptr_t renderer_player, Vec3& camera, Vec2& fov,
                    std::array<float, 16>& matrix) const noexcept {
         if (!client || !renderer_player ||
-            !read_at(renderer_player, 0x9CC, camera) || !valid_position(camera) ||
-            !read_at(renderer_player, 0xF58, fov.x) || !read_at(renderer_player, 0xF6C, fov.y) ||
+            !read_at(renderer_player, 0x9C4, camera) || !valid_position(camera) ||
+            !read_at(renderer_player, 0xF50, fov.x) || !read_at(renderer_player, 0xF64, fov.y) ||
             !std::isfinite(fov.x) || !std::isfinite(fov.y) || fov.x < 0.01F || fov.y < 0.01F ||
-            fov.x > 20 || fov.y > 20 || !read_at(client, 0x420, matrix) ||
+            fov.x > 20 || fov.y > 20 || !read_at(client, 0x438, matrix) ||
             !std::ranges::all_of(matrix, [](float v) { return std::isfinite(v) && std::abs(v) < 100; })) return false;
         for (std::size_t i = 0; i < 3; ++i) {
             const auto offset = i * 4;
@@ -1215,7 +1251,7 @@ struct BedrockGameplay::Impl {
     }
 
     void projection() noexcept {
-        const auto get_renderer = method(client, 187);
+        const auto get_renderer = method(client, 185);
         if (!get_renderer) return;
         const auto renderer = reinterpret_cast<std::uintptr_t(__fastcall*)(void*)>(get_renderer)(
             reinterpret_cast<void*>(client));
@@ -1223,7 +1259,7 @@ struct BedrockGameplay::Impl {
         Vec3 camera{};
         Vec2 fov{};
         std::array<float, 16> matrix{};
-        if (!renderer || !read_at(renderer, 0x468, renderer_player) ||
+        if (!renderer || !read_at(renderer, 0x480, renderer_player) ||
             !read_view(renderer_player, camera, fov, matrix)) return;
         view_player = renderer_player;
         frame.camera = camera;
@@ -1244,6 +1280,17 @@ bool BedrockGameplay::locate(std::string& diagnostic) {
         if (supported_version(state.diagnostic)) {
             if (const auto module = memory::current_process_module(&state.diagnostic)) {
                 state.image = module->image;
+                IMAGE_DOS_HEADER dos{};
+                IMAGE_NT_HEADERS64 nt{};
+                if (!copy_bytes(state.image.address, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+                    dos.e_lfanew <= 0 || !state.image.contains(state.image.address + dos.e_lfanew, sizeof(nt)) ||
+                    !copy_bytes(state.image.address + dos.e_lfanew, &nt, sizeof(nt)) ||
+                    nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+                    !bedrock_1_26_60_5::known_image(nt.FileHeader.TimeDateStamp, nt.OptionalHeader.SizeOfImage)) {
+                    state.diagnostic = "Gameplay SDK requires the inspected Minecraft 1.26.60.5 PE profile.";
+                    diagnostic = state.diagnostic;
+                    return false;
+                }
                 for (const auto& region : module->executable_regions)
                     state.executable_regions.push_back({region.address, region.bytes.size()});
                 state.supported = true;
@@ -1259,16 +1306,17 @@ bool BedrockGameplay::locate(std::string& diagnostic) {
                 state.inventory_diagnostic.transaction_vtable_rva = state.inventory_transaction_vtable ? state.inventory_transaction_vtable - state.image.address : 0;
                 state.inventory_diagnostic.stage = state.inventory_add_action && state.inventory_transaction_vtable
                     ? "solstice-signatures-ready" : "solstice-signatures-unavailable";
-                // Actor_getNameTag 1.26.52.3: borrowed MSVC string result.
-                // The bounded body reads SynchedActorData +0x128 and returns
+                // Actor_getNameTag 1.26.60.5: borrowed MSVC string result.
+                // The bounded body reads SynchedActorData +0x150 and returns
                 // its type-4 string; no DLL STL object crosses this ABI.
                 constexpr std::array<unsigned char, 32> name_prefix{
-                    0x56,0x48,0x83,0xEC,0x20,0x48,0x8B,0x81,0x28,0x01,0,0,0x48,0x85,0xC0,0x74,
-                    0x4A,0x8B,0x50,0x08,0x48,0x8B,0x08,0x29,0xCA,0x81,0xE2,0xF8,0xFF,0x07,0,0x48};
-                const auto name_target = state.image.address + 0x1A14AC0;
-                if (state.native_identity(name_target, 0x1A14AC0, name_prefix))
+                    0x56,0x48,0x83,0xEC,0x20,0x48,0x8B,0x81,0x50,0x01,0x00,0x00,0x48,0x85,0xC0,0x74,
+                    0x4A,0x8B,0x50,0x08,0x48,0x8B,0x08,0x29,0xCA,0x81,0xE2,0xF8,0xFF,0x07,0x00,0x48
+                };
+                const auto name_target = state.image.address + 0xBBE500;
+                if (state.native_identity(name_target, 0xBBE500, name_prefix))
                     state.model_name_getter = reinterpret_cast<const void* (*)(void*)>(name_target);
-                state.diagnostic = "Gameplay SDK ready for Minecraft 1.26.52.3; waiting for validated world components.";
+                state.diagnostic = "Gameplay SDK ready for Minecraft 1.26.60.5; waiting for validated world components.";
             }
         }
     }
@@ -1307,65 +1355,69 @@ void BedrockGameplay::end_tick() noexcept { impl_->active = false; }
 bool BedrockGameplay::slot_restore_pending() const noexcept { return impl_->switch_from >= 0; }
 
 std::uintptr_t BedrockGameplay::motion_dispatcher_target() const noexcept {
-    // 1.26.52.3 SetActorMotion dispatcher: borrows shared_ptr at R9, then
-    // tail-calls the callback's +0x668 virtual method with Packet* in R8.
-    constexpr std::uintptr_t rva = 0x1733000;
+    // 1.26.60.5 SetActorMotion dispatcher: borrows shared_ptr at R9, then
+    // tail-calls the callback's +0x6A8 virtual method with Packet* in R8.
+    constexpr std::uintptr_t rva = 0x23A7600;
     constexpr std::array<unsigned char, 16> prefix{
-        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x68,0x06,0,0};
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0xA8,0x06,0x00,0x00
+    };
     auto& state = *impl_;
     if (!state.supported || rva > UINTPTR_MAX - state.image.address) return 0;
     const auto target = state.image.address + rva;
     std::uintptr_t table_entry{};
     return state.native_identity(target, rva, prefix) &&
-        read_at(state.image.address, 0xE7BF8C8, table_entry) && table_entry == target ? target : 0;
+        read_at(state.image.address, 0xF1381F8, table_entry) && table_entry == target ? target : 0;
 }
 
 std::uintptr_t BedrockGameplay::prediction_correction_dispatcher_target() const noexcept {
-    constexpr std::uintptr_t rva = 0x1734000;
+    constexpr std::uintptr_t rva = 0x23A8620;
     constexpr std::array<unsigned char, 16> prefix{
-        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x30,0x02,0,0};
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x60,0x02,0,0
+    };
     const auto& state = *impl_;
     std::uintptr_t entry{};
     const auto target = state.image.address + rva;
     return state.supported && state.native_identity(target, rva, prefix) &&
-        read_at(state.image.address, 0xE7C0038, entry) && entry == target ? target : 0;
+        read_at(state.image.address, 0xF138918, entry) && entry == target ? target : 0;
 }
 
 std::uintptr_t BedrockGameplay::disconnect_dispatcher_target() const noexcept {
-    constexpr std::uintptr_t rva = 0x1723320;
+    constexpr std::uintptr_t rva = 0x23978B0;
     constexpr std::array<unsigned char, 16> prefix{
-        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0xE8,0x07,0,0};
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x28,0x08,0,0
+    };
     const auto& state = *impl_;
     std::uintptr_t entry{};
     const auto target = state.image.address + rva;
     return state.supported && state.native_identity(target, rva, prefix) &&
-        read_at(state.image.address, 0xE7BE680, entry) && entry == target ? target : 0;
+        read_at(state.image.address, 0xF137A90, entry) && entry == target ? target : 0;
 }
 
 bool BedrockGameplay::is_client_network_handler(void* handler) const noexcept {
     std::uintptr_t table{};
     return impl_->supported && read_at(reinterpret_cast<std::uintptr_t>(handler), 0, table) &&
-        table == impl_->image.address + 0xE7AF110;
+        table == impl_->image.address + 0xF2CFE40;
 }
 
 std::uintptr_t BedrockGameplay::move_player_dispatcher_target() const noexcept {
-    constexpr std::uintptr_t rva = 0x1732C20;
+    constexpr std::uintptr_t rva = 0x23A7200;
     constexpr std::array<unsigned char, 16> prefix{
-        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x08,0x07,0,0};
+        0x4C,0x89,0xC1,0x4D,0x8B,0x01,0x48,0x8B,0x01,0x48,0x8B,0x80,0x48,0x07,0x00,0x00
+    };
     const auto& state = *impl_;
     std::uintptr_t entry{};
     const auto target = state.image.address + rva;
     return state.supported && state.native_identity(target, rva, prefix) &&
-        read_at(state.image.address, 0xE7BF748, entry) && entry == target ? target : 0;
+        read_at(state.image.address, 0xF138088, entry) && entry == target ? target : 0;
 }
 
 bool BedrockGameplay::read_movement_report(void* packet, MovementReport& report) const noexcept {
     const auto& state = *impl_;
     const auto address = reinterpret_cast<std::uintptr_t>(packet);
     std::uintptr_t table{}, get_id{};
-    constexpr std::array<unsigned char, 6> prefix{0xB8,0x90,0,0,0,0xC3};
-    return state.supported && read_at(address, 0, table) && table == state.image.address + 0xE83A360 &&
-        read_at(table, 8, get_id) && state.native_identity(get_id, 0xB26A00, prefix) &&
+    constexpr std::array<unsigned char, 6> prefix{0xB8,0x90,0x00,0x00,0x00,0xC3};
+    return state.supported && read_at(address, 0, table) && table == state.image.address + 0xF16B570 &&
+        read_at(table, 8, get_id) && state.native_identity(get_id, 0x16D5470, prefix) &&
         detail::read_gameplay_movement_report(address, report);
 }
 
@@ -1373,10 +1425,10 @@ bool BedrockGameplay::read_player_move(void* packet_reference, LocalPlayerMove& 
     const auto& state = *impl_;
     std::uintptr_t packet{}, table{}, get_id{};
     std::uint64_t runtime_id{};
-    constexpr std::array<unsigned char, 6> prefix{0xB8,0x13,0,0,0,0xC3};
+    constexpr std::array<unsigned char, 6> prefix{0xB8,0x13,0x00,0x00,0x00,0xC3};
     return state.supported && read_at(reinterpret_cast<std::uintptr_t>(packet_reference), 0, packet) &&
-        read_at(packet, 0, table) && table == state.image.address + 0xE85BFC0 &&
-        read_at(table, 8, get_id) && state.native_identity(get_id, 0x2ECD950, prefix) &&
+        read_at(packet, 0, table) && table == state.image.address + 0xF0CBBA0 &&
+        read_at(table, 8, get_id) && state.native_identity(get_id, 0x34012E0, prefix) &&
         read_at(packet, 0x30, runtime_id) &&
         detail::read_gameplay_local_move(packet, runtime_id, move);
 }
@@ -1407,13 +1459,13 @@ bool BedrockGameplay::local_motion(void* packet_reference, void* local_actor, Ve
     std::uint32_t entity{};
     std::uintptr_t packet{}, table{}, get_id{}, owner{};
     std::uint64_t runtime_id{};
-    constexpr std::array<unsigned char, 6> get_id_prefix{0xB8,0x28,0,0,0,0xC3};
+    constexpr std::array<unsigned char, 6> get_id_prefix{0xB8,0x28,0x00,0x00,0x00,0xC3};
     if (!state.supported || !state.frame.ready || !state.frame.local.alive || actor != state.player || !state.context(actor, entity) ||
         !read_at(state.component(entity, owner_hash, 8), 0, owner) || owner != actor ||
         !read_at(state.component(entity, runtime_id_hash, 8), 0, runtime_id) ||
         !read_at(reinterpret_cast<std::uintptr_t>(packet_reference), 0, packet) ||
-        !read_at(packet, 0, table) || table != state.image.address + 0xE8A73D0 ||
-        !read_at(table, 8, get_id) || !state.native_identity(get_id, 0xB270F0, get_id_prefix)) return false;
+        !read_at(packet, 0, table) || table != state.image.address + 0xF0B2C40 ||
+        !read_at(table, 8, get_id) || !state.native_identity(get_id, 0xD810A0, get_id_prefix)) return false;
     Vec3 copied;
     std::uint64_t tick{};
     std::int64_t timestamp{};
@@ -1442,20 +1494,20 @@ void BedrockGameplay::bind_latency_sender(std::uintptr_t target, void(*original)
 bool BedrockGameplay::is_latency_reply(void* packet) const noexcept {
     std::uintptr_t table{};
     return impl_->supported && read_at(reinterpret_cast<std::uintptr_t>(packet), 0, table) &&
-        table == impl_->image.address + 0xE7B0FD0;
+        table == impl_->image.address + 0xF1D1930;
 }
 
 bool BedrockGameplay::read_latency_reply(void* sender, void* packet, LatencyReply& reply) const noexcept {
     const auto& state = *impl_;
     std::uintptr_t current_sender{}, table{}, get_id{}, dispatcher{};
     const auto address = reinterpret_cast<std::uintptr_t>(packet);
-    constexpr std::array<unsigned char, 6> prefix{0xB8,0x73,0,0,0,0xC3};
+    constexpr std::array<unsigned char, 6> prefix{0xB8,0x73,0x00,0x00,0x00,0xC3};
     if (!state.supported || !state.frame.ready || !state.packet_send_original ||
-        !read_at(state.client, 0x1D0, current_sender) || current_sender != reinterpret_cast<std::uintptr_t>(sender) ||
+        !read_at(state.client, 0x1F0, current_sender) || current_sender != reinterpret_cast<std::uintptr_t>(sender) ||
         state.method(current_sender, 4) != state.packet_send_target ||
-        !read_at(address, 0, table) || table != state.image.address + 0xE7B0FD0 ||
-        !read_at(table, 8, get_id) || !state.native_identity(get_id, 0x3C40700, prefix) ||
-        !read_at(address, 0x20, dispatcher) || dispatcher != state.image.address + 0x1185B5B0) return false;
+        !read_at(address, 0, table) || table != state.image.address + 0xF1D1930 ||
+        !read_at(table, 8, get_id) || !state.native_identity(get_id, 0x3FE0B60, prefix) ||
+        !read_at(address, 0x20, dispatcher) || dispatcher != state.image.address + 0x123EB940) return false;
     return detail::copy_gameplay_latency(address, reply);
 }
 
@@ -1466,7 +1518,7 @@ bool BedrockGameplay::send_latency_reply(const LatencyReply& reply) {
     LatencyReply checked;
     // Revalidate the native identity and current sender at replay. The
     // original sender borrows Packet* synchronously, bypassing our send hook.
-    if (!read_at(state.client, 0x1D0, sender) || !sender ||
+    if (!read_at(state.client, 0x1F0, sender) || !sender ||
         !read_latency_reply(reinterpret_cast<void*>(sender), const_cast<std::byte*>(reply.bytes.data()), checked)) return false;
     std::uint64_t latency_id{};
     std::memcpy(&latency_id, checked.bytes.data() + 0x30, sizeof latency_id);
@@ -1574,7 +1626,7 @@ void BedrockGameplay::finish_rotation_control(bool rotation_requested) noexcept 
 }
 
 std::uintptr_t BedrockGameplay::body_yaw_interpolator_target() const noexcept {
-    constexpr std::uintptr_t body_yaw_interpolator_rva = 0x20874B0;
+    constexpr std::uintptr_t body_yaw_interpolator_rva = 0x2C384E0;
     constexpr std::array<unsigned char, 32> body_yaw_prefix{
         0x48,0x83,0xEC,0x58,0x44,0x0F,0x29,0x44,0x24,0x40,0x0F,0x29,0x7C,0x24,0x30,0x0F,
         0x29,0x74,0x24,0x20,0x0F,0x28,0xF1,0x48,0x8B,0x51,0x10,0x8B,0x41,0x18,0x48,0x8B
@@ -1590,7 +1642,7 @@ std::uintptr_t BedrockGameplay::body_yaw_interpolator_target() const noexcept {
 }
 
 std::uintptr_t BedrockGameplay::head_yaw_interpolator_target() const noexcept {
-    constexpr std::uintptr_t head_yaw_interpolator_rva = 0x2087610;
+    constexpr std::uintptr_t head_yaw_interpolator_rva = 0x2C38640;
     constexpr std::array<unsigned char, 61> head_yaw_prefix{
         0x48,0x83,0xEC,0x68,0x44,0x0F,0x29,0x4C,0x24,0x50,0x44,0x0F,0x29,0x44,0x24,0x40,
         0x0F,0x29,0x7C,0x24,0x30,0x0F,0x29,0x74,0x24,0x20,0x0F,0x28,0xF1,0x48,0x8B,0x51,
@@ -1608,7 +1660,7 @@ std::uintptr_t BedrockGameplay::head_yaw_interpolator_target() const noexcept {
 }
 
 std::uintptr_t BedrockGameplay::destroy_progress_target() const noexcept {
-    constexpr std::uintptr_t destroy_progress_rva = 0x259BA80;
+    constexpr std::uintptr_t destroy_progress_rva = 0x376B0B0;
     constexpr std::array<unsigned char, 16> progress_prefix{
         0x56,0x57,0x48,0x83,0xEC,0x38,0x0F,0x29,0x74,0x24,0x20,0x48,0x89,0xCE,0x48,0x8B
     };
@@ -1619,7 +1671,7 @@ std::uintptr_t BedrockGameplay::destroy_progress_target() const noexcept {
 }
 
 std::uintptr_t BedrockGameplay::destroy_stop_target() const noexcept {
-    constexpr std::uintptr_t destroy_stop_rva = 0x259BBF0;
+    constexpr std::uintptr_t destroy_stop_rva = 0x376B220;
     constexpr std::array<unsigned char, 16> stop_prefix{
         0x56,0x48,0x83,0xEC,0x20,0x48,0x89,0xCE,0x48,0x8B,0x89,0xC0,0x00,0x00,0x00,0xF3
     };
@@ -1671,7 +1723,7 @@ bool BedrockGameplay::read_outgoing_block_actions(void* packet, OutgoingBlockAct
     sample = {};
     const auto& state = *impl_;
     if (!state.supported || !packet) return false;
-    constexpr std::uintptr_t packet_vtable_rva = 0xE83A360;
+    constexpr std::uintptr_t packet_vtable_rva = 0xF16B570;
     constexpr std::size_t packet_tick_offset = 0xA8;
     constexpr std::size_t input_data_offset = 0x88;
     constexpr std::size_t block_actions_offset = 0xC0;
@@ -1840,6 +1892,7 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
     state.active = false;
     state.switched_this_tick = false;
     state.frame = {};
+    state.frame.deferred_knockback_supported = state.replay_profile();
     state.client = state.player = state.registry = state.block_source = state.view_player = 0;
     state.render_position = 0;
     state.local_entity = 0;
@@ -1850,9 +1903,9 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
     state.client = reinterpret_cast<std::uintptr_t>(client);
     state.player = reinterpret_cast<std::uintptr_t>(local_actor);
     std::uintptr_t sampled_game_mode{};
-    (void)read_at(state.player, 0xAA0, sampled_game_mode);
+    (void)read_at(state.player, 0xAC8, sampled_game_mode);
     state.diagnostic_local_game_mode.store(sampled_game_mode, std::memory_order_release);
-    const auto local_target = state.method(state.client, 31);
+    const auto local_target = state.method(state.client, bedrock_1_26_60_5::local_player_slot);
     if (!local_target || reinterpret_cast<void*(__fastcall*)(void*)>(local_target)(client) != local_actor ||
         !read_at(state.player, 0x10, state.registry) || !read_at(state.player, 0x18, state.local_entity)) {
         state.diagnostic = "Gameplay SDK: current client/player context failed validation.";
@@ -1879,7 +1932,7 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
          state.head_body_rotation_entity != state.local_entity))
         state.head_body_rotation_valid = false;
     state.frame.world_identity = state.registry;
-    // Verified on 1.26.52.3: 12-byte elements (lea [i+i*2], shl 2 at 0x28A56C3).
+    // RenderPositionComponent remains a 12-byte Vec3 in the pinned SDK.
     state.render_position = state.component(state.local_entity, render_position_hash, sizeof(Vec3));
     state.read_render_position(state.frame.local);
     struct Rotation { float pitch, yaw, old_pitch, old_yaw; } rotation{};
@@ -1923,7 +1976,7 @@ bool BedrockGameplay::capture(void* client, void* local_actor, bool check_visibi
         state.frame.head_yaw_ready = false;
     }
     state.frame.attack_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    const auto get_source = state.method(state.client, 30);
+    const auto get_source = state.method(state.client, 29);
     if (get_source) state.block_source = reinterpret_cast<std::uintptr_t(__fastcall*)(void*)>(get_source)(client);
     state.projection();
     ForeignVector owners{};
@@ -2094,7 +2147,9 @@ bool BedrockGameplay::set_velocity(Vec3 velocity) {
     return true;
 }
 
-KnockbackApplyResult BedrockGameplay::apply_knockback(Vec3 velocity, std::int64_t received_timestamp) {
+KnockbackApplyResult BedrockGameplay::apply_knockback(Vec3 velocity, std::int64_t received_timestamp,
+                                                    std::uint64_t input_tick) {
+    (void)received_timestamp;
     auto& state = *impl_;
     std::uintptr_t owner{};
     if (!state.on_tick() || !state.frame.local.alive || !finite(velocity) ||
@@ -2109,45 +2164,25 @@ KnockbackApplyResult BedrockGameplay::apply_knockback(Vec3 velocity, std::int64_
         const char*& path;
         ~TraceEnd() { state.trace_velocity(VelocityTracePhase::apply_end, path, result); }
     } trace{state, result, path};
-    const auto component = state.component(state.local_entity, predicted_movement_hash, 0x90);
-    path = component ? "direct:bypassed" : "direct:no-component";
-    std::uint8_t bypass{};
-    if (component) {
-        if (!read_at(component, 0, bypass)) return KnockbackApplyResult::failed;
-        if (!bypass) {
-            constexpr std::array<unsigned char, 16> enabled_prefix{
-                0x55,0x56,0x57,0x53,0x48,0x83,0xEC,0x58,0x48,0x8D,0x6C,0x24,0x50,0x48,0xC7,0x45};
-            const auto enabled = state.image.address + 0x1040080;
-            if (!state.native_identity(enabled, 0x1040080, enabled_prefix)) return KnockbackApplyResult::failed;
-            // Same no-argument feature gate used by the native motion handler.
-            path = "direct:feature-off";
-            if (reinterpret_cast<bool(*)()>(enabled)()) {
-                path = "predicted";
-                constexpr std::array<unsigned char, 16> enqueue_prefix{
-                    0x55,0x41,0x57,0x41,0x56,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x90,0,0};
-                constexpr std::array<unsigned char, 16> update_prefix{
-                    0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x8B,0x41,0x30,0x4C,0x8B,0x40,0x20,0x49,0x83};
-                const auto enqueue = state.image.address + 0x2888190;
-                const auto update = state.image.address + 0x7CAEA60;
-                std::uintptr_t controller{};
-                std::array<std::byte, 0x40> probe{};
-                if (!state.native_identity(enqueue, 0x2888190, enqueue_prefix) ||
-                    !state.native_identity(update, 0x7CAEA60, update_prefix) ||
-                    !read_at(component, 0x30, controller) || !controller || controller % 8 ||
-                    !copy_bytes(controller, probe.data(), probe.size()))
-                    return KnockbackApplyResult::failed;
-                if (!detail::enqueue_gameplay_knockback(reinterpret_cast<void*>(component),
-                    reinterpret_cast<void*>(controller), velocity, received_timestamp,
-                    reinterpret_cast<detail::EnqueuePredictedMotion>(enqueue),
-                    reinterpret_cast<detail::UpdatePredictedMotion>(update))) return KnockbackApplyResult::failed;
-                // Queue admission can leave the current StateVector unchanged
-                // until the next native simulation step. Report actual memory.
-                Vec3 current{};
-                const auto vector = state.component(state.local_entity, state_hash, 36);
-                if (read_at(vector, 24, current) && finite(current)) state.frame.local.velocity = current;
-                return result = KnockbackApplyResult::predicted;
-            }
-        }
+    const auto component = state.component(state.local_entity, replay_state_hash, 32);
+    path = input_tick ? "direct:no-replay-state" : "direct:legacy-motion";
+    if (input_tick && component) {
+        path = "ReplayState:motion-event";
+        std::uint64_t current_tick{};
+        if (!state.replay_profile() || !read_at(component,0x18,current_tick)) return result;
+        // Delay expires in wall time. Admit at the current simulation tick,
+        // retaining a server-specified tick that is still in the future.
+        const auto tick=std::max(input_tick,current_tick);
+        const auto b=state.image.address;
+        const detail::ReplayMotionCalls calls{
+            &state, [](void* owner,std::size_t size) { return static_cast<Impl*>(owner)->native_allocate(size); },
+            reinterpret_cast<decltype(detail::ReplayMotionCalls::create)>(b+0x10CACD0),
+            reinterpret_cast<decltype(detail::ReplayMotionCalls::release)>(b+0x7E6D0),
+            reinterpret_cast<decltype(detail::ReplayMotionCalls::admit)>(b+0x2CD9D60), b+0xF0CBDA0};
+        if (!detail::enqueue_replay_motion(calls,reinterpret_cast<void*>(component),
+                reinterpret_cast<void*>(state.player),velocity,tick)) return result;
+        (void)write_at(component,1,std::uint8_t{0});
+        return result=KnockbackApplyResult::predicted;
     }
     return result = set_velocity(velocity) ? KnockbackApplyResult::direct : KnockbackApplyResult::failed;
 }
@@ -2208,8 +2243,8 @@ RotationInputRewrite BedrockGameplay::rewrite_rotation_input(void* packet, bool 
     if (id != player_auth_input_packet_id && id != move_player_packet_id) return RotationInputRewrite::ignored;
     // Both the vtable and getId implementation were checked in the supported
     // PE. A matching numeric ID alone does not establish a packet's layout.
-    const std::uintptr_t vtable_rva = id == player_auth_input_packet_id ? 0xE83A360 : 0xE85BFC0;
-    const std::uintptr_t get_id_rva = id == player_auth_input_packet_id ? 0xB26A00 : 0x2ECD950;
+    const std::uintptr_t vtable_rva = id == player_auth_input_packet_id ? 0xF16B570 : 0xF0CBBA0;
+    const std::uintptr_t get_id_rva = id == player_auth_input_packet_id ? 0x16D5470 : 0x34012E0;
     const std::array<unsigned char, 6> get_id_code{0xB8, static_cast<unsigned char>(id), 0, 0, 0, 0xC3};
     std::uintptr_t vtable{};
     if (!read_at(address, 0, vtable) || !state.image.contains(vtable) ||
@@ -2234,10 +2269,10 @@ MoveFixInputRewrite BedrockGameplay::rewrite_move_fix_input(void* packet, bool e
     using GetId = int(__fastcall*)(void*);
     if (reinterpret_cast<GetId>(get_id)(packet) != player_auth_input_packet_id)
         return MoveFixInputRewrite::ignored;
-    constexpr std::array<unsigned char, 6> get_id_code{0xB8, 144, 0, 0, 0, 0xC3};
+    constexpr std::array<unsigned char, 6> get_id_code{0xB8,0x90,0x00,0x00,0x00,0xC3};
     std::uintptr_t vtable{};
     if (!read_at(address, 0, vtable) || !state.image.contains(vtable) ||
-        vtable - state.image.address != 0xE83A360 || !state.native_identity(get_id, 0xB26A00, get_id_code))
+        vtable - state.image.address != 0xF16B570 || !state.native_identity(get_id, 0x16D5470, get_id_code))
         return MoveFixInputRewrite::layout_rejected;
     bool sprinting = state.move_fix_sprinting.load(std::memory_order_acquire);
     if (!detail::write_gameplay_move_fix_input(address, sprinting))
@@ -2250,13 +2285,13 @@ bool BedrockGameplay::read_rotation_movement(void* packet, RotationMovementSampl
     sample = {};
     const auto& state = *impl_;
     if (!state.supported || !packet) return false;
-    constexpr std::uintptr_t auth_vtable_rva = 0xE83A360;
-    constexpr std::uintptr_t auth_get_id_rva = 0xB26A00;
-    constexpr std::uintptr_t move_vtable_rva = 0xE85BFC0;
-    constexpr std::uintptr_t move_get_id_rva = 0x2ECD950;
+    constexpr std::uintptr_t auth_vtable_rva = 0xF16B570;
+    constexpr std::uintptr_t auth_get_id_rva = 0x16D5470;
+    constexpr std::uintptr_t move_vtable_rva = 0xF0CBBA0;
+    constexpr std::uintptr_t move_get_id_rva = 0x34012E0;
     constexpr std::size_t client_tick_offset = 0xA8;
-    constexpr std::array<unsigned char, 6> get_id_code{0xB8, 144, 0, 0, 0, 0xC3};
-    constexpr std::array<unsigned char, 6> move_get_id_code{0xB8, 19, 0, 0, 0, 0xC3};
+    constexpr std::array<unsigned char, 6> get_id_code{0xB8,0x90,0x00,0x00,0x00,0xC3};
+    constexpr std::array<unsigned char, 6> move_get_id_code{0xB8,0x13,0x00,0x00,0x00,0xC3};
     const auto address = reinterpret_cast<std::uintptr_t>(packet);
     const auto get_id = state.method(address, 1);
     std::uintptr_t vtable{};
@@ -2312,15 +2347,15 @@ bool BedrockGameplay::mining_swing() {
 }
 
 bool BedrockGameplay::swing_with_source(std::uint8_t swing_source) {
-    constexpr std::uintptr_t local_swing_rva = 0x2080660;
-    // Actor::swing(source, hand) is vtable slot 109 in the validated 1.26.52.3
+    constexpr std::uintptr_t local_swing_rva = 0x2C31210;
+    // Actor::swing(source, hand) is vtable slot 109 in the validated 1.26.60.5
     // actor layout. LocalPlayer overrides it to carry the swing source through
     // the normal gameplay/network path while updating the local arm animation.
     constexpr std::size_t local_player_swing_slot = 109;
     constexpr std::uint8_t main_hand = 0;
     constexpr std::array<unsigned char, 24> local_swing_prefix{
-        0x56,0x57,0x48,0x83,0xEC,0x28,0x48,0x89,0xCE,0x80,0xB9,0x34,0x04,0x00,0x00,0x01,
-        0x75,0x28,0x8B,0xBE,0x10,0x04,0x00,0x00
+        0x56,0x57,0x53,0x48,0x83,0xEC,0x20,0x44,0x89,0xC3,0x48,0x89,0xCE,0x80,0xB9,0x5D,
+        0x04,0x00,0x00,0x01,0x75,0x2F,0x8B,0xBE
     };
     auto& state = *impl_;
     if (!state.on_tick() || !state.player) return false;
@@ -2348,8 +2383,8 @@ bool BedrockGameplay::swing_with_source(std::uint8_t swing_source) {
         if (!state.native_identity(target, local_swing_rva, local_swing_prefix)) return false;
         state.local_swing_method = target;
     }
-    using Swing = bool(__fastcall*)(void*);
-    return reinterpret_cast<Swing>(state.local_swing_method)(reinterpret_cast<void*>(state.player));
+    using Swing = bool(__fastcall*)(void*, std::uint8_t, std::uint8_t);
+    return reinterpret_cast<Swing>(state.local_swing_method)(reinterpret_cast<void*>(state.player), swing_source, main_hand);
 }
 
 bool BedrockGameplay::replaceable(BlockPos position) const {
@@ -2405,7 +2440,7 @@ bool BedrockGameplay::advance_destroy_block(BlockPos position, std::uint8_t face
     state.destroy_diagnostic_requested_face = face;
     if (!state.on_tick() || face > 5 || !std::isfinite(destroy_time_scale)) return false;
     std::uintptr_t candidate_mode{}, candidate_owner{}, candidate_table{};
-    if (read_at(state.player, 0xAA0, candidate_mode) && candidate_mode &&
+    if (read_at(state.player, 0xAC8, candidate_mode) && candidate_mode &&
         read_at(candidate_mode, 0, candidate_table) && read_at(candidate_mode, 8, candidate_owner)) {
         state.destroy_diagnostic_requested_mode = candidate_mode;
         state.destroy_diagnostic_requested_owner = candidate_owner;
@@ -2559,7 +2594,7 @@ int BedrockGameplay::selected_hotbar_slot() const noexcept {
     if (!state.on_tick()) return -1;
     std::uintptr_t supplies{};
     int selected = -1;
-    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0x10, selected) ||
+    if (!read_at(state.player, 0x5E0, supplies) || !read_at(supplies, 0x10, selected) ||
         selected < 0 || selected > 8) return -1;
     return selected;
 }
@@ -2608,7 +2643,7 @@ bool BedrockGameplay::select_hotbar_slot(int slot) {
     if (!state.on_tick() || slot < 0 || slot > 8) return false;
     std::uintptr_t supplies{};
     int selected = -1;
-    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0x10, selected) ||
+    if (!read_at(state.player, 0x5E0, supplies) || !read_at(supplies, 0x10, selected) ||
         selected < 0 || selected > 8) return false;
     if (selected == slot) return true;
     if (!write_at(supplies, 0x10, slot)) return false;
@@ -2708,9 +2743,10 @@ bool BedrockGameplay::drop_inventory_slot(int slot) {
 }
 
 std::uintptr_t BedrockGameplay::container_screen_tick_target() const noexcept {
-    constexpr std::uintptr_t rva = 0x4DF8350;
+    constexpr std::uintptr_t rva = 0x5007E60;
     constexpr std::array<unsigned char, 16> prefix{
-        0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0xC8};
+        0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0xC8
+    };
     const auto& state = *impl_;
     const auto target = state.image.address + rva;
     return state.supported && state.native_identity(target, rva, prefix) ? target : 0;
@@ -2737,9 +2773,10 @@ bool BedrockGameplay::container_slot_occupied(int slot) const noexcept {
 }
 
 bool BedrockGameplay::take_container_slot(void* controller, int slot) noexcept {
-    constexpr std::uintptr_t rva = 0x4DFB4D0;
+    constexpr std::uintptr_t rva = 0x500AFB0;
     constexpr std::array<unsigned char, 16> prefix{
-        0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x48};
+        0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x58
+    };
     constexpr std::string_view collection = "container_items";
     const auto& state = *impl_;
     const auto target = state.image.address + rva;
@@ -2758,9 +2795,10 @@ bool BedrockGameplay::take_container_slot(void* controller, int slot) noexcept {
 }
 
 bool BedrockGameplay::close_container_screen(void* controller) noexcept {
-    constexpr std::uintptr_t rva = 0x2240F40;
+    constexpr std::uintptr_t rva = 0x4BB2960;
     constexpr std::array<unsigned char, 16> prefix{
-        0x55,0x56,0x57,0x48,0x81,0xEC,0xE0,0,0,0,0x48,0x8D,0xAC,0x24,0x80,0};
+        0x55,0x56,0x57,0x48,0x81,0xEC,0xE0,0x00,0x00,0x00,0x48,0x8D,0xAC,0x24,0x80,0x00
+    };
     const auto& state = *impl_;
     const auto target = state.method(reinterpret_cast<std::uintptr_t>(controller), 12);
     if (!target || !state.native_identity(target, rva, prefix)) return false;
@@ -2795,7 +2833,7 @@ bool BedrockGameplay::place_block(BlockPos position, bool auto_select) {
     if (face < 0) return false;
     std::uintptr_t supplies = 0, container = 0;
     int selected = -1;
-    if (!read_at(state.player, 0x5B8, supplies) || !read_at(supplies, 0x10, selected) || selected < 0 || selected > 8 ||
+    if (!read_at(state.player, 0x5E0, supplies) || !read_at(supplies, 0x10, selected) || selected < 0 || selected > 8 ||
         !read_at(supplies, 0xB8, container)) return false;
     const auto get_item = state.method(container, 7);
     const auto mode = state.game_mode();
@@ -2827,7 +2865,7 @@ bool BedrockGameplay::place_block(BlockPos position, bool auto_select) {
     }
     if (selected == state.switch_to && supplies == state.switch_supplies) state.switch_used = GetTickCount64();
     std::uintptr_t level = 0;
-    if (!read_at(state.player, 0x1D8, level)) return false;
+    if (!read_at(state.player, 0x200, level)) return false;
     const auto get_hit = state.method(level, 335);
     if (!get_hit) return false;
     const auto hit = reinterpret_cast<std::uintptr_t(__fastcall*)(void*)>(get_hit)(reinterpret_cast<void*>(level));

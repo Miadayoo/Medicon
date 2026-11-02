@@ -7,6 +7,6 @@ bool initialize_animation_reader(std::string& diagnostic);
 bool fill_animated_tessellator(void* tess,std::span<const medicon::custom_model::SkinOutput> skin,
     const medicon::custom_model::AnimationBatch& batch,bool hurt) noexcept;
 // Caller has already validated a freshly obtained local actor in WorldScope.
-// Read-only 1.26.52.3 EnTT components; no native pointer escapes the callback.
+// Read-only 1.26.60.5 EnTT components; no native pointer escapes the callback.
 [[nodiscard]] medicon::custom_model::AnimationInput read_animation_input(void* actor,float alpha,float body_yaw) noexcept;
 }

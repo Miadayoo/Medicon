@@ -1,5 +1,7 @@
 # Main Menu の純正ボタン接続
 
+現行の1.26.60.5対応は [SDK更新記録](bedrock-1.26.60.md) を参照。以下は旧版の履歴。
+
 対象は Minecraft.Windows.exe FileVersion `1.26.52.3`。
 2026-10-26提供の追加IDA資料と、同一SHA-256のディスク上の実行ファイルを限定して照合した。
 SHA-256は `47de440dc290bb5bd2a4ccd79e39c00219a155ea2c23bb961e27e323bd2fd942`。

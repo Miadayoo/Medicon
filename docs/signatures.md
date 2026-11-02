@@ -2,9 +2,9 @@
 
 Medicon uses pattern data from
 [`surukotonai/solstice`](https://github.com/surukotonai/solstice), pinned to
-[`1d7808f52ef4ba6e34a7fbcc65294907a7761611`](https://github.com/surukotonai/solstice/commit/1d7808f52ef4ba6e34a7fbcc65294907a7761611).
-The import contains the 63 active `DEFINE_SIG` entries in
-[`src/SDK/SigManager.hpp`](https://github.com/surukotonai/solstice/blob/1d7808f52ef4ba6e34a7fbcc65294907a7761611/src/SDK/SigManager.hpp).
+[`cc6463dcadfeadb9049c235134c6b46efdc12b7e`](https://github.com/surukotonai/solstice/commit/cc6463dcadfeadb9049c235134c6b46efdc12b7e).
+The import contains the 64 active `DEFINE_SIG` entries in
+[`src/SDK/SigManager.hpp`](https://github.com/surukotonai/solstice/blob/cc6463dcadfeadb9049c235134c6b46efdc12b7e/src/SDK/SigManager.hpp).
 Commented-out entries and the upstream scanner/SDK implementation are excluded.
 
 `data/signatures/solstice.json` records each pattern, resolution kind, displacement
@@ -18,6 +18,10 @@ dependency licenses do not grant a license to `SigManager.hpp`. The manifest
 records `no_root_license_found`; no upstream license grant is asserted here.
 
 ## Compatibility
+
+The current 1.26.60.5 static audit found 63 unique entries and one ambiguous
+entry (`Actor_canSee`). See [the SDK migration record](bedrock-1.26.60.md) for
+the exact PE profile, IDA MCP evidence, and feature paths that remain withheld.
 
 The source contains mixed version comments, including `26.51`, `1.26.0`, and
 `1.21.51`. They are upstream hints, not a supported-version declaration. This

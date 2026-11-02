@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$SourceDirectory = (Join-Path $PSScriptRoot '../.reference/solstice'),
-    [string]$Commit = '1d7808f52ef4ba6e34a7fbcc65294907a7761611',
+    [string]$Commit = 'cc6463dcadfeadb9049c235134c6b46efdc12b7e',
     [string]$ProjectDirectory = (Join-Path $PSScriptRoot '..')
 )
 

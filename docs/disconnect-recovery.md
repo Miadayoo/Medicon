@@ -1,5 +1,8 @@
 # Disconnect recovery (Minecraft 1.26.52.03)
 
+Current 1.26.60.5 SDK identities and changed handler fields are recorded in
+[the port report](bedrock-1.26.60.md). The addresses below are historical.
+
 The disconnect screen has three buttons at the bottom left:
 
 * **Reconnect** retries the destination retained by Minecraft.

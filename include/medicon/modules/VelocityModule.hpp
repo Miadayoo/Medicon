@@ -25,7 +25,8 @@ public:
     // The host serializes receive, game-tick and UI callbacks. Queue copied
     // values only; native packet references are borrowed until receive returns.
     [[nodiscard]] MotionResult handle_motion(sdk::Vec3& motion, const sdk::GameplayFrame& frame,
-                                             TimePoint now = Clock::now(), std::int64_t received_timestamp = 0) noexcept;
+                                             TimePoint now = Clock::now(), std::int64_t received_timestamp = 0,
+                                             std::uint64_t input_tick = 0) noexcept;
     void game_tick(sdk::GameplayAccess& game, float delta_seconds) noexcept override;
     void update(sdk::GameplayAccess& game, bool allow_actions, TimePoint now = Clock::now()) noexcept;
     void reset_delay() noexcept;
@@ -70,6 +71,7 @@ private:
         std::uint64_t sequence;
         TimePoint received;
         std::int64_t received_timestamp;
+        std::uint64_t input_tick;
     };
     struct PendingReply { sdk::LatencyReply reply; std::uint64_t after_motion; };
     std::deque<PendingMotion> pending_;

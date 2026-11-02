@@ -1,0 +1,656 @@
+{
+  "executable": "Minecraft.Windows.exe",
+  "sha256": "988f6a61403b4381aa41e6c66d64cce441b14e561a9b10f647c2758ef3f2672a",
+  "timestamp": "0x6ad79ee4",
+  "image_size": "0x1383b000",
+  "checksum": "0x134d2def",
+  "source": {
+    "repository": "https://github.com/surukotonai/solstice",
+    "commit": "cc6463dcadfeadb9049c235134c6b46efdc12b7e",
+    "path": "src/SDK/SigManager.hpp",
+    "blob_url": "https://github.com/surukotonai/solstice/blob/cc6463dcadfeadb9049c235134c6b46efdc12b7e/src/SDK/SigManager.hpp",
+    "license_status": "no_root_license_found"
+  },
+  "runtime_verified": false,
+  "verification": "IDA MCP bytes and function boundaries",
+  "signatures": [
+    {
+      "name": "Actor_getNameTag",
+      "matches": [
+        "0xbbe500"
+      ],
+      "status": "unique",
+      "target_rva": "0xbbe500",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xbbe500"
+    },
+    {
+      "name": "Actor_setNameTag",
+      "matches": [
+        "0xbc5260"
+      ],
+      "status": "unique",
+      "target_rva": "0xbc5260",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xbc5260"
+    },
+    {
+      "name": "ClientInstance_mBgfx",
+      "matches": [
+        "0x8b9b60c"
+      ],
+      "status": "unique",
+      "target_rva": "0x12adf748",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "ContainerScreenController_tick",
+      "matches": [
+        "0x5007e60"
+      ],
+      "status": "unique",
+      "target_rva": "0x5007e60",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x5007e60"
+    },
+    {
+      "name": "ContainerScreenController_handleAutoPlace",
+      "matches": [
+        "0x500afb0"
+      ],
+      "status": "unique",
+      "target_rva": "0x500afb0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x500afb0"
+    },
+    {
+      "name": "ComplexInventoryTransaction_vtable",
+      "matches": [
+        "0x31431b"
+      ],
+      "status": "unique",
+      "target_rva": "0xeff9d40",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "EnchantUtils_getEnchantLevel",
+      "matches": [
+        "0x36ac810"
+      ],
+      "status": "unique",
+      "target_rva": "0x36ac810",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x36ac810"
+    },
+    {
+      "name": "GameMode_getDestroyRate",
+      "matches": [
+        "0x376b0b0"
+      ],
+      "status": "unique",
+      "target_rva": "0x376b0b0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x376b0b0"
+    },
+    {
+      "name": "HoverTextRenderer_render",
+      "matches": [
+        "0x4c9b320"
+      ],
+      "status": "unique",
+      "target_rva": "0x4c9b320",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x4c9b320"
+    },
+    {
+      "name": "GameMode_baseUseItem",
+      "matches": [
+        "0x376e0c0"
+      ],
+      "status": "unique",
+      "target_rva": "0x376e0c0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x376e0c0"
+    },
+    {
+      "name": "GuiData_displayClientMessage",
+      "matches": [
+        "0xe927b0"
+      ],
+      "status": "unique",
+      "target_rva": "0xe927b0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xe927b0"
+    },
+    {
+      "name": "InventoryTransaction_addAction",
+      "matches": [
+        "0x29b1e20"
+      ],
+      "status": "unique",
+      "target_rva": "0x29b1e20",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x29b1e20"
+    },
+    {
+      "name": "ItemStack_vTable",
+      "matches": [
+        "0x2add95"
+      ],
+      "status": "unique",
+      "target_rva": "0xeff9e80",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "ItemStack_getCustomName",
+      "matches": [
+        "0x1ad1f90"
+      ],
+      "status": "unique",
+      "target_rva": "0x1ad1f90",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x1ad1f90"
+    },
+    {
+      "name": "ItemUseInventoryTransaction_vtable",
+      "matches": [
+        "0x228839c"
+      ],
+      "status": "unique",
+      "target_rva": "0xf134560",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "ItemUseOnActorInventoryTransaction_vtable",
+      "matches": [
+        "0x2b1112f"
+      ],
+      "status": "unique",
+      "target_rva": "0xf159100",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "ItemReleaseInventoryTransaction_vtable",
+      "matches": [
+        "0x3ab1ef1"
+      ],
+      "status": "unique",
+      "target_rva": "0xeff9dd0",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "MinecraftGame_instance",
+      "matches": [
+        "0x693ff7b"
+      ],
+      "status": "unique",
+      "target_rva": "0x129fb970",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "MinecraftPackets_createPacket",
+      "matches": [
+        "0x23768c0"
+      ],
+      "status": "unique",
+      "target_rva": "0x23768c0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x23768c0"
+    },
+    {
+      "name": "Mob_JumpFromGroundRequestComponentPatch",
+      "matches": [
+        "0xad34565"
+      ],
+      "status": "unique",
+      "target_rva": "0xad34565",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xad344f0"
+    },
+    {
+      "name": "Mob_getCurrentSwingDuration",
+      "matches": [
+        "0x2c24e10"
+      ],
+      "status": "unique",
+      "target_rva": "0x2c24e10",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x2c24e10"
+    },
+    {
+      "name": "MouseDevice_feed",
+      "matches": [
+        "0x427650"
+      ],
+      "status": "unique",
+      "target_rva": "0x427650",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x427650"
+    },
+    {
+      "name": "NetworkStackItemDescriptor_ctor",
+      "matches": [
+        "0x1aebf60"
+      ],
+      "status": "unique",
+      "target_rva": "0x1aebf60",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x1aebf60"
+    },
+    {
+      "name": "PlayerMovement_clearInputStateInlined",
+      "matches": [
+        "0x6d67ef4"
+      ],
+      "status": "unique",
+      "target_rva": "0x6d67ef4",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6d679a0"
+    },
+    {
+      "name": "PlayerMovement_clearInputStateInlined2",
+      "matches": [
+        "0x6d681c6"
+      ],
+      "status": "unique",
+      "target_rva": "0x6d681c6",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6d679a0"
+    },
+    {
+      "name": "PlayerMovement_clearInputStateInlined3",
+      "matches": [
+        "0x6d67c54"
+      ],
+      "status": "unique",
+      "target_rva": "0x6d67c54",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6d679a0"
+    },
+    {
+      "name": "NetherNetConnector_runEvents",
+      "matches": [
+        "0x2362450"
+      ],
+      "status": "unique",
+      "target_rva": "0x2362450",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x2362450"
+    },
+    {
+      "name": "RakNet_RakPeer_runUpdateCycle",
+      "matches": [
+        "0x2509990"
+      ],
+      "status": "unique",
+      "target_rva": "0x2509990",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x2509990"
+    },
+    {
+      "name": "RakNet_RakPeer_sendImmediate",
+      "matches": [
+        "0x2501910"
+      ],
+      "status": "unique",
+      "target_rva": "0x2501910",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x2501910"
+    },
+    {
+      "name": "ScreenView_setupAndRender",
+      "matches": [
+        "0x4cb3260"
+      ],
+      "status": "unique",
+      "target_rva": "0x4cb3260",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x4cb3260"
+    },
+    {
+      "name": "SimulatedPlayer_simulateJump",
+      "matches": [
+        "0x1036bb0"
+      ],
+      "status": "unique",
+      "target_rva": "0x1036bb0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x1036bb0"
+    },
+    {
+      "name": "ItemInHandRenderer_render_bytepatch",
+      "matches": [
+        "0x5330691"
+      ],
+      "status": "unique",
+      "target_rva": "0x5330691",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x532b230"
+    },
+    {
+      "name": "SneakMovementSystem_tickSneakMovementSystem",
+      "matches": [
+        "0xb328e1c"
+      ],
+      "status": "unique",
+      "target_rva": "0xb328e1c",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xb328cf0"
+    },
+    {
+      "name": "SneakMovementSystem_tickSneakMovementSystem2",
+      "matches": [
+        "0xb328e7b"
+      ],
+      "status": "unique",
+      "target_rva": "0xb328e7b",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xb328cf0"
+    },
+    {
+      "name": "ConnectionRequest_create",
+      "matches": [
+        "0x4c9400"
+      ],
+      "status": "unique",
+      "target_rva": "0x4c9400",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x4c9400"
+    },
+    {
+      "name": "CameraDirectLookSystemUtil_handleLookInput",
+      "matches": [
+        "0x6eeba30"
+      ],
+      "status": "unique",
+      "target_rva": "0x6eeba30",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6eeba30"
+    },
+    {
+      "name": "ItemRenderer_render",
+      "matches": [
+        "0x6e70cd0"
+      ],
+      "status": "unique",
+      "target_rva": "0x6e70cd0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6e70cd0"
+    },
+    {
+      "name": "BlockSource_fireBlockChanged",
+      "matches": [
+        "0x32dc340"
+      ],
+      "status": "unique",
+      "target_rva": "0x32dc340",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x32dc340"
+    },
+    {
+      "name": "ActorAnimationControllerPlayer_applyToPose",
+      "matches": [
+        "0x6179500"
+      ],
+      "status": "unique",
+      "target_rva": "0x6179500",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6179500"
+    },
+    {
+      "name": "JSON_parse",
+      "matches": [
+        "0xe942e00"
+      ],
+      "status": "unique",
+      "target_rva": "0xe942e00",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xe942e00"
+    },
+    {
+      "name": "ConcreteBlockLegacy_getCollisionShapeForCamera",
+      "matches": [
+        "0x35a9770"
+      ],
+      "status": "unique",
+      "target_rva": "0x35a9770",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x35a9770"
+    },
+    {
+      "name": "WaterBlockLegacy_getCollisionShapeForCamera",
+      "matches": [
+        "0xa3a30"
+      ],
+      "status": "unique",
+      "target_rva": "0xa3a30",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "ActorShaderManager_setupShaderParameters",
+      "matches": [
+        "0x57c9eb0"
+      ],
+      "status": "unique",
+      "target_rva": "0x57c9eb0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x57c9eb0"
+    },
+    {
+      "name": "ResourcePackManager_composeFullStackBp",
+      "matches": [
+        "0x8ef277a"
+      ],
+      "status": "unique",
+      "target_rva": "0x8ef277a",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x8ef1f00"
+    },
+    {
+      "name": "ClientInstance_isPreGame",
+      "matches": [
+        "0x65b04b0"
+      ],
+      "status": "unique",
+      "target_rva": "0x65b04b0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x65b04b0"
+    },
+    {
+      "name": "tickEntity_ItemUseSlowdownModifierComponent",
+      "matches": [
+        "0xce34800"
+      ],
+      "status": "unique",
+      "target_rva": "0xce34800",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xce34800"
+    },
+    {
+      "name": "checkBlocks",
+      "matches": [
+        "0x37dac5a"
+      ],
+      "status": "unique",
+      "target_rva": "0x37dac5a",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x37daac0"
+    },
+    {
+      "name": "Unknown_renderBlockOverlay",
+      "matches": [
+        "0x530cf71"
+      ],
+      "status": "unique",
+      "target_rva": "0x530cf71",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x530c390"
+    },
+    {
+      "name": "Unknown_renderNametag",
+      "matches": [
+        "0x59500e0"
+      ],
+      "status": "unique",
+      "target_rva": "0x59500e0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x59500e0"
+    },
+    {
+      "name": "Reach",
+      "matches": [
+        "0x4e0a2c5"
+      ],
+      "status": "unique",
+      "target_rva": "0x4e0a2c5",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x4e090c0"
+    },
+    {
+      "name": "BlockReach",
+      "matches": [
+        "0x376f25c"
+      ],
+      "status": "unique",
+      "target_rva": "0x376f25c",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x376f240"
+    },
+    {
+      "name": "GetSpeedInAirWithSprint",
+      "matches": [
+        "0x336f010"
+      ],
+      "status": "unique",
+      "target_rva": "0x336f010",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "ConnectionRequest_create_DeviceModel",
+      "matches": [
+        "0x4c9895"
+      ],
+      "status": "unique",
+      "target_rva": "0x4c9895",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x4c9400"
+    },
+    {
+      "name": "ConnectionRequest_create_DeviceOS",
+      "matches": [
+        "0x4c9905"
+      ],
+      "status": "unique",
+      "target_rva": "0x4c9905",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x4c9400"
+    },
+    {
+      "name": "ConnectionRequest_create_DefaultInputMode",
+      "matches": [
+        "0x32e1b4"
+      ],
+      "status": "unique",
+      "target_rva": "0x32e1b4",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x32e1b0"
+    },
+    {
+      "name": "TapSwingAnim",
+      "matches": [
+        "0x53305de"
+      ],
+      "status": "unique",
+      "target_rva": "0xf245af0",
+      "ida_bytes_agree": true,
+      "ida_function_start": null
+    },
+    {
+      "name": "Unknown_updatePlayerFromCamera",
+      "matches": [
+        "0x6f313f0"
+      ],
+      "status": "unique",
+      "target_rva": "0x6f313f0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6f313f0"
+    },
+    {
+      "name": "FluxSwing",
+      "matches": [
+        "0x532f095"
+      ],
+      "status": "unique",
+      "target_rva": "0x532f095",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x532b230"
+    },
+    {
+      "name": "BobHurt",
+      "matches": [
+        "0x53a0fb0"
+      ],
+      "status": "unique",
+      "target_rva": "0x53a0fb0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x53a0fb0"
+    },
+    {
+      "name": "CameraComponent_applyRotation",
+      "matches": [
+        "0x6f2caa7"
+      ],
+      "status": "unique",
+      "target_rva": "0x6f2caa7",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x6f2c9f0"
+    },
+    {
+      "name": "GetCollisionShapeActorProxy_getFeetAttachPos",
+      "matches": [
+        "0xba2af0"
+      ],
+      "status": "unique",
+      "target_rva": "0xba2af0",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0xba2af0"
+    },
+    {
+      "name": "Actor_canSee",
+      "matches": [
+        "0xbc6540",
+        "0x3534ee0"
+      ],
+      "status": "ambiguous"
+    },
+    {
+      "name": "ItemInHandRenderer_renderItem_bytepatch2",
+      "matches": [
+        "0x5316377"
+      ],
+      "status": "unique",
+      "target_rva": "0x5316377",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x5315cc0"
+    },
+    {
+      "name": "LevelRenderer_renderLevel",
+      "matches": [
+        "0x535f980"
+      ],
+      "status": "unique",
+      "target_rva": "0x535f980",
+      "ida_bytes_agree": true,
+      "ida_function_start": "0x535f980"
+    }
+  ]
+}

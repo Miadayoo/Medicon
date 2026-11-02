@@ -1,5 +1,6 @@
 #include <medicon/sdk/CustomModelBox.hpp>
 #include <medicon/sdk/CustomModelP1Patterns.hpp>
+#include <medicon/sdk/CustomModelRender.hpp>
 #include <medicon/memory/pattern.hpp>
 #include "custom_model_fixture.hpp"
 
@@ -23,6 +24,59 @@ template<class T> void put(void* base, std::size_t offset, const T& value) {
 }
 BoxMatrix identity() { return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; }
 bool close(float a,float b) { return std::fabs(a-b)<0.0001F; }
+void resolution_test() {
+    namespace profile = bedrock_1_26_60_5;
+    namespace pattern = p1_native;
+    constexpr std::uintptr_t base = 0x140000000, code_rva = 0x1000, group_rva = 0x8000, key_rva = 0x9000;
+    const std::array patterns{
+        pattern::world_render_pattern, pattern::mesh_immediate_pattern, pattern::mesh_view_pattern,
+        pattern::tess_begin_pattern, pattern::tess_vertex_pattern, pattern::interpolated_position_pattern,
+        pattern::riding_offset_pattern, pattern::body_yaw_pattern, pattern::height_offset_pattern,
+        pattern::material_lookup_pattern, pattern::material_release_pattern, pattern::material_anchor_pattern,
+        pattern::mesh_submit_pattern, pattern::binding_copy_pattern, pattern::binding_release_pattern};
+    std::vector<std::byte> code;
+    std::array<std::size_t, patterns.size()> offsets{};
+    for (std::size_t i = 0; i < patterns.size(); ++i) {
+        const auto parsed = medicon::memory::Pattern::parse(patterns[i]);
+        require(parsed.has_value(), "P1 native pattern parses");
+        code.insert(code.end(), 16, std::byte{0xCC});
+        offsets[i] = code.size();
+        for (const auto byte : parsed->bytes())
+            code.push_back(std::byte{byte.wildcard ? std::uint8_t{0xA5} : byte.value});
+    }
+    const auto anchor = offsets[11];
+    const auto group_displacement = static_cast<std::int32_t>(group_rva - (code_rva + anchor + 7));
+    const auto key_displacement = static_cast<std::int32_t>(key_rva - (code_rva + anchor + 14));
+    put(code.data(), anchor + 3, group_displacement);
+    put(code.data(), anchor + 10, key_displacement);
+    const std::array regions{medicon::memory::MemoryRegion{code, base + code_rva}};
+    std::string diagnostic;
+    for (const auto size : {profile::official_image_size, profile::launcher_image_size}) {
+        const auto targets = resolve_box_targets(profile::time_date_stamp, size, regions, {base, size}, diagnostic);
+        require(targets && reinterpret_cast<std::uintptr_t>(targets.world) == base + code_rva + offsets[0] &&
+                reinterpret_cast<std::uintptr_t>(targets.mesh) == base + code_rva + offsets[1] &&
+                reinterpret_cast<std::uintptr_t>(targets.mesh_view) == base + code_rva + offsets[2] &&
+                reinterpret_cast<std::uintptr_t>(targets.copy_binding) == base + code_rva + offsets[13] &&
+                reinterpret_cast<std::uintptr_t>(targets.release_binding) == base + code_rva + offsets[14],
+                "Stock and LeviLauncher resolve the same native draw and binding entries");
+        require(reinterpret_cast<std::uintptr_t>(targets.material_group) == base + group_rva &&
+                reinterpret_cast<std::uintptr_t>(targets.alpha_key) == base + key_rva &&
+                reinterpret_cast<std::uintptr_t>(targets.entity_key) == base + key_rva + 0x90,
+                "Both packagings keep the inspected RIP-relative material addresses");
+        const auto saved = code[offsets[0]];
+        code[offsets[0]] = std::byte{0xCC};
+        require(!resolve_box_targets(profile::time_date_stamp, size, regions, {base, size}, diagnostic),
+                "Neither packaging may enable rendering with a missing world entry");
+        code[offsets[0]] = saved;
+        const std::array duplicate{regions[0], medicon::memory::MemoryRegion{code, base + 0x10000}};
+        require(!resolve_box_targets(profile::time_date_stamp, size, duplicate, {base, size}, diagnostic),
+                "Neither packaging may enable rendering with ambiguous entries");
+        require(!resolve_box_targets(0x6AB54E37, size, regions, {base, size}, diagnostic),
+                "Matching native signatures cannot admit an older Minecraft build");
+    }
+    require(!resolve_box_targets(profile::time_date_stamp, 0x1383D000, regions, {base, 0x1383D000}, diagnostic),
+            "An uninspected packaging is rejected");
+}
 void geometry_test() {
     const auto& box=test_box_vertices();
     float low[3]{10,10,10},high[3]{-10,-10,-10};
@@ -62,10 +116,10 @@ void view_reader_test() {
     std::array<std::uintptr_t,2> options_table{};
     std::array<std::byte,0x90> option{},override_option{};
     std::array<std::byte,0x240> impl{},override_impl{};
-    std::array<std::byte,8> getter{std::byte{0x48},std::byte{0x8B},std::byte{0x81},std::byte{0x10},std::byte{0x0E},std::byte{0},std::byte{0},std::byte{0xC3}};
+    std::array<std::byte,8> getter{std::byte{0x48},std::byte{0x8B},std::byte{0x81},std::byte{0x00},std::byte{0x0E},std::byte{0},std::byte{0},std::byte{0xC3}};
     const ViewProfile profile{reinterpret_cast<std::uintptr_t>(getter.data()),0x12340000};
-    put(client.data(),0,table.data());table[174]=profile.client_options_getter;
-    put(client.data(),0xE10,options.data());put(options.data(),0,options_table.data());options_table[1]=profile.option_getter;
+    put(client.data(),0,table.data());table[172]=profile.client_options_getter;
+    put(client.data(),0xE00,options.data());put(options.data(),0,options_table.data());options_table[1]=profile.option_getter;
     put(options.data(),0x28,option.data());put(option.data(),8,impl.data());put(impl.data(),0x1D4,6);
     const auto before=client;
     for(int value=0;value<3;++value){
@@ -81,14 +135,14 @@ void view_reader_test() {
     require(read_client_view(client.data(),profile)==ViewMode::unknown,"Cyclic override chain is bounded");
     put(impl.data(),0x238,std::uintptr_t{});put(option.data(),0x18,3);
     require(read_client_view(client.data(),profile)==ViewMode::unknown,"Invalid perspective never draws a custom body");
-    table[174]=0;
+    table[172]=0;
     require(read_client_view(client.data(),profile)==ViewMode::unknown,"Changed native getter fails validation");
     require(read_client_view(nullptr,profile)==ViewMode::unknown&&read_client_view(reinterpret_cast<void*>(UINTPTR_MAX-1),profile)==ViewMode::unknown,"Null and overflowing native pointers fail safely");
 }
 
 struct Fixture {
     std::array<std::byte,0xC0> context{},screen{},camera{},actor{},matrices{},table{};
-    std::array<std::byte,0x2B0> tess{};
+    std::array<std::byte,0x2B0> tess{},old_tess{};
     std::array<std::byte,0x28> texture{},alpha{},entity{};
     std::array<std::byte,0x148> bindings{};
     std::array<std::uintptr_t,1> map{};
@@ -96,7 +150,7 @@ struct Fixture {
     std::array<BoxVertex,36> vertices{};
     unsigned begins{},count{},submits{},materials{},releases{},pose_reads{},binding_copies{},binding_releases{},expected_vertices{36};
     unsigned mesh_ends{},mesh_destroys{},mesh_draws{},builder_clears{},texture_requests{};
-    std::array<std::byte,32> texture_data{},gpu{};
+    std::array<std::byte,32> texture_data{},gpu{},old_gpu{};
     std::array<std::byte,40> metadata{};
     BoxRenderer renderer;
 };
@@ -155,8 +209,17 @@ void fake_submit(void* screen,void* t,const void* material,const void* texture,c
 void initialize(Fixture& f) {
     live=&f;
     put(f.context.data(),0x28,f.screen.data()); put(f.context.data(),0xA8,f.camera.data()); put(f.context.data(),0xB0,.25F);
-    put(f.camera.data(),0x28,BoxVec3{100,50,200}); put(f.screen.data(),0x18,f.matrices.data());
-    put(f.screen.data(),0xB8,f.tess.data());
+    // 1.26.60 camera origin starts at +20. Poison the former +28 window so
+    // an old layout cannot silently draw at a plausible but wrong position.
+    put(f.camera.data(),0x20,BoxVec3{100,50,200});
+    put(f.camera.data(),0x2C,std::numeric_limits<float>::quiet_NaN());
+    put(f.screen.data(),0x18,f.matrices.data());
+    // Native 1.26.60 draw reads ScreenContext+B0. The old B8 field is an
+    // unrelated resource whose bytes can look like a permanently busy builder.
+    put(f.screen.data(),0xB0,f.tess.data());
+    put(f.screen.data(),0xB8,f.old_tess.data());
+    put(f.old_tess.data(),0x298,std::uint32_t{15120});
+    put(f.old_tess.data(),0x255,std::uint8_t{5});
     put(f.bindings.data(),0x140,std::uintptr_t{1});
     f.map[0]=reinterpret_cast<std::uintptr_t>(f.top.data());
     put(f.matrices.data(),0x48,f.map.data()); put(f.matrices.data(),0x50,std::uintptr_t{1});
@@ -175,6 +238,11 @@ void initialize(Fixture& f) {
     put(f.entity.data(),0x18,std::uint64_t{6}); put(f.entity.data(),0x20,std::uint64_t{15});
     f.renderer.configure({fake_world,fake_submit,fake_view,fake_begin,fake_vertex,fake_position,fake_riding,fake_yaw,
         fake_height,fake_material,fake_release,&f,f.alpha.data(),f.entity.data(),fake_lower,fake_binding_copy,fake_binding_release});
+    // The GPU pair moved from TextureData+8 to +0. A ready decoy at the old
+    // offset must not admit a pending texture or transfer its references.
+    put(f.texture_data.data(),0,f.gpu.data());
+    put(f.texture_data.data(),8,f.old_gpu.data());
+    put(f.old_gpu.data(),0x12,std::uint8_t{1});
     f.renderer.set_ready(true);
 }
 void lifecycle_test() {
@@ -257,18 +325,19 @@ void fake_mesh_draw(void* mesh,void* context,const void* material,const void* te
     require(get<std::uintptr_t>(material,0)==1&&get<std::uint8_t>(texture,0x20)==1&&get<void*>(texture,0)==live->texture_data.data(),"Own PNG binding and native material");
     require(get<std::uint8_t>(metadata,0x20)==0,"Captured native empty metadata");++live->mesh_draws;
 }
-void static_model_test() {
-    const auto root=model_fixture::create("native");medicon::custom_model::ModelRegistry registry;registry.start(root);
+void static_model_test(bool stock_available) {
+    const auto root=model_fixture::create(stock_available?"native":"native-no-stock");medicon::custom_model::ModelRegistry registry;registry.start(root);
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
     while (registry.status()==medicon::custom_model::ModelRegistry::Status::loading&&std::chrono::steady_clock::now()<deadline) std::this_thread::yield();
     require(static_cast<bool>(registry.snapshot()),"Native fixture CPU model loads");
     Fixture f;initialize(f);f.expected_vertices=3;const auto saved=f.tess;
     f.renderer.configure_static({fake_texture_get,fake_mesh_end,fake_mesh_draw,fake_mesh_destroy,fake_builder_clear,fake_view_id},registry);
     f.renderer.set_static_mode(true,false);f.renderer.set_options(true,0,1);
-    put(f.texture.data(),0x20,std::uint8_t{1});put(f.texture_data.data(),8,f.gpu.data());
-    f.renderer.after_submit(nullptr,nullptr,f.texture.data(),f.metadata.data(),fake_submit);
+    put(f.texture.data(),0x20,std::uint8_t{1});
+    if (stock_available) f.renderer.after_submit(nullptr,nullptr,f.texture.data(),f.metadata.data(),fake_submit);
+    else require(!f.renderer.texture_ready(),"Custom PNG fixture has no stock texture submission");
     f.renderer.observe_texture_group(&f,fake_texture_get);
-    require(f.texture_requests==1&&f.renderer.static_progress().textures==0&&f.binding_releases==1,"Pending PNG releases temporary references and keeps vanilla");
+    require(f.texture_requests==1&&f.renderer.static_progress().textures==0&&f.binding_releases==1,"Pending current GPU releases temporary references even if the former +8 field looks ready");
     put(f.gpu.data(),0x12,std::uint8_t{1});
     const auto texture_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
     while (!f.renderer.static_progress().textures&&std::chrono::steady_clock::now()<texture_deadline) f.renderer.observe_texture_group(&f,fake_texture_get);
@@ -294,7 +363,7 @@ void static_model_test() {
     { BoxRenderer::WorldScope world(f.renderer,reinterpret_cast<void*>(1),reinterpret_cast<void*>(1));f.renderer.finish_world(fake_submit); }
     require(f.mesh_draws==3,"OFF never dereferences native context");
     f.renderer.release_resources();f.renderer.release_resources();registry.stop();
-    require(f.mesh_destroys==1&&f.binding_releases==3,"Native mesh and stock/custom references released exactly once after drain");
+    require(f.mesh_destroys==1&&f.binding_releases==(stock_available?3U:2U),"Only references actually acquired are released once after drain");
 }
 void model_switch_test() {
     namespace cm=medicon::custom_model;
@@ -309,7 +378,7 @@ void model_switch_test() {
     Fixture f;initialize(f);f.expected_vertices=3;
     f.renderer.configure_static({fake_texture_get,fake_mesh_end,fake_mesh_draw,fake_mesh_destroy,fake_builder_clear,fake_view_id},registry);
     f.renderer.set_static_mode(true,true);f.renderer.set_options(true,0,1);
-    put(f.texture.data(),0x20,std::uint8_t{1});put(f.texture_data.data(),8,f.gpu.data());put(f.gpu.data(),0x12,std::uint8_t{1});
+    put(f.texture.data(),0x20,std::uint8_t{1});put(f.gpu.data(),0x12,std::uint8_t{1});
     f.renderer.after_submit(nullptr,nullptr,f.texture.data(),f.metadata.data(),fake_submit);
     f.renderer.observe_texture_group(&f,fake_texture_get);
     const auto world=[&]{BoxRenderer::WorldScope scope(f.renderer,f.context.data(),f.actor.data(),ViewMode::third_person);f.renderer.finish_world(fake_submit);};
@@ -360,6 +429,6 @@ void rotations_pitch_test() {
 }
 }
 int main() {
-    try { geometry_test(); view_reader_test(); lifecycle_test(); retained_binding_test(); resource_location_test(); rotations_pitch_test(); static_model_test(); model_switch_test(); std::cout<<"Model geometry / native view / ABI / restoration / ownership / character switch passed\n"; }
+    try { resolution_test(); geometry_test(); view_reader_test(); lifecycle_test(); retained_binding_test(); resource_location_test(); rotations_pitch_test(); static_model_test(true); static_model_test(false); model_switch_test(); std::cout<<"Model packaging / geometry / native view / ABI / restoration / ownership / character switch passed\n"; }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

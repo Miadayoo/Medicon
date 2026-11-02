@@ -1,4 +1,5 @@
 #include <medicon/sdk/VanillaNavigation.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
 #include <Windows.h>
 #include <winver.h>
 #include <algorithm>
@@ -11,17 +12,17 @@
 
 namespace medicon::sdk {
 namespace {
-// Exact 1.26.52.3 observations from the supplied IDA evidence and matching PE.
+// Exact 1.26.60.5 observations from the supplied IDA evidence and matching PE.
 // These checks are not scanner patterns; no signatures or offsets are guessed.
-constexpr std::uintptr_t update_rva = 0x4CF40B0, caller_rva = 0x483A4CA, return_rva = 0x483A4DB;
-constexpr std::uintptr_t controller_table = 0xE900070, scene_table = 0xE8E9080;
-constexpr std::uintptr_t game_table = 0xE76E2D0, app_table = 0xE76EBF0, exit_rva = 0x2240F40;
+constexpr std::uintptr_t update_rva = 0x4F17340, caller_rva = 0x4CB4638, return_rva = 0x4CB4649;
+constexpr std::uintptr_t controller_table = 0xF21A2E0, scene_table = 0xF20EC60;
+constexpr std::uintptr_t game_table = 0xF091B70, app_table = 0xF092470, exit_rva = 0x4BB2960;
 constexpr std::uint64_t expiry_ms = 1500, debounce_ms = 350;
 struct Handler { NavigationAction action; std::uint32_t key; std::uintptr_t table, invoke; const char* name; };
 constexpr std::array handlers{
-    Handler{NavigationAction::Play,3372022197u,0xE9024C0,0x4D4A730,"Play"},
-    Handler{NavigationAction::Settings,4202751130u,0xE902718,0x4D50E70,"Settings"},
-    Handler{NavigationAction::Quit,116523271u,0xE805F70,0x22BAAC0,"Quit"}
+    Handler{NavigationAction::Play,3372022197u,0xF21BF40,0x4F5DE80,"Play"},
+    Handler{NavigationAction::Settings,4202751130u,0xF21C418,0x4F67590,"Settings"},
+    Handler{NavigationAction::Quit,116523271u,0xF2039E0,0x26D7E80,"Quit"}
 };
 bool copy(std::uintptr_t at, void* output, std::size_t size) noexcept {
     if (!at || !output || !size || size - 1 > std::numeric_limits<std::uintptr_t>::max() - at) return false;
@@ -56,7 +57,7 @@ bool exact_host(std::string& diagnostic) {
     const auto separator = full.find_last_of(L"\\/");
     const std::wstring name(full.substr(separator == std::wstring_view::npos ? 0 : separator + 1));
     if (_wcsicmp(name.c_str(),L"Minecraft.Windows.exe") != 0) {
-        diagnostic = "Native menu navigation is disabled outside Minecraft.Windows.exe 1.26.52.3."; return false;
+        diagnostic = "Native menu navigation is disabled outside Minecraft.Windows.exe 1.26.60.5."; return false;
     }
     DWORD ignored = 0;
     const DWORD size = GetFileVersionInfoSizeW(path.data(),&ignored);
@@ -67,23 +68,10 @@ bool exact_host(std::string& diagnostic) {
     if (!GetFileVersionInfoW(path.data(),0,size,data.data()) ||
         !VerQueryValueW(data.data(),L"\\",reinterpret_cast<void**>(&version),&count) ||
         !version || count < sizeof(*version) || version->dwSignature != 0xFEEF04BD ||
-        version->dwFileVersionMS != MAKELONG(26,1) || version->dwFileVersionLS != MAKELONG(3,52)) {
-        diagnostic = "Native menu navigation requires the inspected 1.26.52.3 build; disabled."; return false;
+        version->dwFileVersionMS != MAKELONG(26,1) || version->dwFileVersionLS != MAKELONG(5,60)) {
+        diagnostic = "Native menu navigation requires the inspected 1.26.60.5 build; disabled."; return false;
     }
     return true;
-}
-// Two packagings of the same 1.26.52.3 link (identical TimeDateStamp). The
-// inspected LeviLauncher copy carries a launcher-added .levildr section; the
-// official install is one page smaller and has its own checksum (observed in a
-// user's inject.log). profile() still verifies every instruction and table this
-// feature reads or calls at the shared RVAs, so a shifted layout fails closed.
-struct Packaging { std::uint32_t image_size, checksum; };
-constexpr std::array packagings{
-    Packaging{0x12C02000,0x128DA293}, // LeviLauncher versions/1.26.52.03, inspected
-    Packaging{0x12C01000,0x128CD801}  // official Minecraft install, 8 sections
-};
-bool known_packaging(std::uint32_t image_size, std::uint32_t checksum) noexcept {
-    return std::ranges::any_of(packagings,[=](const Packaging& p){return p.image_size==image_size && p.checksum==checksum;});
 }
 bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>& executable, std::string& diagnostic) {
     // Inspect only headers/section metadata, avoiding a second full .text copy.
@@ -93,20 +81,20 @@ bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>
     if (!copy(base,&dos,sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew != 0x78 ||
         !copy(base + static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
         nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        nt.FileHeader.TimeDateStamp != 0x6AB54E37 || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
         // The inspected launcher/runtime rewrites ImageBase to the ASLR load
         // address. Accept that observed loaded form as well as the disk value;
         // timestamp, checksum, size and all loaded code/table checks still apply.
         (nt.OptionalHeader.ImageBase != 0x140000000ULL && nt.OptionalHeader.ImageBase != base) ||
-        !known_packaging(nt.OptionalHeader.SizeOfImage,nt.OptionalHeader.CheckSum) ||
+        !bedrock_1_26_60_5::known_packaging(nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage,nt.OptionalHeader.CheckSum) ||
         nt.FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64) ||
         !nt.FileHeader.NumberOfSections || nt.FileHeader.NumberOfSections > 96) {
         // Log the observed header so a report from another PC names the
         // differing field.
-        char text[352]{};
+        char text[384]{};
         std::snprintf(text,sizeof text,"Native menu PE header mismatch (e_lfanew=0x%lX TimeDateStamp=0x%08lX "
-            "ImageBase=0x%llX SizeOfImage=0x%lX CheckSum=0x%08lX sections=%u; known 0x78/0x6AB54E37 with "
-            "0x12C02000/0x128DA293 or 0x12C01000/0x128CD801); navigation disabled.",static_cast<unsigned long>(dos.e_lfanew),
+            "ImageBase=0x%llX SizeOfImage=0x%lX CheckSum=0x%08lX sections=%u; known 0x78/0x6AD79EE4 with "
+            "stock 0x1383B000/0x134D2DEF or LeviLauncher 0x1383C000/0x134D3CBA); navigation disabled.",static_cast<unsigned long>(dos.e_lfanew),
             static_cast<unsigned long>(nt.FileHeader.TimeDateStamp),static_cast<unsigned long long>(nt.OptionalHeader.ImageBase),
             static_cast<unsigned long>(nt.OptionalHeader.SizeOfImage),static_cast<unsigned long>(nt.OptionalHeader.CheckSum),
             static_cast<unsigned>(nt.FileHeader.NumberOfSections));
@@ -130,9 +118,9 @@ bool loaded_image(memory::AddressRange& image, std::vector<memory::AddressRange>
 
 bool live_context(std::uintptr_t base,const MenuSessionIdentity& s,std::uintptr_t controller) noexcept {
     if (!controller || s.controller != controller || !s.definition ||
-        !equals(s.client,0x1A8,s.game) || !equals(s.client,0x208,s.factory) ||
+        !equals(s.client,0x1C8,s.game) || !equals(s.client,0x228,s.factory) ||
         !equals(s.factory,8,s.factory_control) || !valid_flag(s.factory_control) || !equals(s.factory,0x18,s.client) ||
-        !equals(s.game,0,base + game_table) || !equals(s.game,0x1D70,s.stack) ||
+        !equals(s.game,0,base + game_table) || !equals(s.game,0x1DF8,s.stack) ||
         !equals(s.stack,8,s.stack_control) || !valid_flag(s.stack_control) ||
         !equals(s.scene,0,base + scene_table) || !equals(s.scene,0x40,s.view) ||
         !equals(s.view,0x40,controller) || !equals(s.view,0x50,s.definition_owner) ||
@@ -143,11 +131,11 @@ bool live_context(std::uintptr_t base,const MenuSessionIdentity& s,std::uintptr_
     if (!read(s.stack,0x18,begin) || !read(s.stack,0x20,end) || end <= begin ||
         end-begin > 32*256 || (end-begin)%32 || !equals(end-24,0,s.scene) ||
         !read(s.view,0x48,control) || !owner_alive(control) ||
-        !read(s.view,0x460,blocked) || blocked || !read(s.view,0x465,closing) || closing ||
+        !read(s.view,0x480,blocked) || blocked || !read(s.view,0x485,closing) || closing ||
         !read(controller,0xD48,model) || !model || !read(controller,0xD50,model_control) || !owner_alive(model_control) ||
         !equals(controller,0xBF0,model) || !equals(controller,0xBF8,model_control) ||
-        !read(controller,0xC00,mode) || mode != 1 || !equals(s.game,0x78,base + app_table) ||
-        !read(s.game,0x80,app_flag) || !valid_flag(app_flag) || !read(s.game,0xB1,quit) || quit) return false;
+        !read(controller,0xC00,mode) || mode != 1 || !equals(s.game,0x70,base + app_table) ||
+        !read(s.game,0x78,app_flag) || !valid_flag(app_flag) || !read(s.game,0xA9,quit) || quit) return false;
     return equals(s.stack,0x18,begin) && equals(s.stack,0x20,end) && equals(end-24,0,s.scene) &&
            equals(s.view,0x48,control) && equals(controller,0xD48,model) && equals(controller,0xD50,model_control) &&
            equals(s.view,0x40,controller) && valid_flag(s.stack_control) && valid_flag(s.factory_control);
@@ -224,22 +212,19 @@ bool VanillaNavigation::profile(bool include_update_entry) const noexcept {
     const auto b=image_.address;
     if (!b || !image_.contains(b+controller_table,0x68) || !image_.contains(b+scene_table,0x1C0) ||
         !executable(b+update_rva,27) || !executable(b+caller_rva,17) || !executable(b+exit_rva,18) ||
-        !equals(b+controller_table,0x10,b+update_rva) || !equals(b+controller_table,0x18,b+0x4819AF0) ||
-        !equals(b+controller_table,0x60,b+exit_rva) || !equals(b+scene_table,0x98,b+0x48576B0) ||
-        !equals(b+app_table,0x20,b+0x834960) || !equals(b+app_table,0x28,b+0x834970) ||
-        !bytes(b+caller_rva,{0x48,0x8B,0x4F,0x40,0x48,0x8B,0x01,0x48,0x8B,0x40,0x10,0xFF,0x15,0xCD,0x15,0x8C,0x0A}) ||
-        !bytes(b+0x834970,{0x0F,0xB6,0x41,0x39,0xC3}) || !bytes(b+0x834960,{0xC6,0x41,0x39,0x01,0xC3}) ||
-        !bytes(b+exit_rva,{0x55,0x56,0x57,0x48,0x81,0xEC,0xE0,0,0,0,0x48,0x8D,0xAC,0x24,0x80,0,0,0}) ||
-        !bytes(b+0x4D4A730,{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0xB0,0,0,0,0x48,0x8D,0xAC,0x24,0x80,0,0,0,
-                           0x48,0xC7,0x45,0x28,0xFE,0xFF,0xFF,0xFF,0x48,0x8B,0x71,0x08,0x48,0x8B,0x9E,0xF0,0x0B,0,0}) ||
-        !bytes(b+0x4D50E70,{0x55,0x56,0x57,0x53,0x48,0x81,0xEC,0x98,0,0,0,0x48,0x8D,0xAC,0x24,0x80,0,0,0,
-                           0x48,0xC7,0x45,0x10,0xFE,0xFF,0xFF,0xFF,0x48,0x8B,0x71,0x08,0x48,0x8B,0x9E,0xF0,0x0B,0,0}) ||
-        !bytes(b+0x22BAAC0,{0x48,0x8B,0x49,0x08,0x48,0x8B,0x01,0x48,0x8B,0x40,0x60,0x48,0x8B,0x15,0xD6,0x0F,0xE4,0x0C,0x48,0xFF,0xE2})) return false;
-    if (include_update_entry && !bytes(b+update_rva,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,
-        0x48,0x81,0xEC,0xA8,0x06,0,0,0x48,0x8D,0xAC,0x24,0x80,0,0,0})) return false;
+        !equals(b+controller_table,0x10,b+update_rva) || !equals(b+controller_table,0x18,b+0x5741A0) ||
+        !equals(b+controller_table,0x60,b+exit_rva) || !equals(b+scene_table,0x98,b+0x4CCF520) ||
+        !equals(b+app_table,0x20,b+0x8D09B0) || !equals(b+app_table,0x28,b+0x8D09C0) ||
+        !bytes(b+caller_rva,{0x48,0x8B,0x4E,0x40,0x48,0x8B,0x01,0x48,0x8B,0x40,0x10,0xFF,0x15,0x27,0xA9,0xCE,0x0A}) ||
+        !bytes(b+0x8D09C0,{0x0F,0xB6,0x41,0x39,0xC3}) || !bytes(b+0x8D09B0,{0xC6,0x41,0x39,0x01,0xC3}) ||
+        !bytes(b+exit_rva,{0x55,0x56,0x57,0x48,0x81,0xEC,0xE0,0x00,0x00,0x00,0x48,0x8D,0xAC,0x24,0x80,0x00,0x00,0x00}) ||
+        !bytes(b+0x4F5DE80,{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0xB0,0x00,0x00,0x00,0x48,0x8D,0xAC,0x24,0x80,0x00,0x00,0x00,0x48,0xC7,0x45,0x28,0xFE,0xFF,0xFF,0xFF,0x48,0x8B,0x71,0x08,0x48,0x8B,0x9E,0xF0,0x0B,0x00,0x00}) ||
+        !bytes(b+0x4F67590,{0x55,0x56,0x57,0x53,0x48,0x81,0xEC,0x98,0x00,0x00,0x00,0x48,0x8D,0xAC,0x24,0x80,0x00,0x00,0x00,0x48,0xC7,0x45,0x10,0xFE,0xFF,0xFF,0xFF,0x48,0x8B,0x71,0x08,0x48,0x8B,0x9E,0xF0,0x0B,0x00,0x00}) ||
+        !bytes(b+0x26D7E80,{0x48,0x8B,0x49,0x08,0x48,0x8B,0x01,0x48,0x8B,0x40,0x60,0x48,0x8B,0x15,0xDE,0x70,0x2C,0x0D,0x48,0xFF,0xE2})) return false;
+    if (include_update_entry && !bytes(b+update_rva,{0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xEC,0x18,0x07,0x00,0x00,0x48,0x8D,0xAC,0x24,0x80,0x00,0x00,0x00})) return false;
     for (const auto& h:handlers)
-        if (!image_.contains(b+h.table,24) || !executable(b+h.invoke,16) || !equals(b+h.table,0,b+0x791D0) ||
-            !equals(b+h.table,8,b+0x76BC0) || !equals(b+h.table,0x10,b+h.invoke)) return false;
+        if (!image_.contains(b+h.table,24) || !executable(b+h.invoke,16) || !equals(b+h.table,0,b+0x78090) ||
+            !equals(b+h.table,8,b+0x768F0) || !equals(b+h.table,0x10,b+h.invoke)) return false;
     return true;
 }
 bool VanillaNavigation::initialize(std::string& diagnostic) noexcept {

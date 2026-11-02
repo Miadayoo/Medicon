@@ -1,4 +1,5 @@
 #include <medicon/sdk/BedrockAuth.hpp>
+#include <medicon/sdk/detail/AuthHttpApi.hpp>
 
 #include <array>
 #include <cstddef>
@@ -54,7 +55,7 @@ void reads_identity() {
     const auto account = read_account_identity(identity.base());
     require(account.has_value(), "a valid identity was not read");
     require(account->xuid == "2535412345678901", "the XUID came from +0x30");
-    require(account->gamertag == "Mia Alt", "the gamertag came from +0x1D8");
+    require(account->gamertag == "Mia Alt", "the gamertag came from +0x1F0");
 }
 
 void rejects_malformed() {
@@ -98,6 +99,44 @@ void connection_auth_view() {
     require(!medicon::sdk::detail::read_connection_auth(nullptr), "invalid auth objects are refused");
 }
 
+void native_http_modules() {
+    // Separate handle namespaces model two independent libHC runtimes. A
+    // missing export in one must never be borrowed from the other runtime.
+    bool plain_loaded = true, gdk_loaded = false;
+    std::string_view plain_missing, gdk_missing;
+    const auto resolve = [&] {
+        return medicon::sdk::detail::resolve_auth_http_api(
+            [&](std::wstring_view name) -> std::uintptr_t {
+                if (name == L"libHttpClient.dll" && plain_loaded) return 0x1000;
+                if (name == L"libHttpClient.GDK.dll" && gdk_loaded) return 0x2000;
+                return 0;
+            },
+            [&](std::uintptr_t module, std::string_view name) -> std::uintptr_t {
+                if (name == (module == 0x1000 ? plain_missing : gdk_missing)) return 0;
+                constexpr std::string_view names[] = {"HCHttpCallPerformAsync", "HCHttpCallResponseGetStatusCode",
+                    "HCHttpCallGetRequestUrl", "HCHttpCallRequestSetHeader"};
+                for (std::uintptr_t i = 0; i < std::size(names); ++i)
+                    if (name == names[i]) return module + i + 1;
+                return 0;
+            });
+    };
+    auto api = resolve();
+    require(api && api.module == "libHttpClient.dll" && api.perform == 0x1001 && api.url == 0x1003,
+        "1.26.60 works when only the non-GDK HTTP module is loaded");
+    plain_loaded = false; gdk_loaded = true;
+    api = resolve();
+    require(api && api.module == "libHttpClient.GDK.dll" && api.header == 0x2004,
+        "the earlier GDK module name remains supported");
+    plain_loaded = true;
+    require(resolve().perform == 0x1001, "prefer the HTTP module imported by 1.26.60 when both are loaded");
+    plain_missing = "HCHttpCallRequestSetHeader";
+    require(!resolve(), "an incomplete current runtime must not select an unrelated complete GDK runtime");
+    gdk_missing = "HCHttpCallGetRequestUrl";
+    require(!resolve(), "partial modules must not be mixed to produce a false ready state");
+    plain_loaded = gdk_loaded = false;
+    require(!resolve(), "an absent HTTP runtime must keep account switching unavailable");
+}
+
 } // namespace
 
 int main() {
@@ -105,6 +144,7 @@ int main() {
         reads_identity();
         rejects_malformed();
         connection_auth_view();
+        native_http_modules();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';
         return 1;

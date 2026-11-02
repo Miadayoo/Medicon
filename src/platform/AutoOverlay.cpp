@@ -21,6 +21,7 @@
 #include <medicon/modules/CustomModelProbeModule.hpp>
 #include <medicon/sdk/BedrockChat.hpp>
 #include <medicon/sdk/BedrockAuth.hpp>
+#include <medicon/sdk/detail/AuthHttpApi.hpp>
 #include <medicon/sdk/BedrockInput.hpp>
 #include <medicon/sdk/BedrockGameplay.hpp>
 #include <medicon/sdk/detail/GameplayMemory.hpp>
@@ -103,7 +104,7 @@ using SprintSpeedFn = int(__fastcall*)(void*, void*, void*, void*);
 using DestroyProgressFn = float(__fastcall*)(void*, void*);
 using DestroyStopFn = void(__fastcall*)(void*, const sdk::BlockPos*);
 using ContainerScreenTickFn = std::uintptr_t(__fastcall*)(void*);
-namespace model_native = sdk::custom_model::bedrock_1_26_52_3;
+namespace model_native = sdk::custom_model::bedrock_1_26_60_5;
 
 constexpr GUID queue_guid{0xf6fe7dea, 0x438b, 0x49d6, {0x95, 0xb8, 0xe3, 0x67, 0x45, 0xd4, 0xea, 0xa2}};
 constexpr IID core_interop_iid{0x45d64a29, 0xa63e, 0x4cb6, {0xb4, 0x98, 0x57, 0x81, 0xd2, 0x98, 0xcb, 0x4f}};
@@ -892,16 +893,16 @@ void Runtime::connect_auth() {
     std::string diagnostic;
     const auto state = bedrock_auth.locate(diagnostic);
     const auto target = state == sdk::BedrockAuth::State::ready ? bedrock_auth.login_serialization_target(diagnostic) : 0;
-    const auto http = GetModuleHandleW(L"libHttpClient.GDK.dll");
-    const auto perform = http ? GetProcAddress(http, "HCHttpCallPerformAsync") : nullptr;
-    const auto status = http ? GetProcAddress(http, "HCHttpCallResponseGetStatusCode") : nullptr;
-    auth_http_url = http ? reinterpret_cast<HttpUrlFn>(GetProcAddress(http, "HCHttpCallGetRequestUrl")) : nullptr;
-    auth_http_header = http ? reinterpret_cast<HttpHeaderFn>(GetProcAddress(http, "HCHttpCallRequestSetHeader")) : nullptr;
-    bool ready = target && perform && status && auth_http_url && auth_http_header;
+    const auto http = sdk::detail::resolve_auth_http_api(
+        [](const wchar_t* name) { return GetModuleHandleW(name); },
+        [](HMODULE module, const char* name) { return reinterpret_cast<std::uintptr_t>(GetProcAddress(module, name)); });
+    auth_http_url = reinterpret_cast<HttpUrlFn>(http.url);
+    auth_http_header = reinterpret_cast<HttpHeaderFn>(http.header);
+    bool ready = target && static_cast<bool>(http);
     if (ready && !auth_hooks.size()) {
-        ready = auth_hooks.create("AltManager native multiplayer authorization", reinterpret_cast<void*>(perform),
+        ready = auth_hooks.create("AltManager native multiplayer authorization", reinterpret_cast<void*>(http.perform),
                 reinterpret_cast<void*>(&hook_auth_http_perform), reinterpret_cast<void**>(&auth_http_perform), diagnostic) &&
-            auth_hooks.create("AltManager native multiplayer result", reinterpret_cast<void*>(status),
+            auth_hooks.create("AltManager native multiplayer result", reinterpret_cast<void*>(http.status),
                 reinterpret_cast<void*>(&hook_auth_http_status), reinterpret_cast<void**>(&auth_http_status), diagnostic) &&
             auth_hooks.create("AltManager server login", reinterpret_cast<void*>(target),
                 reinterpret_cast<void*>(&hook_connection_auth_json), reinterpret_cast<void**>(&connection_auth_json), diagnostic);
@@ -910,13 +911,15 @@ void Runtime::connect_auth() {
     if (!ready) {
         std::string cleanup;
         auth_hooks.clear(cleanup);
-        if (diagnostic.empty()) diagnostic = "Native libHttpClient multiplayer API is unavailable.";
+        if (diagnostic.empty()) diagnostic = http.module.empty()
+            ? "The game's libHttpClient.dll/libHttpClient.GDK.dll is not loaded."
+            : "Native multiplayer API is incomplete in " + std::string(http.module) + ".";
         report("AltManager: game login bridge unavailable: " + diagnostic);
         social->set_alt_game_bridge(false);
         return;
     }
     social->set_alt_game_bridge(true);
-    report("AltManager: Minecraft 1.26.52.03 native multiplayer/NetherNet login bridge ready (v2).");
+    report("AltManager: Minecraft 1.26.60.05 native multiplayer/NetherNet login bridge ready (" + std::string(http.module) + ").");
 }
 
 DWORD WINAPI eject_overlay_worker(void*) {
@@ -2089,8 +2092,8 @@ void Runtime::draw_model_probe() {
         ImGui::Text("Skip local: %s | %s", requested&&(mode!=0||visible) ?
             (status == sdk::custom_model::Probe::Status::ready ? "ON" : "BLOCKED") : "OFF", readiness);
         ImGui::TextUnformatted("Toggle: CustomModel keybind (default F8)");
-        ImGui::TextUnformatted("World queue candidates: near 0x4716E80 / ECS 0x47172D0");
-        ImGui::Text("DataDriven 0x558D300: %s", mode != 0 || model_box.first_person_ready() ? "native arms suppressed" : "native arms while custom arms prepare");
+        ImGui::TextUnformatted("World queue candidates: near 0x53E9F80 / ECS 0x53EA3B0");
+        ImGui::Text("DataDriven 0x5985040: %s", mode != 0 || model_box.first_person_ready() ? "native arms suppressed" : "native arms while custom arms prepare");
         ImGui::Text("Custom model view: %s", sdk::custom_model::view_mode_name(model_box.view_mode()));
         const auto shared=std::atomic_load_explicit(&shared_model_bindings,std::memory_order_acquire);
         ImGui::Text("Other users: %u | Social: %s",shared_models_until.load(std::memory_order_acquire)>GetTickCount64()&&shared?static_cast<unsigned>(shared->size()):0U,
@@ -2311,7 +2314,7 @@ void Runtime::connect_rotation() {
         }
         return;
     }
-    report("Rotations head/body render interpolation hooks ready (Minecraft 1.26.52.3).");
+    report("Rotations head/body render interpolation hooks ready (Minecraft 1.26.60.5).");
 }
 
 int __fastcall hook_sprint_speed(void* first, void* flags, void* speed_component, void* fourth) {
@@ -2513,7 +2516,7 @@ void Runtime::connect_model_probe() {
         return;
     }
     model_probe.set_ready(true);
-    report("CustomModel P0 combined hooks ready (RVAs 0x4716E80 / 0x47172D0 / 0x558D300); F8 toggles local body and arms. Combined coverage unverified.");
+    report("CustomModel P0 combined hooks ready (RVAs 0x53E9F80 / 0x53EA3B0 / 0x5985040); F8 toggles local body and arms. Combined coverage unverified.");
 }
 
 void hook_model_world_render(void* camera, void* context, const void* view, void* client) {
@@ -2823,7 +2826,7 @@ void apply_disabler_move_fix(Runtime& state, void* packet) {
 void hook_send_server_packet(void* sender, void* packet) {
     CallbackScope callback;
     auto& state = callback.state;
-    // 1.26.52.3's automatic NSL echo uses this slot directly. It never
+    // 1.26.60.5's automatic NSL echo uses this slot directly. It never
     // visits hook_send_packet; the replay also uses this original trampoline.
     if (!hold_velocity_latency(state, sender, packet)) {
         apply_disabler_move_fix(state, packet);
@@ -3526,17 +3529,8 @@ void hook_motion_dispatch(void* dispatcher, void* network, void* handler, void* 
                     void* local_actor = grabbed ? state.bedrock_chat.local_player_for_render() : nullptr;
                     if (grabbed && state.gameplay.local_motion(packet_reference, local_actor, motion, &input_tick, &received_timestamp)) {
                         const auto* mode = std::get_if<Choice>(&velocity->mode.value);
-                        const bool unsupported_delay = mode && mode->index == 2 && (input_tick || received_timestamp <= 0);
-                        if (unsupported_delay) {
-                            char message[320]{};
-                            std::snprintf(message, sizeof message,
-                                "Velocity bypass: input_tick=%llu received_ns=%lld motion=(%.4f,%.4f,%.4f) kb_pending=%llu; native dispatch unchanged.",
-                                static_cast<unsigned long long>(input_tick), static_cast<long long>(received_timestamp),
-                                motion.x, motion.y, motion.z, static_cast<unsigned long long>(velocity->pending_count()));
-                            state.report(message);
-                        }
-                        const auto result = unsupported_delay ? VelocityModule::MotionResult::ignored :
-                            velocity->handle_motion(motion, state.gameplay.frame(), VelocityModule::Clock::now(), received_timestamp);
+                        const auto result = velocity->handle_motion(motion, state.gameplay.frame(),
+                            VelocityModule::Clock::now(), received_timestamp, input_tick);
                         // Delay=0 is a native baseline: no KB is intercepted, but
                         // the same short movement/confirmation trace is available.
                         if (mode && mode->index == 2 && velocity->delay_ms.get<int>() == 0) {
@@ -3669,7 +3663,7 @@ void Runtime::connect_chat_feedback() {
                 if (!tick_hooks.create("Velocity incoming motion", reinterpret_cast<void*>(motion_target),
                         reinterpret_cast<void*>(&hook_motion_dispatch), reinterpret_cast<void**>(&motion_dispatch), error))
                     report("Velocity hook unavailable: " + error, true);
-                else report("Velocity SetActorMotion dispatcher validated for Minecraft 1.26.52.3.");
+                else report("Velocity SetActorMotion dispatcher validated for Minecraft 1.26.60.5.");
             } else if (gameplay_ready.load(std::memory_order_acquire)) {
                 report("Velocity hook unavailable: SetActorMotion dispatcher identity check failed.", true);
             }
@@ -3688,7 +3682,7 @@ void Runtime::connect_chat_feedback() {
                 if (!tick_hooks.create("Velocity local MovePlayer observation", reinterpret_cast<void*>(target),
                         reinterpret_cast<void*>(&hook_move_player_dispatch), reinterpret_cast<void**>(&move_player_dispatch), error))
                     report("Velocity MovePlayer observation unavailable: " + error, true);
-                else report("Velocity MovePlayer dispatcher validated for Minecraft 1.26.52.3.");
+                else report("Velocity MovePlayer dispatcher validated for Minecraft 1.26.60.5.");
             } else if (gameplay_ready.load(std::memory_order_acquire)) {
                 report("Velocity MovePlayer observation unavailable: dispatcher identity check failed.", true);
             }

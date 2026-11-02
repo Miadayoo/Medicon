@@ -53,6 +53,7 @@ public:
     bool throw_velocity = false;
     bool native_prediction = false, prediction_available = true;
     std::vector<std::pair<Vec3, std::int64_t>> prediction_requests;
+    std::vector<std::uint64_t> prediction_ticks;
     std::vector<LatencyReply> latency_replies;
     std::vector<char> velocity_events;
     bool latency_result = true;
@@ -145,9 +146,10 @@ public:
         if (velocity_result) { state.local.velocity = velocity; velocity_events.push_back('v'); }
         return velocity_result;
     }
-    KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp) override {
-        if (!native_prediction) return GameplayAccess::apply_knockback(velocity, received_timestamp);
+    KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp, std::uint64_t input_tick = 0) override {
+        if (!native_prediction) return GameplayAccess::apply_knockback(velocity, received_timestamp, input_tick);
         prediction_requests.emplace_back(velocity, received_timestamp);
+        prediction_ticks.push_back(input_tick);
         if (!prediction_available) return KnockbackApplyResult::failed;
         velocity_events.push_back('p');
         return KnockbackApplyResult::predicted;
@@ -295,6 +297,32 @@ void test_velocity_delay_timing() {
     velocity.delay_ms.get<int>() = 0;
     check(velocity.handle_motion(first, game.state, start + 13s) == Result::ignored && velocity.pending_count() == 0,
           "Zero delay must use native dispatch immediately");
+}
+
+void test_velocity_unported_prediction() {
+    MockGame game;
+    game.state.world_identity = 10;
+    VelocityModule velocity;
+    velocity.mode.get<Choice>().index = 2;
+    velocity.set_enabled(true);
+    const VelocityModule::TimePoint start{};
+    Vec3 motion{1, 2, 3};
+    LatencyReply reply;
+    game.state.deferred_knockback_supported = false;
+    check(velocity.handle_motion(motion, game.state, start) == VelocityModule::MotionResult::ignored &&
+          !velocity.handle_latency(reply, game.state) && velocity.pending_count() == 0,
+          "An unported prediction ABI intercepted motion or latency");
+    game.state.deferred_knockback_supported = true;
+    check(velocity.handle_motion(motion, game.state, start) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_latency(reply, game.state), "Could not prepare the capability-change fixture");
+    game.state.deferred_knockback_supported = false;
+    velocity.update(game, true, start);
+    check(velocity.pending_count() == 0 && velocity.pending_reply_count() == 0 &&
+          game.velocity_requests.empty() && game.latency_replies.size() == 1,
+          "Withholding prediction kept a stale impulse or latency reply");
+    velocity.mode.get<Choice>().index = 0;
+    check(velocity.handle_motion(motion, game.state, start) == VelocityModule::MotionResult::cancelled,
+          "Prediction availability disabled the non-deferred Full mode");
 }
 
 void test_velocity_delay2_hit_count() {
@@ -639,9 +667,9 @@ void test_velocity_prediction_timestamps() {
     first.bytes[0x30] = std::byte{1};
     second.bytes[0x30] = std::byte{2};
     Vec3 a{1, 0.4F, 2}, b{-1, 0.4F, 3};
-    check(velocity.handle_motion(a, game.state, start, 1000000000000LL) == VelocityModule::MotionResult::delayed &&
+    check(velocity.handle_motion(a, game.state, start, 1000000000000LL, 111) == VelocityModule::MotionResult::delayed &&
           velocity.handle_latency(first, game.state) &&
-          velocity.handle_motion(b, game.state, start + 2s, 1002000000000LL) == VelocityModule::MotionResult::delayed &&
+          velocity.handle_motion(b, game.state, start + 2s, 1002000000000LL, 222) == VelocityModule::MotionResult::delayed &&
           velocity.handle_latency(second, game.state), "Native timestamp KB setup failed");
     game.prediction_available = false;
     velocity.update(game, true, start + 8s);
@@ -657,6 +685,7 @@ void test_velocity_prediction_timestamps() {
     check(game.prediction_requests.size() == 3 && game.prediction_requests[2].second == 1010000000000LL &&
           near(game.prediction_requests[2].first.x, -1) && game.velocity_requests.empty() &&
           game.velocity_events == std::vector<char>{'p', 'a', 'p', 'a'} &&
+          game.prediction_ticks == std::vector<std::uint64_t>{111,111,222} &&
           velocity.diagnostics().predicted == 2 && velocity.diagnostics().direct == 0,
           "Native prediction was replaced with direct writes or lost per-hit timing/confirmation order");
     velocity.reset_delay();
@@ -1806,6 +1835,7 @@ int main() {
         test_bots_are_not_targeted();
         test_velocity_motion();
         test_velocity_delay_timing();
+        test_velocity_unported_prediction();
         test_velocity_delay2_hit_count();
         test_velocity_delay_reset_and_failures();
         test_velocity_delay_capacity();

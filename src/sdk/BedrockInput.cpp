@@ -1,4 +1,5 @@
 #include <medicon/sdk/BedrockInput.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
 #include <medicon/memory/signature_registry.hpp>
 
 #include <Windows.h>
@@ -9,16 +10,16 @@ namespace medicon::sdk::input {
 Targets resolve_targets(std::uint32_t timestamp, std::uint32_t image_size,
                         std::span<const memory::MemoryRegion> regions, memory::AddressRange image,
                         std::string& diagnostic) {
-    if (timestamp != 0x6AB54E37 || (image_size != 0x12C02000 && image_size != 0x12C01000)) {
-        diagnostic = "Native input gate withheld: executable is not the inspected 1.26.52.3 PE profile.";
+    if (!bedrock_1_26_60_5::known_image(timestamp, image_size)) {
+        diagnostic = "Native input gate withheld: executable is not the inspected 1.26.60.5 PE profile.";
         return {};
     }
     constexpr std::array definitions{
-        memory::SignatureDefinition{"MouseDevice::feed", mouse_feed_pattern, memory::SignatureResolution::direct, 0, 0, "1.26.52.3", false},
-        memory::SignatureDefinition{"CameraDirectLookSystemUtil::_handleLookInput", look_input_pattern, memory::SignatureResolution::direct, 0, 0, "1.26.52.3", false}};
+        memory::SignatureDefinition{"MouseDevice::feed", mouse_feed_pattern, memory::SignatureResolution::direct, 0, 0, "1.26.60.5", false},
+        memory::SignatureDefinition{"CameraDirectLookSystemUtil::_handleLookInput", look_input_pattern, memory::SignatureResolution::direct, 0, 0, "1.26.60.5", false}};
     memory::SignatureRegistry registry;
     registry.scan(definitions, regions, image);
-    constexpr std::array<std::uintptr_t, 2> rvas{0x361AD0, 0x66EE3D0};
+    constexpr std::array<std::uintptr_t, 2> rvas{bedrock_1_26_60_5::mouse_feed, bedrock_1_26_60_5::look_input};
     std::array<std::uintptr_t, 2> addresses{};
     for (std::size_t i = 0; i < definitions.size(); ++i) {
         const auto* match = registry.find(definitions[i].name);
@@ -30,7 +31,7 @@ Targets resolve_targets(std::uint32_t timestamp, std::uint32_t image_size,
         }
         addresses[i] = *match->address;
     }
-    diagnostic = "Native mouse feed and camera look input uniquely resolved for 1.26.52.3.";
+    diagnostic = "Native mouse feed and camera look input uniquely resolved for 1.26.60.5.";
     return {addresses[0], addresses[1]};
 }
 

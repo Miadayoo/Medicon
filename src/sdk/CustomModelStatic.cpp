@@ -27,11 +27,11 @@ StaticTargets locate_static_targets(std::string& diagnostic) {
         nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64) {
         diagnostic="P2 executable headers could not be read.";return {};
     }
-    if (!bedrock_1_26_52_3::known_image(nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage)) {
-        diagnostic=bedrock_1_26_52_3::image_mismatch("P2",nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage);return {};
+    if (!bedrock_1_26_60_5::known_image(nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage)) {
+        diagnostic=bedrock_1_26_60_5::image_mismatch("P2",nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage);return {};
     }
     using D=memory::SignatureDefinition;using R=memory::SignatureResolution;
-    constexpr auto version=bedrock_1_26_52_3::file_version;
+    constexpr auto version=bedrock_1_26_60_5::file_version;
     constexpr std::array definitions{
         D{"texture_get",p2_native::texture_get,R::direct,0,0,version,false},
         D{"end",p2_native::tess_end,R::direct,0,0,version,false},

@@ -1,4 +1,5 @@
 #include <medicon/sdk/BedrockChat.hpp>
+#include <medicon/sdk/BedrockProfile.hpp>
 
 #include <Windows.h>
 
@@ -235,18 +236,18 @@ void native_mouse_routing() {
     using medicon::sdk::ClientMouseAction;
     using medicon::sdk::invoke_client_mouse;
     std::array<std::uintptr_t, 312> table{};
-    table[310] = reinterpret_cast<std::uintptr_t>(&fixture_grab_mouse);
-    table[311] = reinterpret_cast<std::uintptr_t>(&fixture_release_mouse);
+    table[306] = reinterpret_cast<std::uintptr_t>(&fixture_grab_mouse);
+    table[307] = reinterpret_cast<std::uintptr_t>(&fixture_release_mouse);
     MouseFixture client{reinterpret_cast<std::uintptr_t>(table.data())};
     const auto validate = [&](auto candidate_table, auto function) {
-        return candidate_table == client.table && (function == table[310] || function == table[311]);
+        return candidate_table == client.table && (function == table[306] || function == table[307]);
     };
     require(invoke_client_mouse(&client, ClientMouseAction::grab, validate) &&
             client.grabbed && client.grabs == 1 && client.releases == 0,
-            "native grab did not route to ClientInstance vtable310 with its original this pointer");
+            "native grab did not route to ClientInstance vtable306 with its original this pointer");
     require(invoke_client_mouse(&client, ClientMouseAction::release, validate) &&
             !client.grabbed && client.grabs == 1 && client.releases == 1,
-            "native release did not route to ClientInstance vtable311");
+            "native release did not route to ClientInstance vtable307");
     require(!invoke_client_mouse(&client, ClientMouseAction::grab, [](auto, auto) { return false; }) &&
             client.grabs == 1, "untrusted native mouse function was called");
     require(!invoke_client_mouse(&client, ClientMouseAction::grab,
@@ -260,6 +261,39 @@ void native_mouse_routing() {
             "unreadable native mouse client was accepted");
     client.table = 1;
     require(!invoke_client_mouse(&client, ClientMouseAction::grab, validate), "unreadable mouse vtable was accepted");
+}
+
+void primary_client_layout() {
+    using medicon::sdk::detail::read_primary_client;
+    namespace profile = medicon::sdk::bedrock_1_26_60_5;
+    std::array<std::byte, 0xA00> game{};
+    std::array<std::byte, 0x48> head{}, root{}, primary{};
+    std::array<std::byte, 0x20> client{}, lifetime{};
+    const auto pointer = [](auto& value) { return reinterpret_cast<std::uintptr_t>(value.data()); };
+    store(game, profile::primary_clients, pointer(head));
+    store(head, 0x19, std::uint8_t{1});
+    store(head, 8, pointer(root));
+    store(root, 0, pointer(primary));
+    store(root, 0x20, std::uint8_t{1});
+    store(primary, 0, pointer(head));
+    store(primary, 0x20, std::uint8_t{0});
+    store(primary, profile::primary_client_node, pointer(client));
+    store(client, 8, pointer(lifetime));
+    store(lifetime, 0, std::uint8_t{1});
+    require(read_primary_client(pointer(game)) == pointer(client), "1.26.60 primary client leftmost/key-0 path failed");
+    store(lifetime, 0, std::uint8_t{0});
+    require(!read_primary_client(pointer(game)), "Expired primary client escaped its lifetime flag");
+    store(lifetime, 0, std::uint8_t{1});
+    store(primary, 0x20, std::uint8_t{2});
+    require(!read_primary_client(pointer(game)), "A secondary client was selected as primary");
+    store(primary, 0x20, std::uint8_t{0});
+    store(primary, 0, pointer(root));
+    require(!read_primary_client(pointer(game)), "A cyclic client tree was accepted");
+    store(primary, 0, pointer(head));
+    store(head, 8, pointer(head));
+    require(!read_primary_client(pointer(game)), "An empty client tree was accepted");
+    store(head, 8, std::uintptr_t{1});
+    require(!read_primary_client(pointer(game)) && !read_primary_client(1), "An unreadable client tree was accepted");
 }
 
 void unsupported_host() {
@@ -294,6 +328,7 @@ int main() {
         outgoing_interception();
         borrowed_feedback_strings();
         native_mouse_routing();
+        primary_client_layout();
         unsupported_host();
         std::cout << "Bedrock chat foreign-layout decoding passed.\n";
         return 0;

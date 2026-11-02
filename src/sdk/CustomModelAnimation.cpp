@@ -23,7 +23,7 @@ std::atomic_bool native_swing_profile{};
 bool initialize_animation_reader(std::string& diagnostic) {
     const auto module=memory::current_process_module(&diagnostic);if(!module)return false;
     using D=memory::SignatureDefinition;using R=memory::SignatureResolution;
-    constexpr std::array defs{D{"swing_update",p3_native::swing_update,R::direct,0,0,"1.26.52.3",false},D{"swing_previous",p3_native::swing_previous,R::direct,0,0,"1.26.52.3",false}};
+    constexpr std::array defs{D{"swing_update",p3_native::swing_update,R::direct,0,0,"1.26.60.5",false},D{"swing_previous",p3_native::swing_previous,R::direct,0,0,"1.26.60.5",false}};
     memory::SignatureRegistry registry;registry.scan(defs,module->executable_regions,module->image);
     for(const auto& d:defs){const auto* r=registry.find(d.name);if(!r||!r->address){diagnostic="P3 native swing field profile unavailable.";return false;}}
     native_swing_profile.store(true,std::memory_order_release);diagnostic="P3 read-only native swing profile ready.";return true;
@@ -64,10 +64,9 @@ medicon::custom_model::AnimationInput read_animation_input(void* actor,float alp
     if(read(component(5,4),hurt)&&hurt>=0&&hurt<=1000)out.hurt=hurt>0;
     if(native_swing_profile.load(std::memory_order_acquire)){
         float current{},previous{};std::uint8_t swinging{};
-        // Native Actor tick 142077CDD copies +40C to +450. Native animation
-        // update 1447722D0 divides swing tick by duration into +40C. Profile
-        // scan confirms both exact bodies; old Solstice +43C is not used.
-        if(read(a+0x40C,current)&&read(a+0x450,previous)&&read(a+0x434,swinging)&&swinging<=1&&
+        // Actor tick 2C241DD copies +42C to +478. Update 2C2D060 divides
+        // the swing counter into +42C and reads the active flag at +45D.
+        if(read(a+0x42C,current)&&read(a+0x478,previous)&&read(a+0x45D,swinging)&&swinging<=1&&
             std::isfinite(current)&&std::isfinite(previous)&&current>=0&&current<=1&&previous>=0&&previous<=1&&(swinging||current>0||previous>0)){
             float d=current-previous;if(d<0)d+=1;out.attack_progress=std::fmod(previous+d*alpha,1.0F);
         }

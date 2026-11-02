@@ -56,13 +56,13 @@ public:
     // ECS RDX holds a borrowed actor pointer at +0, copied with a checked read.
     // OFF/unready never reads native arguments or calls the matcher. True
     // means omit this one queue callback; evidenced callers ignore its result.
-    [[nodiscard]] bool inspect_near(bedrock_1_26_52_3::NearActorQueueCallback* callback,
-        bedrock_1_26_52_3::PlayerCandidate* actor, LocalMatcher match, void* owner) noexcept;
-    [[nodiscard]] bool inspect_ecs(bedrock_1_26_52_3::EcsActorQueueContext* context,
-        bedrock_1_26_52_3::ActorOwnerRef* component, LocalMatcher match, void* owner) noexcept;
-    [[nodiscard]] bool inspect_render(bedrock_1_26_52_3::DataDrivenRenderer* renderer,
-        bedrock_1_26_52_3::BaseActorRenderContext* context,
-        bedrock_1_26_52_3::ActorRenderData* data, LocalMatcher match, void* owner,
+    [[nodiscard]] bool inspect_near(bedrock_1_26_60_5::NearActorQueueCallback* callback,
+        bedrock_1_26_60_5::PlayerCandidate* actor, LocalMatcher match, void* owner) noexcept;
+    [[nodiscard]] bool inspect_ecs(bedrock_1_26_60_5::EcsActorQueueContext* context,
+        bedrock_1_26_60_5::ActorOwnerRef* component, LocalMatcher match, void* owner) noexcept;
+    [[nodiscard]] bool inspect_render(bedrock_1_26_60_5::DataDrivenRenderer* renderer,
+        bedrock_1_26_60_5::BaseActorRenderContext* context,
+        bedrock_1_26_60_5::ActorRenderData* data, LocalMatcher match, void* owner,
         bool allow_suppression = true) noexcept;
     [[nodiscard]] ProbeFrame take_frame() noexcept;
     // Only after callbacks have drained.

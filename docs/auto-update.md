@@ -47,7 +47,7 @@ manifest の例：
 {
   "version": "1.0.5",
   "channel": "stable",
-  "mcbe_version": "1.26.52",
+  "mcbe_version": "1.26.60",
   "loader_api": 1,
   "download_url": "https://<host>/medicon/releases/1.0.5/MediconCore.dll",
   "sha256": "…64 hex…",
@@ -76,7 +76,7 @@ npm run release:setup           # 鍵・保存先・.env・公開鍵ヘッダー
 ```
 RELEASE_SIGNING_KEY=keys/release-private.pem
 PUBLIC_BASE_URL=https://<host>          # https://host のみ（パスなし）。manifest の download_url に使う
-RELEASE_MCBE_VERSION=1.26.52            # 任意（既定 1.26.52）
+RELEASE_MCBE_VERSION=1.26.60            # 任意（既定 1.26.60）
 RELEASES_DIR=./releases                 # 任意
 ```
 

@@ -27,30 +27,32 @@ void resolution_test() {
     auto feed = materialize(input::mouse_feed_pattern);
     auto look = materialize(input::look_input_pattern);
     constexpr std::uintptr_t base = 0x140000000;
-    std::array regions{medicon::memory::MemoryRegion{feed, base + 0x361AD0},
-                       medicon::memory::MemoryRegion{look, base + 0x66EE3D0}};
+    std::array regions{medicon::memory::MemoryRegion{feed, base + 0x427650},
+                       medicon::memory::MemoryRegion{look, base + 0x6EEBA30}};
     std::string diagnostic;
-    for (const auto size : {0x12C01000U, 0x12C02000U}) {
-        const auto targets = input::resolve_targets(0x6AB54E37, size, regions, {base, size}, diagnostic);
+    for (const auto size : {0x1383B000U, 0x1383C000U}) {
+        const auto targets = input::resolve_targets(0x6AD79EE4, size, regions, {base, size}, diagnostic);
         require(targets && targets.mouse_feed == regions[0].address && targets.look_input == regions[1].address,
-                "Both inspected native input entries resolve for official/launcher packaging");
+                "Both inspected native input entries resolve for 1.26.60.5 packaging");
     }
-    require(!input::resolve_targets(0, 0x12C02000, regions, {base, 0x12C02000}, diagnostic), "Reject another build");
-    require(!input::resolve_targets(0x6AB54E37, 0x12C03000, regions, {base, 0x12C03000}, diagnostic), "Reject another packaging");
-    require(!input::resolve_targets(0x6AB54E37, 0x12C02000, regions, {base, 0x400000}, diagnostic), "No partial hook set");
+    require(!input::resolve_targets(0, 0x1383B000, regions, {base, 0x1383B000}, diagnostic), "Reject another build");
+    require(!input::resolve_targets(0x6AB54E37, 0x12C02000, regions, {base, 0x12C02000}, diagnostic),
+            "Never mix the 1.26.52 input profile with 1.26.60 signatures");
+    require(!input::resolve_targets(0x6AD79EE4, 0x1383D000, regions, {base, 0x1383D000}, diagnostic), "Reject uninspected packaging");
+    require(!input::resolve_targets(0x6AD79EE4, 0x1383B000, regions, {base, 0x400000}, diagnostic), "No partial hook set");
     for (auto* bytes : {&feed, &look}) {
         const auto first = (*bytes)[0];
         (*bytes)[0] = std::byte{0xCC};
-        require(!input::resolve_targets(0x6AB54E37, 0x12C02000, regions, {base, 0x12C02000}, diagnostic),
+        require(!input::resolve_targets(0x6AD79EE4, 0x1383B000, regions, {base, 0x1383B000}, diagnostic),
                 "A missing entry withholds both hooks");
         (*bytes)[0] = first;
     }
     auto duplicate = feed;
     const std::array ambiguous{regions[0], regions[1], medicon::memory::MemoryRegion{duplicate, base + 0x400000}};
-    require(!input::resolve_targets(0x6AB54E37, 0x12C02000, ambiguous, {base, 0x12C02000}, diagnostic),
+    require(!input::resolve_targets(0x6AD79EE4, 0x1383B000, ambiguous, {base, 0x1383B000}, diagnostic),
             "Duplicate native function matches are rejected");
     regions[0].address += 16;
-    require(!input::resolve_targets(0x6AB54E37, 0x12C02000, regions, {base, 0x12C02000}, diagnostic),
+    require(!input::resolve_targets(0x6AD79EE4, 0x1383B000, regions, {base, 0x1383B000}, diagnostic),
             "A matching byte sequence away from the inspected entry is rejected");
 }
 

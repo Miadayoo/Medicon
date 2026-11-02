@@ -7,7 +7,7 @@
 | [MinHook](https://github.com/TsudaKageyu/minhook) 1.3.4 | `c3fcafdc10146beb5919319d0683e44e3c30d537` | BSD 2-Clause and bundled HDE notices; see fetched `minhook-src/LICENSE.txt` |
 | [Microsoft C++/WinRT](https://github.com/microsoft/cppwinrt) | NuGet `2.0.240405.15` (SDK fallback generator) | MIT; see bundled `third_party/cppwinrt/LICENSE` |
 | [Geist SemiBold 600 and Geist Mono Medium 500](https://github.com/vercel/geist-font) | `be21666703155b45d8bfb1e7fe5652fe48c842cb` | SIL Open Font License 1.1; see bundled `assets/fonts/OFL.txt` |
-| [Solstice signature data](https://github.com/surukotonai/solstice/blob/1d7808f52ef4ba6e34a7fbcc65294907a7761611/src/SDK/SigManager.hpp) | `1d7808f52ef4ba6e34a7fbcc65294907a7761611` | No root license found at this revision; no license grant is asserted |
+| [Solstice signature data](https://github.com/surukotonai/solstice/blob/cc6463dcadfeadb9049c235134c6b46efdc12b7e/src/SDK/SigManager.hpp) | `cc6463dcadfeadb9049c235134c6b46efdc12b7e` | No root license found at this revision; no license grant is asserted |
 
 CMake fetches dependencies into the build's `_deps` directory. Preserve the corresponding license files when redistributing dependency code or binaries. The Solstice import contains signature definitions and source metadata; its scanner, SDK, authorization, and networking implementation are not imported, and AntiBot is the only module ported from it. See `data/signatures/solstice.json` and `docs/signatures.md` for provenance.
 

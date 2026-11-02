@@ -8,7 +8,7 @@
 
 namespace {
 using namespace medicon::sdk::custom_model;
-namespace native = bedrock_1_26_52_3;
+namespace native = bedrock_1_26_60_5;
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -29,38 +29,39 @@ void resolution_test() {
     const auto render_offset = append_pattern(code, native::data_driven_render_pattern);
     const std::array regions{medicon::memory::MemoryRegion{code, 0x1000}};
     std::string error;
-    const auto targets = resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, code.size()}, error);
-    require(targets && targets.near_actor == 0x1000 + near_offset && targets.ecs_actor == 0x1000 + ecs &&
-            targets.data_driven == 0x1000 + render_offset, "All three combined entries resolve through the registry");
-    // The official install of the same link is one page smaller than the LeviLauncher copy.
-    require(static_cast<bool>(resolve_probe_targets(0x6AB54E37, 0x12C01000, regions, {0x1000, code.size()}, error)),
-            "The official install's packaging resolves the same entries");
-    require(!resolve_probe_targets(0, 0x12C02000, regions, {0x1000, code.size()}, error), "Reject different timestamp");
-    require(!resolve_probe_targets(0, 0x12C01000, regions, {0x1000, code.size()}, error),
+    for (const auto size : {0x1383B000U, 0x1383C000U}) {
+        const auto targets = resolve_probe_targets(0x6AD79EE4, size, regions, {0x1000, code.size()}, error);
+        require(targets && targets.near_actor == 0x1000 + near_offset && targets.ecs_actor == 0x1000 + ecs &&
+                targets.data_driven == 0x1000 + render_offset, "Stock and LeviLauncher resolve all three combined entries");
+    }
+    require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, code.size()}, error),
+            "The former profile is rejected even with matching fixture signatures");
+    require(!resolve_probe_targets(0, 0x1383B000, regions, {0x1000, code.size()}, error), "Reject different timestamp");
+    require(!resolve_probe_targets(0, 0x1383C000, regions, {0x1000, code.size()}, error),
             "Reject the official size with a different timestamp");
-    require(!resolve_probe_targets(0x6AB54E37, 1, regions, {0x1000, code.size()}, error), "Reject different PE size");
+    require(!resolve_probe_targets(0x6AD79EE4, 1, regions, {0x1000, code.size()}, error), "Reject different PE size");
     require(error.find("SizeOfImage 0x1 ") != std::string::npos, "A rejected image names its observed header");
-    require(!resolve_probe_targets(0x6AB54E37, 0x12C03000, regions, {0x1000, code.size()}, error) &&
-            error.find("TimeDateStamp 0x6AB54E37 / SizeOfImage 0x12C03000 ") != std::string::npos,
+    require(!resolve_probe_targets(0x6AD79EE4, 0x12C03000, regions, {0x1000, code.size()}, error) &&
+            error.find("TimeDateStamp 0x6AD79EE4 / SizeOfImage 0x12C03000 ") != std::string::npos,
             "Reject a third packaging and name its observed header");
-    require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, ecs}, error), "No partial target set");
+    require(!resolve_probe_targets(0x6AD79EE4, 0x1383B000, regions, {0x1000, ecs}, error), "No partial target set");
     for (const auto offset : {near_offset, ecs, render_offset}) {
         const auto saved = code[offset];
         code[offset] = std::byte{0xCC};
-        require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, regions, {0x1000, code.size()}, error),
+        require(!resolve_probe_targets(0x6AD79EE4, 0x1383B000, regions, {0x1000, code.size()}, error),
                 "Any missing entry withholds all three hooks");
         code[offset] = saved;
     }
     std::vector<std::byte> duplicate;
     append_pattern(duplicate, native::ecs_actor_queue_pattern);
     const std::array duplicates{regions[0], medicon::memory::MemoryRegion{duplicate, 0x2000}};
-    require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, duplicates, {0x1000, 0x2000}, error),
+    require(!resolve_probe_targets(0x6AD79EE4, 0x1383B000, duplicates, {0x1000, 0x2000}, error),
             "Ambiguous ECS entry withholds all three hooks");
     std::vector<std::byte> rejected;
     append_pattern(rejected, native::data_driven_render_pattern);
     append_pattern(rejected, native::add_player_candidate_pattern);
     const std::array old_regions{medicon::memory::MemoryRegion{rejected, 0x1000}};
-    require(!resolve_probe_targets(0x6AB54E37, 0x12C02000, old_regions, {0x1000, rejected.size()}, error),
+    require(!resolve_probe_targets(0x6AD79EE4, 0x1383B000, old_regions, {0x1000, rejected.size()}, error),
             "Never install the old render entry without the world queues");
 }
 struct Matcher {

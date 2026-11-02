@@ -107,8 +107,9 @@ public:
     bool attack(std::uintptr_t actor_id) override { return game_.attack(actor_id); }
     bool set_sprinting(bool sprinting) override { return game_.set_sprinting(sprinting); }
     bool set_velocity(sdk::Vec3 velocity) override { return game_.set_velocity(velocity); }
-    sdk::KnockbackApplyResult apply_knockback(sdk::Vec3 velocity, std::int64_t received_timestamp) override {
-        return game_.apply_knockback(velocity, received_timestamp);
+    sdk::KnockbackApplyResult apply_knockback(sdk::Vec3 velocity, std::int64_t received_timestamp,
+                                             std::uint64_t input_tick) override {
+        return game_.apply_knockback(velocity, received_timestamp, input_tick);
     }
     bool send_latency_reply(const sdk::LatencyReply& reply) override { return game_.send_latency_reply(reply); }
     bool swing() override { return game_.swing(); }

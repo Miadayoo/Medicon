@@ -35,8 +35,10 @@ bool check(HRESULT result, const char* operation, std::string& error) {
 // the flat, which therefore shows the scene pixel for pixel. Red and blue are
 // displaced by different amounts for the prism. The rim squeezes a lot of scene
 // into a few pixels and its highlight is a hairline, so the bezel is shaded at
-// eight subpixel positions. Medicon adds the elastic waist, and absorption that
-// deepens over bright scenes so the white digits stay legible.
+// eight subpixel positions, displacement saturates instead of clipping, and the
+// scene is prefiltered wherever it is squeezed harder than those samples resolve.
+// Medicon adds the elastic waist, and absorption that deepens over bright scenes
+// so the white digits stay legible.
 constexpr const char* shader_source = R"hlsl(
 cbuffer Glass : register(b0) {
     float4 shape;  // center, half size
@@ -90,7 +92,17 @@ float heightAt(float x) { return 1-sqrt(saturate(1-(1-x)*(1-x))); }
 float2 sceneUv(float2 world) {
     return (clamp(world,region.xy,region.xy+region.zw)-region.xy)*misc.xy;
 }
-float3 scene(float2 world) { return sharp.SampleLevel(linearClamp,sceneUv(world),0).rgb; }
+// blurred 0 is the scene itself, 1 its prefiltered copy.
+float3 scene(float2 world, float blurred) {
+    float2 uv = sceneUv(world);
+    return lerp(sharp.SampleLevel(linearClamp,uv,0).rgb,soft.SampleLevel(linearClamp,uv,0).rgb,blurred);
+}
+// Pixels of displacement at x, easing into a limit the thin pane can show.
+float displacement(float x) {
+    float height = heightAt(x);
+    float travel = height*(heightAt(saturate(x+.03))-height)/.03*form.w;
+    return travel/(1+abs(travel)/(shape.w*1.2));
+}
 static const float3 tint = float3(.70,.74,.82);
 static const float aberration = .1;
 // The standard eight-sample pattern, in pixels.
@@ -107,16 +119,18 @@ float4 shade(float2 world, float density) {
     float bezel = form.z;
     float x = field(p);
     float height = heightAt(x);
-    float slope = (heightAt(saturate(x+.03))-height)/.03;
     float e = max(bezel*.08,1);
     float2 gradient = float2(field(p+float2(e,0))-field(p-float2(e,0)),field(p+float2(0,e))-field(p-float2(0,e)));
     float size = length(gradient);
     float2 outward = size > .000001 ? -gradient/size : 0;
     // Fades where the bezels of opposite sides meet, which hides that seam.
     float settled = saturate(size/(2*e/bezel));
-    float travel = height*slope*form.w*lens*(1+.3*energy)*settled;
-    float2 shift = outward*clamp(travel,-shape.w*2,shape.w*2);
-    float3 color = float3(scene(world+shift*(1-aberration)).r,scene(world+shift).g,scene(world+shift*(1+aberration)).b);
+    float travel = displacement(x);
+    // How many scene pixels land on one here.
+    float squeeze = abs(travel-displacement(saturate(x+.08)))/(.08*bezel)*lens;
+    float blurred = saturate((squeeze-1.2)/2.5);
+    float2 shift = outward*travel*lens*(1+.3*energy)*settled;
+    float3 color = float3(scene(world+shift*(1-aberration),blurred).r,scene(world+shift,blurred).g,scene(world+shift*(1+aberration),blurred).b);
 
     // Beer-Lambert: the path through the glass shortens toward the rim.
     color *= exp(-(1-tint)*density*3.5*(1-height));
@@ -139,11 +153,11 @@ float4 GlassPS(Varying i) : SV_TARGET {
     float scale = misc.w;
     float d = pane(p);
     float fall = saturate(1-pane(p-float2(0,6*scale))/(20*scale));
-    float shadow = fall*fall*.30;
+    float shadow = fall*fall*.16;
     if (d > 1) return float4(0,0,0,shadow*misc.z);
 
     float brightness = dot(soft.SampleLevel(linearClamp,sceneUv(world),0).rgb,float3(.2126,.7152,.0722));
-    float density = (.16+.42*smoothstep(.30,.90,brightness))*optics.z;
+    float density = (.04+.20*smoothstep(.45,.95,brightness))*optics.z;
     float4 glass = 0;
     if (-d > form.z+1) {
         glass = shade(world,density);

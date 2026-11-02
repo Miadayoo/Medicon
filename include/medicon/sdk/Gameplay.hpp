@@ -58,7 +58,7 @@ struct InventoryItemInfo {
     return info;
 }
 
-// Copied 1.26.52.3 NetworkStackLatency packet. The inspected class contains
+// Copied 1.26.60.5 NetworkStackLatency packet. The inspected class contains
 // scalar data and static native vtable/dispatcher pointers, with no owned heap
 // fields. Native adapters validate identity before borrowing this copy to send.
 struct alignas(8) LatencyReply { std::array<std::byte, 0x48> bytes{}; };
@@ -115,6 +115,8 @@ struct GameplayFrame {
     std::array<float, 16> view_matrix{};
     Vec2 fov;
     bool projection_ready = false;
+    // Hosts can withhold deferred impulses until their prediction ABI is ported.
+    bool deferred_knockback_supported = true;
 };
 
 // Uses the copied Bedrock view rotation, camera origin and perspective scales.
@@ -166,8 +168,10 @@ public:
     virtual bool set_velocity(Vec3 velocity) { (void)velocity; return false; }
     // Admit a fresh impulse through the host's movement prediction, when present.
     // received_timestamp is the copied native arrival clock, advanced by time held.
-    virtual KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp = 0) {
+    virtual KnockbackApplyResult apply_knockback(Vec3 velocity, std::int64_t received_timestamp = 0,
+                                                std::uint64_t input_tick = 0) {
         (void)received_timestamp;
+        (void)input_tick;
         return set_velocity(velocity) ? KnockbackApplyResult::direct : KnockbackApplyResult::failed;
     }
     virtual bool send_latency_reply(const LatencyReply& reply) { (void)reply; return false; }

@@ -28,6 +28,11 @@ bool consume_outgoing_chat(void* packet, const ChatCodeValidator& validate,
                            const std::function<void(std::string)>& enqueue) noexcept;
 
 enum class ClientMouseAction { grab, release };
+namespace detail {
+// Read the primary client's borrowed pointer without copying native shared_ptrs.
+// The caller must verify the executable/profile before using this layout.
+[[nodiscard]] std::uintptr_t read_primary_client(std::uintptr_t game) noexcept;
+}
 // Scalar native-call boundary shared with the isolated routing tests. The
 // validator must approve the client vtable and selected native entry point.
 bool invoke_client_mouse(void* client, ClientMouseAction action, const ChatCodeValidator& validate) noexcept;

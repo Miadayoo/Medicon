@@ -23,7 +23,7 @@ const { values } = parseArgs({
     key: { type: 'string' },
     'base-url': { type: 'string' },
     'changelog-file': { type: 'string' },
-    'mcbe-version': { type: 'string', default: '1.26.52' },
+    'mcbe-version': { type: 'string', default: '1.26.60' },
     out: { type: 'string', default: 'out/static' },
   },
 })
@@ -44,7 +44,7 @@ if (!/^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/i.test(baseUrl)) throw new Error('--bas
 const manifest: Manifest = {
   version,
   channel: 'stable',
-  mcbe_version: values['mcbe-version'] ?? '1.26.52',
+  mcbe_version: values['mcbe-version'] ?? '1.26.60',
   loader_api: LOADER_API,
   download_url: `${baseUrl}/medicon/releases/${version}/${CORE_FILE}`,
   sha256: createHash('sha256').update(dll).digest('hex'),

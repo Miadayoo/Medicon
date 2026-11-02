@@ -1,5 +1,8 @@
 # Gameplay SDK ABI 検証
 
+現行の 1.26.60.5 更新は [SDK 更新記録](bedrock-1.26.60.md) を参照。
+以下は旧 1.26.52.3 の調査履歴であり、現行の native RVA 表ではない。
+
 調査日: 2026-10-27（日本時間）。実ゲームに接続した動作確認ではなく、ローカル PE の限定的な照合と fixture テストの記録。
 
 参照元は [surukotonai/solstice](https://github.com/surukotonai/solstice/tree/1d7808f52ef4ba6e34a7fbcc65294907a7761611)、commit `1d7808f52ef4ba6e34a7fbcc65294907a7761611`。`OffsetProvider.hpp`、`EnttHashs.hpp`、Actor components、`GameMode.hpp`、`BlockUtils.cpp` をレイアウトと呼び出し方法の参考にした。上流 SDK、EnTT、ゲームの STL オブジェクトをこの DLL に取り込んでいない。

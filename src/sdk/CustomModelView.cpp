@@ -26,9 +26,9 @@ bool initialize_view_reader(std::string& diagnostic) {
     if(!module)return false;
     using D=memory::SignatureDefinition;using R=memory::SignatureResolution;
     constexpr std::array definitions{
-        D{"view_options",p3_native::view_options,R::direct,0,0,"1.26.52.3",false},
-        D{"view_option_ref",p3_native::view_option_ref,R::direct,0,0,"1.26.52.3",false},
-        D{"view_option_array",p3_native::view_option_array,R::direct,0,0,"1.26.52.3",false}};
+        D{"view_options",p3_native::view_options,R::direct,0,0,"1.26.60.5",false},
+        D{"view_option_ref",p3_native::view_option_ref,R::direct,0,0,"1.26.60.5",false},
+        D{"view_option_array",p3_native::view_option_array,R::direct,0,0,"1.26.60.5",false}};
     memory::SignatureRegistry registry;
     registry.scan(definitions,module->executable_regions,module->image);
     for(const auto& d:definitions){const auto* result=registry.find(d.name);
@@ -54,15 +54,15 @@ ViewMode read_client_view(void* client, ViewProfile profile) noexcept {
     std::uintptr_t table{}, getter{}, options{}, option_table{}, option_getter{}, option{};
     std::array<std::byte, 8> code{};
     constexpr std::array<std::byte, 8> options_code{
-        std::byte{0x48}, std::byte{0x8B}, std::byte{0x81}, std::byte{0x10},
+        std::byte{0x48}, std::byte{0x8B}, std::byte{0x81}, std::byte{0x00},
         std::byte{0x0E}, std::byte{0x00}, std::byte{0x00}, std::byte{0xC3}};
-    // IDA 145DC28D0 / ClientInstance vtable[174]: mov rax,[rcx+E10]; ret.
-    // Options vtable[1] 140FB4D50 -> 140FB4B10: options[16+id*8].
-    // Constructor 1420BC0C0..17C registers game_thirdperson as option ID 3.
+    // IDA RVA 65B0590 / ClientInstance vtable[172]: mov rax,[rcx+E00]; ret.
+    // Options vtable[1] 5AF8880 -> 5AF8640: options[16+id*8].
+    // Native registration at 5B0CAB2..5B0CB01 retains perspective option ID 3.
     if (!profile.client_options_getter || !profile.option_getter ||
-        !read_at(c, 0, table) || !read_at(table, 174 * 8, getter) ||
+        !read_at(c, 0, table) || !read_at(table, 172 * 8, getter) ||
         getter != profile.client_options_getter || !read_at(getter, 0, code) || code != options_code ||
-        !read_at(c, 0xE10, options) || !read_at(options, 0, option_table) ||
+        !read_at(c, 0xE00, options) || !read_at(options, 0, option_table) ||
         !read_at(option_table, 8, option_getter) || option_getter != profile.option_getter ||
         !read_at(options, 0x10 + 3 * 8, option)) return ViewMode::unknown;
 

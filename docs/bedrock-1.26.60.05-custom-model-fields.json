@@ -1,0 +1,172 @@
+{
+  "file_version": "1.26.60.5",
+  "sha256": "988f6a61403b4381aa41e6c66d64cce441b14e561a9b10f647c2758ef3f2672a",
+  "runtime_verified": true,
+  "verification": "IDA MCP disassembly and bytes, compared with 1.26.52.3 native callers",
+  "fields": [
+    {
+      "name": "BaseActorRenderContext.camera_origin",
+      "context_camera_offset": "0xa8",
+      "old_offset": "0x28",
+      "offset": "0x20",
+      "evidence": [
+        {
+          "rva": "0x59863a9",
+          "bytes": "48 8b 88 a8 00 00 00",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "59863A9: mov rcx, qword ptr [rax + 0xa8]"
+          ]
+        },
+        {
+          "rva": "0x59863dc",
+          "bytes": "48 83 c1 20",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "59863DC: add rcx, 0x20"
+          ]
+        },
+        {
+          "rva": "0x598640f",
+          "bytes": "48 89 4c 24 20 48 8d 55 50 4c 8d 4d 40 48 8b 4d 28 49 89 f0 e8 28 ee f2 ff",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "598640F: mov qword ptr [rsp + 0x20], rcx",
+            "5986414: lea rdx, [rbp + 0x50]",
+            "5986418: lea r9, [rbp + 0x40]",
+            "598641C: mov rcx, qword ptr [rbp + 0x28]",
+            "5986420: mov r8, rsi",
+            "5986423: call 0x1458b5250"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TextureData.gpu_resource",
+      "old_offset": "0x8",
+      "offset": "0x0",
+      "ready_byte": "0x12",
+      "ready_mask": 1,
+      "evidence": [
+        {
+          "rva": "0x892052",
+          "bytes": "48 8b 40 58 48 8b 38 48 85 ff 74 5c 8b",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "892052: mov rax, qword ptr [rax + 0x58]",
+            "892056: mov rdi, qword ptr [rax]",
+            "892059: test rdi, rdi",
+            "89205C: je 0x1408920ba"
+          ]
+        },
+        {
+          "rva": "0x892083",
+          "bytes": "66 f0 ff 47 10 0f b6 47 12 a8 01 74 2a",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "892083: lock inc word ptr [rdi + 0x10]",
+            "892088: movzx eax, byte ptr [rdi + 0x12]",
+            "89208C: test al, 1",
+            "89208E: je 0x1408920ba"
+          ]
+        },
+        {
+          "rva": "0x4def400",
+          "bytes": "48 8b 06 48 85 c0 48 8d 0d 03 fe bc 0d 48 0f 44 c1 48 8b 08 48 85 c9 74 04 0f b7 49 10",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "4DEF400: mov rax, qword ptr [rsi]",
+            "4DEF403: test rax, rax",
+            "4DEF406: lea rcx, [rip + 0xdbcfe03]",
+            "4DEF40D: cmove rax, rcx",
+            "4DEF411: mov rcx, qword ptr [rax]",
+            "4DEF414: test rcx, rcx",
+            "4DEF417: je 0x144def41d",
+            "4DEF419: movzx ecx, word ptr [rcx + 0x10]"
+          ]
+        },
+        {
+          "rva": "0x542000b",
+          "bytes": "48 8b 0e 48 89 0a 48 89 42 08",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "542000B: mov rcx, qword ptr [rsi]",
+            "542000E: mov qword ptr [rdx], rcx",
+            "5420011: mov qword ptr [rdx + 8], rax"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ScreenContext.tessellator",
+      "old_offset": "0xb8",
+      "offset": "0xb0",
+      "evidence": [
+        {
+          "rva": "0x5a1cb92",
+          "bytes": "49 8b 44 24 28 48 8b b8 b0 00 00 00",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "5A1CB92: mov rax, qword ptr [r12 + 0x28]",
+            "5A1CB97: mov rdi, qword ptr [rax + 0xb0]"
+          ]
+        },
+        {
+          "rva": "0x5a1cb9e",
+          "bytes": "49 8b 4f 08 48 89 fa 49 89 d8 e8 53 09 e8 00 90 80 bf 56 02",
+          "ida_bytes_agree": true,
+          "instructions": [
+            "5A1CB9E: mov rcx, qword ptr [r15 + 8]",
+            "5A1CBA2: mov rdx, rdi",
+            "5A1CBA5: mov r8, rbx",
+            "5A1CBA8: call 0x14689d500",
+            "5A1CBAD: nop "
+          ]
+        }
+      ]
+    }
+  ],
+  "runtime_observation": {
+    "access": "PROCESS_QUERY_INFORMATION | PROCESS_VM_READ; no memory writes or native calls",
+    "build_sha256": "43273d83ad9b4c0ea37130ef0d6a7487e6ae13a373ceb3a288d3e6e7616fc8a5",
+    "png_loaded": 3,
+    "uploaded_meshes": 0,
+    "world_callbacks_observed": true,
+    "rejection": "tessellator",
+    "correct_b0": {
+      "count": 0,
+      "end_flags": "000000",
+      "begin_flags": "0000"
+    },
+    "incorrect_b8": {
+      "count": 15120,
+      "end_flags": "2c0500",
+      "begin_flags": "0000"
+    },
+    "stock_binding_ready": false
+  },
+  "runtime_verification": {
+    "packaging": "LeviLauncher 1.26.60.05",
+    "loaded_dll_sha256": "0763b067fcf83a090e09633e1c667d79d1d3283528c9c339d26bebf82bd3ff94",
+    "standard_dll_sha256": "6f7a541a652b5e416a24dff7c4820601a065c5dd0a43b47a4c09443a34d7b920",
+    "meshes_ready": 17,
+    "meshes_total": 17,
+    "textures_ready": 3,
+    "textures_total": 3,
+    "third_person": {
+      "user_confirmed_visible": true,
+      "draws_observed": true,
+      "animation_input_ready": true,
+      "bulk_skinning_observed": true
+    },
+    "first_person": {
+      "user_confirmed_arms_visible": true,
+      "draws_observed": true,
+      "arm_readiness": true,
+      "animation_input_ready": true
+    },
+    "tessellator_rejections_after_fix": 0,
+    "tests": "related CTest 8/8; new standard and v2 DLL lifecycle each passed",
+    "validation": "Reviewed replacement DLL loaded into running game; bounded read-only native telemetry plus user visual confirmation"
+  }
+}

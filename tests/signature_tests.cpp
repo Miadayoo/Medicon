@@ -103,8 +103,8 @@ void registry_failures_and_catalog() {
     require(registry.results().empty(), "rescan retained stale results");
 
     std::unordered_set<std::string_view> names;
-    require(solstice_signatures().size() == 63, "pinned catalog count changed without review");
-    require(solstice_signature_source().commit == "1d7808f52ef4ba6e34a7fbcc65294907a7761611",
+    require(solstice_signatures().size() == 64, "pinned catalog count changed without review");
+    require(solstice_signature_source().commit == "cc6463dcadfeadb9049c235134c6b46efdc12b7e",
             "catalog source commit changed without review");
     for (const auto& signature : solstice_signatures()) {
         require(names.insert(signature.name).second, "duplicate name in imported catalog");
@@ -112,6 +112,7 @@ void registry_failures_and_catalog() {
         require(signature.source_line > 0, "signature has no upstream source line");
     }
     require(names.contains("TapSwingAnim") && !names.contains("glm_rotate"), "upstream comments imported incorrectly");
+    require(names.contains("NetherNetConnector_runEvents"), "1.26.60 network signature missing");
 
     // Medicon's own auth catalog (docs/alt-manager-*). Not runtime-verified, so
     // every entry must stay flagged uncertain; the patterns must still be valid.

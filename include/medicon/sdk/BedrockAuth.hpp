@@ -15,15 +15,15 @@ namespace medicon::sdk {
 // only; this never calls or mutates a game-owned object.
 struct AccountIdentity {
     std::string xuid;     // decimal, as the game stores it (XboxLiveIdentity +0x30)
-    std::string gamertag; // XboxLiveIdentity +0x1D8
+    std::string gamertag; // XboxLiveIdentity +0x1F0
 };
 
 namespace detail {
-// Observed 1.26.52.03 Social::XboxLiveIdentity layout (docs/alt-manager-*). Bytes
+// Observed 1.26.60.05 Social::XboxLiveIdentity layout (docs/alt-manager-*). Bytes
 // are read in-process with bounded reads; a malformed layout yields nullopt and
 // never a partial or aliasing result. `xbox_identity` points at the identity object.
 inline constexpr std::size_t xbox_identity_xuid_offset = 0x30;
-inline constexpr std::size_t xbox_identity_gamertag_offset = 0x1D8;
+inline constexpr std::size_t xbox_identity_gamertag_offset = 0x1F0;
 std::optional<AccountIdentity> read_account_identity(const void* xbox_identity) noexcept;
 
 struct ConnectionAuth {

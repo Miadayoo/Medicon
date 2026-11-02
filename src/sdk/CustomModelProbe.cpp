@@ -9,7 +9,7 @@
 
 namespace medicon::sdk::custom_model {
 namespace {
-namespace native = bedrock_1_26_52_3;
+namespace native = bedrock_1_26_60_5;
 
 template<class T> bool copy_at(std::uintptr_t address, T& value) noexcept {
     if (!address || sizeof(T) - 1 > UINTPTR_MAX - address) return false;
@@ -26,7 +26,7 @@ bool supported_file(std::string& diagnostic) {
     const auto separator = full.find_last_of(L"\\/");
     const auto name = full.substr(separator == std::wstring_view::npos ? 0 : separator + 1);
     if (_wcsicmp(std::wstring(name).c_str(), L"Minecraft.Windows.exe")) {
-        diagnostic = "P0 probe requires Minecraft.Windows.exe 1.26.52.3.";
+        diagnostic = "P0 probe requires Minecraft.Windows.exe 1.26.60.5.";
         return false;
     }
     DWORD ignored = 0;
@@ -39,8 +39,8 @@ bool supported_file(std::string& diagnostic) {
     if (!VerQueryValueW(bytes.data(), L"\\", reinterpret_cast<void**>(&info), &info_size) ||
         !info || info_size < sizeof(*info) || info->dwSignature != 0xFEEF04BD ||
         HIWORD(info->dwFileVersionMS) != 1 || LOWORD(info->dwFileVersionMS) != 26 ||
-        HIWORD(info->dwFileVersionLS) != 52 || LOWORD(info->dwFileVersionLS) != 3) {
-        diagnostic = "P0 probe withheld: file version differs from the IDA evidence (1.26.52.3).";
+        HIWORD(info->dwFileVersionLS) != 60 || LOWORD(info->dwFileVersionLS) != 5) {
+        diagnostic = "P0 probe withheld: file version differs from the IDA evidence (1.26.60.5).";
         return false;
     }
     return true;
@@ -78,7 +78,7 @@ ProbeTargets resolve_probe_targets(std::uint32_t timestamp, std::uint32_t image_
         diagnostic = "P0 combined hooks withheld: distinct entries required.";
         return {};
     }
-    diagnostic = "P0 combined near/ECS/render entries uniquely resolved (RVAs 0x4716E80 / 0x47172D0 / 0x558D300); combined visual coverage unverified.";
+    diagnostic = "P0 combined near/ECS/render entries uniquely resolved (RVAs 0x53E9F80 / 0x53EA3B0 / 0x5985040); combined visual coverage unverified.";
     return {addresses[0], addresses[1], addresses[2]};
 }
 

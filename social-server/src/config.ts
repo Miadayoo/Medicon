@@ -26,7 +26,7 @@ const envSchema = z.object({
     .refine((value) => value === undefined || /^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/i.test(value), {
       message: 'PUBLIC_BASE_URL は https://host の形にしてください（パスなし）',
     }),
-  RELEASE_MCBE_VERSION: z.string().regex(/^\d+\.\d+\.\d+$/).default('1.26.52'),
+  RELEASE_MCBE_VERSION: z.string().regex(/^\d+\.\d+\.\d+$/).default('1.26.60'),
 })
 
 export interface Config {

@@ -81,12 +81,17 @@ bool VelocityModule::sync_context(const sdk::GameplayFrame& frame) noexcept {
 }
 
 VelocityModule::MotionResult VelocityModule::handle_motion(
-    sdk::Vec3& motion, const sdk::GameplayFrame& frame, TimePoint now, std::int64_t received_timestamp) noexcept {
+    sdk::Vec3& motion, const sdk::GameplayFrame& frame, TimePoint now, std::int64_t received_timestamp,
+    std::uint64_t input_tick) noexcept {
     if (!delay_enabled()) {
         cancel_motion();
         return delay2_enabled() ? handle_delay2(motion, frame) : process_motion(motion);
     }
-    if (!std::isfinite(motion.x) || !std::isfinite(motion.y) || !std::isfinite(motion.z))
+    if (!frame.deferred_knockback_supported) {
+        cancel_motion();
+        return MotionResult::ignored;
+    }
+    if (input_tick == UINT64_MAX || !std::isfinite(motion.x) || !std::isfinite(motion.y) || !std::isfinite(motion.z))
         return MotionResult::ignored;
     // The server also sends a zero SetActorMotion to stop the local player
     // (setback / velocity cleanup), not only as a knockback. Holding that stop
@@ -111,7 +116,7 @@ VelocityModule::MotionResult VelocityModule::handle_motion(
     // Each hit keeps its own deadline; later hits cannot reset an earlier hit's
     // timer or overtake it when the delay setting is shortened.
     if (!pending_.empty()) due = std::max(due, pending_.back().due);
-    try { pending_.push_back({motion, due, sequence_ + 1, now, received_timestamp}); }
+    try { pending_.push_back({motion, due, sequence_ + 1, now, received_timestamp, input_tick}); }
     catch (...) { return MotionResult::ignored; }
     ++sequence_;
     ++diagnostics_.queued;
@@ -170,7 +175,7 @@ void VelocityModule::game_tick(sdk::GameplayAccess& game, float delta_seconds) n
 void VelocityModule::update(sdk::GameplayAccess& game, bool allow_actions, TimePoint now) noexcept {
     if (!sync_context(game.frame())) return;
     const auto* sync = std::get_if<bool>(&sync_replies.value);
-    if (!delay_enabled() || !allow_actions) {
+    if (!delay_enabled() || !allow_actions || !game.frame().deferred_knockback_supported) {
         cancel_motion();
         flush_replies(game, true);
         return;
@@ -191,7 +196,7 @@ void VelocityModule::update(sdk::GameplayAccess& game, bool allow_actions, TimeP
                 // interval. Rebase by actual elapsed time, including retries.
                 timestamp += elapsed;
             }
-            const auto result = game.apply_knockback(next.motion, timestamp);
+            const auto result = game.apply_knockback(next.motion, timestamp, next.input_tick);
             if (result != sdk::KnockbackApplyResult::failed) {
                 applied_sequence_ = pending_.front().sequence;
                 pending_.pop_front();

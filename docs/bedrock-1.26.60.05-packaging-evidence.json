@@ -1,0 +1,506 @@
+{
+  "version": "1.26.60.5",
+  "timestamp": "0x6ad79ee4",
+  "runtime_verified": false,
+  "verification": "IDA MCP original IDB bytes; on-disk stock and launcher sections compared byte for byte",
+  "stock": {
+    "sha256": "988f6a61403b4381aa41e6c66d64cce441b14e561a9b10f647c2758ef3f2672a",
+    "size_of_image": "0x1383b000",
+    "checksum": "0x134d2def"
+  },
+  "levilauncher": {
+    "sha256": "019f4ee7c82db0e0c187653bc76c61cf75502ff6866a5cc6603fa0c909a386a2",
+    "size_of_image": "0x1383c000",
+    "checksum": "0x134d3cba"
+  },
+  "original_sections": [
+    {
+      "name": ".text",
+      "rva": "0x1000",
+      "size": 250370518,
+      "sha256": "382102daed26b5f67d6c65952a0f7f0c5cd639dc196b60d73e2409e98c27bc8a",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".rdata",
+      "rva": "0xeec7000",
+      "size": 54791844,
+      "sha256": "089ec4e73b33e66873ebcdc48b0a8035d94dc3c231472bdee206385c9ceec01f",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".data",
+      "rva": "0x12308000",
+      "size": 5687296,
+      "sha256": "144c4327c671f71f0453c64e134cddbf8d896248dfa27cc9830820c72f134332",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".pdata",
+      "rva": "0x12bdd000",
+      "size": 11901636,
+      "sha256": "d6e71990af37b7e1235f7f9a82442699b4aef0de7b3b8d3071a62f1bfe45a102",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".tls",
+      "rva": "0x13737000",
+      "size": 11601,
+      "sha256": "fd8450b10c14783dd2143cb3480916ed977e3157201d62397dcec027b18d40df",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".xbld",
+      "rva": "0x1373a000",
+      "size": 340,
+      "sha256": "7a74f5c8a0fe76d47dc8338fae771b6bac216433c48ac59fb2f78695f176f849",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".rsrc",
+      "rva": "0x1373b000",
+      "size": 18640,
+      "sha256": "7c6e0518b0fbae825cf81d7f1a09f8897a0cf5a4f1de3216430e81c9b304c64b",
+      "identical_in_launcher": true
+    },
+    {
+      "name": ".reloc",
+      "rva": "0x13740000",
+      "size": 1024936,
+      "sha256": "d789f769be182f853c69dc4ae98a8172cb0b5062db604cd4a8737520c770a3ce",
+      "identical_in_launcher": true
+    }
+  ],
+  "ida_menu_entries": [
+    {
+      "rva": "0x65b4850",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x65b4340",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x65b0040",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x8bc9e0",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x65b4230",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x893930",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x56d000",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x56c570",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4cd2860",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4cc7530",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4f17340",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4cb4638",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4f5de80",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4f67590",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x26d7e80",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    },
+    {
+      "rva": "0x4bb2960",
+      "ida_bytes_agree": true,
+      "identical_in_launcher": true
+    }
+  ],
+  "custom_model_signature_checks": [
+    {
+      "name": "near_actor_queue_pattern",
+      "header": "CustomModelRender.hpp",
+      "stock_rvas": [
+        "0x53e9f80"
+      ],
+      "launcher_rvas": [
+        "0x53e9f80"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "ecs_actor_queue_pattern",
+      "header": "CustomModelRender.hpp",
+      "stock_rvas": [
+        "0x53ea3b0"
+      ],
+      "launcher_rvas": [
+        "0x53ea3b0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "data_driven_render_pattern",
+      "header": "CustomModelRender.hpp",
+      "stock_rvas": [
+        "0x5985040"
+      ],
+      "launcher_rvas": [
+        "0x5985040"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "world_render_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x5376690"
+      ],
+      "launcher_rvas": [
+        "0x5376690"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "mesh_immediate_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x5ad65e0"
+      ],
+      "launcher_rvas": [
+        "0x5ad65e0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "mesh_submit_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x4def2b0"
+      ],
+      "launcher_rvas": [
+        "0x4def2b0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "interpolated_position_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0xba25f0"
+      ],
+      "launcher_rvas": [
+        "0xba25f0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "riding_offset_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x7b6d990"
+      ],
+      "launcher_rvas": [
+        "0x7b6d990"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "body_yaw_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x2c384e0"
+      ],
+      "launcher_rvas": [
+        "0x2c384e0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "height_offset_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x297b3d0"
+      ],
+      "launcher_rvas": [
+        "0x297b3d0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "material_release_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x7e6d0"
+      ],
+      "launcher_rvas": [
+        "0x7e6d0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "material_anchor_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x5a1cc8c"
+      ],
+      "launcher_rvas": [
+        "0x5a1cc8c"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "binding_copy_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x4e01b00"
+      ],
+      "launcher_rvas": [
+        "0x4e01b00"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "binding_release_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0xa0b740"
+      ],
+      "launcher_rvas": [
+        "0xa0b740"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "tess_begin_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x5417230"
+      ],
+      "launcher_rvas": [
+        "0x5417230"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "tess_vertex_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x54175e0"
+      ],
+      "launcher_rvas": [
+        "0x54175e0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "material_lookup_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x4de7250"
+      ],
+      "launcher_rvas": [
+        "0x4de7250"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "mesh_view_pattern",
+      "header": "CustomModelP1Patterns.hpp",
+      "stock_rvas": [
+        "0x5ad6770"
+      ],
+      "launcher_rvas": [
+        "0x5ad6770"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "texture_get",
+      "header": "CustomModelP2Patterns.hpp",
+      "stock_rvas": [
+        "0x541f580"
+      ],
+      "launcher_rvas": [
+        "0x541f580"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "tess_end",
+      "header": "CustomModelP2Patterns.hpp",
+      "stock_rvas": [
+        "0x5418a70"
+      ],
+      "launcher_rvas": [
+        "0x5418a70"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "mesh_draw",
+      "header": "CustomModelP2Patterns.hpp",
+      "stock_rvas": [
+        "0x4defd00"
+      ],
+      "launcher_rvas": [
+        "0x4defd00"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "mesh_destroy",
+      "header": "CustomModelP2Patterns.hpp",
+      "stock_rvas": [
+        "0x4dea7c0"
+      ],
+      "launcher_rvas": [
+        "0x4dea7c0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "builder_clear",
+      "header": "CustomModelP2Patterns.hpp",
+      "stock_rvas": [
+        "0x4df0270"
+      ],
+      "launcher_rvas": [
+        "0x4df0270"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "view_id",
+      "header": "CustomModelP2Patterns.hpp",
+      "stock_rvas": [
+        "0x5ad6130"
+      ],
+      "launcher_rvas": [
+        "0x5ad6130"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "view_options",
+      "header": "CustomModelP3Patterns.hpp",
+      "stock_rvas": [
+        "0x65b0590"
+      ],
+      "launcher_rvas": [
+        "0x65b0590"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "view_option_ref",
+      "header": "CustomModelP3Patterns.hpp",
+      "stock_rvas": [
+        "0x5af8880"
+      ],
+      "launcher_rvas": [
+        "0x5af8880"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "view_option_array",
+      "header": "CustomModelP3Patterns.hpp",
+      "stock_rvas": [
+        "0x5af8640"
+      ],
+      "launcher_rvas": [
+        "0x5af8640"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "swing_update",
+      "header": "CustomModelP3Patterns.hpp",
+      "stock_rvas": [
+        "0x2c2d060"
+      ],
+      "launcher_rvas": [
+        "0x2c2d060"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    },
+    {
+      "name": "swing_previous",
+      "header": "CustomModelP3Patterns.hpp",
+      "stock_rvas": [
+        "0x2c241c0"
+      ],
+      "launcher_rvas": [
+        "0x2c241c0"
+      ],
+      "matches_inspected_entry": true,
+      "ida_bytes_agree": true
+    }
+  ]
+}
