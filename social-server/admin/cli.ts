@@ -9,10 +9,12 @@ const USAGE = `使い方: npm run admin -- <コマンド> [オプション]
   license:create --name <name>   ユーザーを作成（既にいればキーだけ追加）してキーを発行
   license:revoke --name <name>   そのユーザーの全キーを無効化し、接続中なら切断
   license:list                   ユーザーとキーの一覧
-  user:ban --name <name>         BANして、接続中なら切断
-  user:unban --name <name>       BANを解除
-  user:rank --name <name> --rank <owner|user>
+  user:list                      全ユーザーの ID・名前・ランクを一覧表示
+  user:ban --id <id>             BANして、接続中なら切断
+  user:unban --id <id>           BANを解除
+  user:rank --id <id> --rank <owner|user>
                                  ランクを変更（owner は Social の Admin タブから投稿できる）
+                                 --id の代わりに --name も利用可能
   news:post --kind <news|changelog> --title <title> --body-file <path> [--version <v>]
                                  お知らせ／Change Logを投稿して全接続に配信
   release:publish --file <MediconCore.dll> --version <x.y.z> --title <title> --body-file <path>
@@ -40,6 +42,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       name: { type: 'string' },
+      id: { type: 'string' },
       kind: { type: 'string' },
       rank: { type: 'string' },
       title: { type: 'string' },
@@ -60,6 +63,13 @@ async function main(): Promise<void> {
   const admin = adminClient(config.adminPort, config.adminSecret)
 
   switch (command) {
+    case 'user:list': {
+      const result = await admin.get<{ items: (UserRef & { rank: string; banned: number; hasAccount: number })[] }>('/users')
+      printTable(['id', 'name', 'rank', 'ban', 'auth'], result.items.map((user) => [
+        String(user.id), user.name, user.rank, user.banned ? 'BAN' : '-', user.hasAccount ? 'account' : 'license',
+      ]))
+      break
+    }
     case 'license:create': {
       const result = await admin.post<{ user: UserRef; createdUser: boolean; key: string }>('/licenses', {
         name: required(values.name, '--name'),
@@ -74,9 +84,7 @@ async function main(): Promise<void> {
       break
     }
     case 'license:revoke': {
-      const result = await admin.post<{ user: UserRef; revokedKeys: number; kicked: boolean }>('/licenses/revoke', {
-        name: required(values.name, '--name'),
-      })
+      const result = await admin.post<{ user: UserRef; revokedKeys: number; kicked: boolean }>('/licenses/revoke', userSelector(values))
       console.log(`${result.user.name} のキーを ${result.revokedKeys} 件無効化しました${result.kicked ? '（接続を切断）' : ''}`)
       break
     }
@@ -100,14 +108,12 @@ async function main(): Promise<void> {
       break
     }
     case 'user:ban': {
-      const result = await admin.post<{ user: UserRef; kicked: boolean }>('/users/ban', {
-        name: required(values.name, '--name'),
-      })
+      const result = await admin.post<{ user: UserRef; kicked: boolean }>('/users/ban', userSelector(values))
       console.log(`${result.user.name} をBANしました${result.kicked ? '（接続を切断）' : ''}`)
       break
     }
     case 'user:unban': {
-      const result = await admin.post<{ user: UserRef }>('/users/unban', { name: required(values.name, '--name') })
+      const result = await admin.post<{ user: UserRef }>('/users/unban', userSelector(values))
       console.log(`${result.user.name} のBANを解除しました`)
       break
     }
@@ -115,7 +121,7 @@ async function main(): Promise<void> {
       const rank = values.rank
       if (rank !== 'owner' && rank !== 'user') throw new CliError('--rank には owner か user を指定してください')
       const result = await admin.post<{ user: UserRef; reconnected: boolean }>('/users/rank', {
-        name: required(values.name, '--name'),
+        ...userSelector(values),
         rank,
       })
       console.log(`${result.user.name} のランクを ${rank} にしました${result.reconnected ? '（接続中のため再接続させました）' : ''}`)
@@ -157,6 +163,16 @@ async function main(): Promise<void> {
     default:
       throw new CliError(`不明なコマンドです: ${command}\n\n${USAGE}`)
   }
+}
+
+function userSelector(values: { id?: string; name?: string }): { id: number } | { name: string } {
+  if (values.id !== undefined) {
+    if (values.name !== undefined || !/^[1-9][0-9]*$/.test(values.id) || !Number.isSafeInteger(Number(values.id))) {
+      throw new CliError('--id には正の整数を指定し、--name と併用しないでください')
+    }
+    return { id: Number(values.id) }
+  }
+  return { name: required(values.name, '--id または --name') }
 }
 
 function required(value: string | undefined, flag: string): string {

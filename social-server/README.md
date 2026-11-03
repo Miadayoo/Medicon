@@ -2,7 +2,7 @@
 
 Medicon のクライアント内SNS「Social」のサーバー（実装指示書の Part A）です。REST と WebSocket を Fastify + ws で提供し、自宅PCの `127.0.0.1` だけで待ち受けて、外部には Cloudflare Tunnel 経由の `wss://` として公開します。通信の形式は実装指示書「2. 共通仕様」に従います。
 
-**実装状況：フェーズ1〜6。** DB、ライセンスキー認証、管理CLIと管理ポート、WebSocket、お知らせ（news / changelog）、Global チャット、フレンド、DM（既読・未読・オンライン状態）。`msg:delete` とその反映はフェーズ7で追加します。
+**実装状況：フェーズ1〜6。** DB、username 初回登録・ID と秘密情報による認証、管理CLIと管理ポート、WebSocket、お知らせ（news / changelog）、Global チャット、フレンド、DM（既読・未読・オンライン状態）。`msg:delete` とその反映はフェーズ7で追加します。
 
 CustomModel 共有にも対応しています。認証済み接続の `model.sync` / `model.peers` で、近くのユーザーの Neon / Chocolat の選択を同期します。クライアントと本サーバーの両方を更新して再起動してください。DB の変更・移行はありません。共有状態は接続中のメモリだけに保持し、切断・OFF・15秒無更新で解除します。プロキシで ActorUniqueID が食い違う場合に備え、ID と名前の組で一致しないときは一意な名前で照合します（この変更もサーバーの再起動が必要です）。詳細は [クライアントの共有仕様](../docs/social.md) を参照してください。
 
@@ -13,6 +13,21 @@ CustomModel 共有にも対応しています。認証済み接続の `model.syn
 | フレンド | `GET /friends`、`GET /users/search?q=<前方一致>`（最大10件、自分を除く） | `friend.request` / `friend.respond` / `friend.remove` → `ack`、相手に `friend.request` / `friend.update`。接続と切断で、オンラインのフレンドに `presence` |
 
 制限（実装指示書 2.5）：本文は前後の空白を除いて1〜300コードポイント（`empty` / `too_long`）。Global は1ユーザー0.3秒に1回（仕様の2秒から短縮）、DM は5秒に5回、フレンド申請は1時間に10回（`rate_limited`）。相手から自分への申請があるときに申請すると、その場でフレンドになります。
+
+## アカウント管理
+
+初回 inject 時は username だけを入力し、クライアントが256-bitのランダム秘密情報を自動生成します。サーバーは固定 ID で管理し、秘密情報は SHA-256 ハッシュだけを `account_credentials` に保存します。ID・username だけではログインできません。次回 inject は DPAPI 暗号化済みの `account.bin` から自動認証します。初回登録・ID ログイン・旧ライセンス移行はそれぞれ `POST /auth/register`、`POST /auth/account`、`POST /auth/migrate`。認証レート制限は旧 API と共通です。
+
+サーバーとクライアントを両方更新してください。サーバー起動時に既存 DB へテーブルを自動追加します。保存済みの `license.bin` はクライアント側で自動移行し、既存 ID と履歴を維持します。移行時に旧キー・セッションを無効化し、移行後はキー単独でのログインを拒否します。新規ユーザーへのライセンス発行は不要です。
+
+```powershell
+npm run admin -- user:list
+npm run admin -- user:rank --id 1 --rank owner
+npm run admin -- user:ban --id 2
+npm run admin -- user:unban --id 2
+```
+
+旧 `--name` 指定も使えます。`user:list` はライセンスを持たない新規登録ユーザーも表示し、秘密情報やハッシュは表示しません。アカウントの停止には `user:ban` を使います。`license:revoke` は旧ライセンス向けです。保存ファイルの紛失時の復旧 UI は未実装なので、クライアントの `account.bin` を削除しないでください。詳細は [認証仕様](../docs/social.md#アカウント認証) を参照してください。
 
 ## Core DLL の自動アップデート
 
@@ -99,11 +114,12 @@ nohup sh ./start.sh >logs/server.log 2>&1 < /dev/null &
 サーバーを起動した状態で、別のターミナルから実行します。CLI は DB を直接書かずに管理ポートを呼ぶので、切断やお知らせの配信がその場で反映されます。
 
 ```powershell
-npm run admin -- license:create --name faokun
+npm run admin -- user:list
 ```
 
 | コマンド | 動作 |
 |---|---|
+| `user:list` | ID、username、ランク、BAN、認証方式を一覧表示 |
 | `license:create --name <name>` | ユーザーを作成（既にいればキーだけ追加）してキーを表示する。キーは DB にハッシュだけを保存するので、表示はこの1回だけ |
 | `license:revoke --name <name>` | そのユーザーの全キーを無効化し、セッションを削除する。接続中なら `kicked` を送って close 4003 |
 | `license:list` | username、BAN、キーの状態、作成日時、最終使用日時 |
@@ -120,7 +136,7 @@ owner は WebSocket の `news.post`（`{t, id, kind, title, body, version?}`）�
 
 username は3〜16文字の英数字と `_` です。大文字小文字を区別せずに一意で、表示は最初に登録した表記になります。
 
-## test-client（DLLなしでの確認）
+## test-client（旧ライセンスの確認）
 
 ```powershell
 npm run test-client
@@ -323,7 +339,8 @@ src/
   db/schema.sql       起動時に適用するスキーマ
   db/db.ts            SQLite（WAL、外部キー有効）
   db/backup.ts        毎日のバックアップ
-  auth/license.ts     キーの生成・正規化・照合
+  auth/account.ts     初回登録、ID＋秘密情報の照合、旧アカウントの移行
+  auth/license.ts     旧キーの生成・正規化・照合
   auth/session.ts     トークンの発行・検証
   http/common.ts      認証、エラーの形式、ページング
   http/routes/        auth, news

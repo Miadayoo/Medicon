@@ -460,96 +460,116 @@ void server_rotation_packets() {
             "unreadable or overflowing packet address was accepted");
 }
 
+void move_fix_preserves_native_walking() {
+    using medicon::sdk::detail::write_gameplay_move_fix_input;
+    using medicon::sdk::Vec2;
+    using medicon::sdk::Vec3;
+    // Velocity can point away from the held input while turning, decelerating,
+    // colliding or receiving knockback. It must never replace that input.
+    for (const auto input : {Vec2{0, 1}, Vec2{1, 0}, Vec2{0, -1}, Vec2{0.3F, 0.4F}, Vec2{}}) {
+        for (const auto velocity : {Vec3{0, 0, 0.2F}, Vec3{0.2F, 0, 0}, Vec3{0, 0, -0.2F}, Vec3{}}) {
+            for (const auto mode : {1, 2, 3}) {
+                std::array<std::byte, 0xE0> packet{};
+                store(packet, 0x30, Vec2{12, 37});
+                store(packet, 0x38, Vec3{123, 64, -456});
+                store(packet, 0x44, 37.0F);
+                store(packet, 0x48, velocity);
+                store(packet, 0x5C, input);
+                store(packet, 0x64, input);
+                store(packet, 0x6C, Vec2{12, 37});
+                store(packet, 0x74, Vec3{0, 0, 1});
+                store(packet, 0x80, input);
+                store(packet, 0x88, std::array<std::uint64_t, 2>{0x08000508, 3});
+                store(packet, 0x98, std::int32_t{mode});
+                store(packet, 0xD8, std::int64_t{-1});
+                const auto before = packet;
+                require(write_gameplay_move_fix_input(reinterpret_cast<std::uintptr_t>(packet.data()), 37, 12) &&
+                        packet == before, "MoveFix changed native walking input without a yaw change");
+            }
+        }
+    }
+}
+
 void move_fix_packets() {
     using medicon::sdk::detail::write_gameplay_move_fix_input;
+    using medicon::sdk::detail::write_gameplay_rotation_input;
     using medicon::sdk::Vec2;
     using medicon::sdk::Vec3;
     const auto bit = [](unsigned index) { return std::uint64_t{1} << index; };
     std::array<std::byte, 0xE0> packet{};
-    packet.fill(std::byte{0x5A});
-    store(packet, 0x30, Vec2{12, 0});
-    store(packet, 0x48, Vec3{0, -0.1F, 0.3F});
-    store(packet, 0x54, Vec2{3, 4});
-    store(packet, 0x64, Vec2{0, 1});
-    const std::uint64_t directions = std::uint64_t{0x3F} << 10;
-    const std::uint64_t unrelated = bit(3) | bit(8) | bit(35) | bit(44);
-    store(packet, 0x88, std::array<std::uint64_t, 2>{unrelated | directions | bit(20) | bit(25), 3});
+    store(packet, 0x38, Vec3{123, 64, -456});
+    store(packet, 0x48, Vec3{-0.2F, -0.1F, 0.02F});
+    store(packet, 0x74, Vec3{0, 0, 1});
+    store(packet, 0x88, std::array<std::uint64_t, 2>{bit(4) | bit(10) | bit(20) | bit(25) | bit(27), 3});
     store(packet, 0x98, std::int32_t{1});
-    const auto before = packet;
+    store(packet, 0xD8, std::int64_t{-1});
+    const auto base = packet;
     const auto address = reinterpret_cast<std::uintptr_t>(packet.data());
-    bool sprinting = false;
-    auto expected = before;
-    store(expected, 0x54, Vec2{0, 1});
-    store(expected, 0x64, Vec2{0, 1});
-    store(expected, 0x88, std::array<std::uint64_t, 2>{unrelated | bit(20) | bit(25), 3});
-    store(expected, 0x98, std::int32_t{4});
-    require(write_gameplay_move_fix_input(address, sprinting) && packet == expected && sprinting,
-            "MoveFix changed unrelated payload fields or stopped forward sprint");
-
-    // The final packet yaw, including a silent rotation, determines local input.
-    packet = before;
-    store(packet, 0x30, Vec2{12, 90});
-    expected = packet;
-    store(expected, 0x54, Vec2{1, 0});
-    store(expected, 0x64, Vec2{1, 0});
-    store(expected, 0x88, std::array<std::uint64_t, 2>{unrelated | bit(26), 3});
-    store(expected, 0x98, std::int32_t{4});
-    require(write_gameplay_move_fix_input(address, sprinting) && packet == expected && !sprinting,
-            "MoveFix did not stop sprint after rotation turned motion sideways");
-    require(write_gameplay_move_fix_input(address, sprinting) && packet == expected && !sprinting,
-            "Nested send routes applied MoveFix twice inconsistently");
-
-    for (float yaw : {180.0F, -180.0F, 540.0F}) {
-        packet = before;
-        store(packet, 0x30, Vec2{0, yaw});
-        require(write_gameplay_move_fix_input(address, sprinting), "MoveFix rejected wrapped yaw");
-        Vec2 move{};
-        std::memcpy(&move, packet.data() + 0x64, sizeof(move));
-        require(std::abs(move.x) < 0.001F && std::abs(move.y + 1) < 0.001F && !sprinting,
-                "MoveFix did not compensate backward movement or yaw wrap");
+    const auto world_move = [](Vec2 input, float yaw) {
+        const double angle = yaw * 3.14159265358979323846 / 180.0;
+        return std::array<double, 2>{input.x * std::cos(angle) - input.y * std::sin(angle),
+                                     input.x * std::sin(angle) + input.y * std::cos(angle)};
+    };
+    for (const float source_yaw : {0.0F, 37.0F, -179.0F}) {
+        for (const float target_yaw : {0.0F, 90.0F, -90.0F, 179.0F, -180.0F, 540.0F}) {
+            for (const auto input : {Vec2{0, 1}, Vec2{1, 0}, Vec2{0, -1}, Vec2{0.3F, 0.4F},
+                                     Vec2{-0.0F, 0}, Vec2{0.70710678F, 0.70710678F}}) {
+                packet = base;
+                store(packet, 0x30, Vec2{12, source_yaw});
+                store(packet, 0x44, source_yaw);
+                store(packet, 0x6C, Vec2{12, source_yaw});
+                store(packet, 0x5C, Vec2{input.x * 0.5F, input.y * 0.5F});
+                store(packet, 0x64, input);
+                // Raw input can remain nonzero when processed movement is locked.
+                store(packet, 0x80, Vec2{0.6F, -0.2F});
+                const auto before = packet;
+                require(write_gameplay_move_fix_input(address, target_yaw, -30),
+                        "MoveFix rejected valid rotation compensation");
+                auto expected = before;
+                const float yaw = std::remainder(target_yaw, 360.0F);
+                store(expected, 0x30, Vec2{-30, yaw});
+                store(expected, 0x44, yaw);
+                store(expected, 0x6C, Vec2{-30, yaw});
+                for (const std::size_t offset : {std::size_t{0x5C}, std::size_t{0x64}, std::size_t{0x80}}) {
+                    Vec2 original_input{}, corrected{};
+                    std::memcpy(&original_input, before.data() + offset, sizeof(original_input));
+                    std::memcpy(&corrected, packet.data() + offset, sizeof(corrected));
+                    const auto wanted = world_move(original_input, source_yaw);
+                    const auto actual = world_move(corrected, yaw);
+                    require(std::hypot(actual[0] - wanted[0], actual[1] - wanted[1]) < 0.00001,
+                            "MoveFix redirected world movement or changed input strength");
+                    store(expected, offset, corrected);
+                }
+                require(packet == expected, "MoveFix changed native flags, mode, motion or vehicle fields");
+                const auto corrected = packet;
+                require(write_gameplay_move_fix_input(address, target_yaw, -30) && packet == corrected,
+                        "Nested MoveFix rotated the same input twice");
+                packet = before;
+                require(write_gameplay_rotation_input(address, 144, target_yaw, -30, true) &&
+                        write_gameplay_move_fix_input(address, target_yaw, -30) && packet == corrected,
+                        "Vector Fix and MoveFix disagreed across nested send routes");
+            }
+        }
     }
-
-    // Sprint history must produce a stop even if the next packet omits its state bit.
-    packet = before;
-    store(packet, 0x48, Vec3{0, 0, -1});
-    store(packet, 0x88, std::array<std::uint64_t, 2>{unrelated | directions, 3});
-    sprinting = true;
-    require(write_gameplay_move_fix_input(address, sprinting) && !sprinting, "MoveFix lost sprint history");
-    std::uint64_t flags{};
-    std::memcpy(&flags, packet.data() + 0x88, sizeof(flags));
-    require(flags == (unrelated | bit(26)), "MoveFix failed to emit a sprint stop transition");
-
-    packet = before;
-    store(packet, 0x64, Vec2{});
-    require(write_gameplay_move_fix_input(address, sprinting), "MoveFix rejected external motion");
-    Vec2 move{};
-    std::memcpy(&move, packet.data() + 0x64, sizeof(move));
-    require(move.x == 0 && move.y == 0, "MoveFix invented input from knockback alone");
-    store(packet, 0x48, Vec3{});
-    const auto idle = packet;
-    require(write_gameplay_move_fix_input(address, sprinting) && packet == idle,
-            "MoveFix modified an idle packet");
-
-    packet = before;
-    store(packet, 0x48, Vec3{});
-    require(write_gameplay_move_fix_input(address, sprinting), "MoveFix rejected blocked movement");
-    std::memcpy(&move, packet.data() + 0x64, sizeof(move));
-    require(move.x == 0 && move.y == 1, "MoveFix invented a direction when blocked");
-
-    for (int malformed = 0; malformed < 5; ++malformed) {
-        packet = before;
+    packet = base;
+    store(packet, 0x54, Vec2{15, 70});
+    store(packet, 0x88, std::array<std::uint64_t, 2>{bit(45), 0});
+    store(packet, 0xD8, std::int64_t{42});
+    const auto riding = packet;
+    require(write_gameplay_move_fix_input(address, 90, -30) && packet == riding,
+            "On-foot MoveFix changed a client-predicted vehicle packet");
+    for (int malformed = 0; malformed < 4; ++malformed) {
+        packet = base;
         if (malformed == 0) store(packet, 0x30, Vec2{0, std::numeric_limits<float>::quiet_NaN()});
-        if (malformed == 1) store(packet, 0x48, Vec3{std::numeric_limits<float>::infinity(), 0, 0});
-        if (malformed == 2) store(packet, 0x64, Vec2{2, 0});
+        if (malformed == 1) store(packet, 0x5C, Vec2{std::numeric_limits<float>::infinity(), 0});
+        if (malformed == 2) store(packet, 0x80, Vec2{2, 0});
         if (malformed == 3) store(packet, 0x90, std::uint64_t{4});
-        if (malformed == 4) store(packet, 0x98, std::int32_t{5});
         const auto invalid = packet;
-        sprinting = true;
-        require(!write_gameplay_move_fix_input(address, sprinting) && packet == invalid && sprinting,
-                "MoveFix changed invalid input or committed sprint state after rejection");
+        require(!write_gameplay_move_fix_input(address, 90, -30) && packet == invalid,
+                "MoveFix partially changed malformed input");
     }
-    require(!write_gameplay_move_fix_input(0, sprinting) && !write_gameplay_move_fix_input(1, sprinting) &&
-            !write_gameplay_move_fix_input(UINTPTR_MAX - 8, sprinting), "MoveFix accepted unreadable packet memory");
+    require(!write_gameplay_move_fix_input(0, 0, 0) && !write_gameplay_move_fix_input(1, 0, 0) &&
+            !write_gameplay_move_fix_input(UINTPTR_MAX - 8, 0, 0), "MoveFix accepted unreadable memory");
 }
 
 void item_stack_reader() {
@@ -848,7 +868,7 @@ void replay_motion_boundary() {
 } // namespace
 
 int main() {
-    try { components(); pools(); native_boundary(); predicted_motion_boundary(); replay_motion_boundary(); incoming_motion(); velocity_packet_observations(); delayed_velocity_memory(); latency_packet_copy(); movement_input(); render_pitch_scope(); server_rotation_packets(); move_fix_packets(); item_stack_reader(); attribute_reader(); inventory_transaction_boundary(); }
+    try { components(); pools(); native_boundary(); predicted_motion_boundary(); replay_motion_boundary(); incoming_motion(); velocity_packet_observations(); delayed_velocity_memory(); latency_packet_copy(); movement_input(); render_pitch_scope(); server_rotation_packets(); move_fix_preserves_native_walking(); move_fix_packets(); item_stack_reader(); attribute_reader(); inventory_transaction_boundary(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Bedrock gameplay ABI tests passed\n";
 }

@@ -167,7 +167,7 @@ void wait_for(ScenarioHost& host, std::chrono::seconds limit, const char* what, 
 
 // End-to-end check against a running social-server (MediconPreview --social-dir ...
 // --scenario social_live). An outside script posts news, restarts the server and
-// revokes the key while this waits for each consequence.
+// bans the account while this waits for each consequence.
 void require_local_social_server() {
     if (social::server_url != "http://127.0.0.1:18787")
         throw std::runtime_error("Social E2E requires a separate build with MEDICON_SOCIAL_SERVER_URL=http://127.0.0.1:18787");
@@ -192,12 +192,12 @@ void social_live(ScenarioHost& host, bool capture) {
     wait_for(host, std::chrono::seconds(30), "toast_gone", [&] { return social.toasts().empty(); });
     wait_for(host, std::chrono::seconds(90), "offline", [&] { return !online(); });
     wait_for(host, std::chrono::seconds(90), "reconnected", online);
-    wait_for(host, std::chrono::seconds(90), "revoked", [&] {
-        return store.state() == social::ConnectionState::AuthFailed && store.state_reason() == "revoked";
+    wait_for(host, std::chrono::seconds(90), "banned", [&] {
+        return store.state() == social::ConnectionState::AuthFailed && store.state_reason() == "banned";
     });
-    wait_for(host, std::chrono::seconds(10), "revoked_toast", showing);
+    wait_for(host, std::chrono::seconds(10), "banned_toast", showing);
     settle_toasts();
-    if (capture) host.capture("revoked");
+    if (capture) host.capture("banned");
 }
 
 // These scenarios use the same Overlay and event queue as the live client, but
@@ -235,6 +235,18 @@ void social_settle(ScenarioHost& host) {
     throw std::runtime_error("Social fonts were not ready within 10 s");
 }
 
+// A fresh process must authenticate without typing, including legacy migration.
+void social_account_resume(ScenarioHost& host, bool capture) {
+    require_local_social_server();
+    auto& social = host.overlay().social();
+    wait_for(host, std::chrono::seconds(30), "account_resumed", [&] {
+        return social.store().state() == social::ConnectionState::Online && social.store().me();
+    });
+    social.open_screen();
+    social_settle(host);
+    if (capture) host.capture("resumed");
+}
+
 void social_click(ScenarioHost& host, float x, float y) {
     const LPARAM point = MAKELPARAM(static_cast<WORD>(std::lround(x)), static_cast<WORD>(std::lround(y)));
     host.send(WM_MOUSEMOVE, 0, point); host.frame();
@@ -260,7 +272,7 @@ void social_key(ScenarioHost& host, UINT message, WPARAM key) {
     host.send(message, key, message == WM_KEYUP ? static_cast<LPARAM>(0xC0000001) : 1);
 }
 
-// Replaces the key field's text with `text` and presses Enter, as a user would.
+// Replaces the username field's text with `text` and presses Enter, as a user would.
 void social_sign_in(ScenarioHost& host, const std::string& text) {
     social_key(host, WM_KEYDOWN, VK_CONTROL);
     social_key(host, WM_KEYDOWN, 'A');
@@ -286,15 +298,14 @@ void check_newest_first(const std::vector<social::NewsItem>& items, const char* 
 
 // Spec 5, phase 3 against a running social-server (tools/social-e2e.mjs drives
 // the server side): sign in through the screen, read Home, change a setting,
-// sign out and back in. The key comes from MEDICON_SOCIAL_TEST_KEY and is never
-// written to the log.
+// sign out and back in, preserving account.bin.
 void social_live_login(ScenarioHost& host, bool capture) {
     require_local_social_server();
     auto& social = host.overlay().social();
     if (!social.attached()) throw std::runtime_error("social_live_login needs --social-dir");
-    const char* key_variable = std::getenv("MEDICON_SOCIAL_TEST_KEY");
-    if (!key_variable || !*key_variable) throw std::runtime_error("set MEDICON_SOCIAL_TEST_KEY");
-    const std::string key = key_variable;
+    const char* username_variable = std::getenv("MEDICON_SOCIAL_TEST_USERNAME");
+    if (!username_variable || !*username_variable) throw std::runtime_error("set MEDICON_SOCIAL_TEST_USERNAME");
+    const std::string username = username_variable;
     const auto& store = social.store();
     const auto& screen = social.screen();
     using social::ConnectionState;
@@ -312,23 +323,23 @@ void social_live_login(ScenarioHost& host, bool capture) {
     if (capture) host.capture("login");
 
     // The server starts only after the first attempt, so it cannot be reached.
-    social_sign_in(host, key);
+    social_sign_in(host, "e2e");
     wait_for(host, std::chrono::seconds(30), "login_unreachable", [&] { return screen.login_error() == "unreachable"; });
     if (capture) host.capture("unreachable");
-    // A well-formed key the server does not know, retried until the server answers.
+    // The pending registration keeps its secret until the server answers.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (screen.login_error() != "invalid_key") {
+    while (screen.login_error() != "username_taken") {
         if (std::chrono::steady_clock::now() > deadline) throw std::runtime_error("the server never answered");
-        social_sign_in(host, "MDC-AAAA-BBBB-CCCC-DDDD");
+        social_sign_in(host, "e2e");
         wait_for(host, std::chrono::seconds(30), "login_answered", [&] {
             return !screen.login_error().empty() || store.state() == ConnectionState::Online;
         });
     }
-    host.log("milestone login_invalid_key");
+    host.log("milestone login_username_taken");
     for (int i = 0; i < 10; ++i) host.frame();
-    if (capture) host.capture("invalid_key");
+    if (capture) host.capture("username_taken");
 
-    social_sign_in(host, key);
+    social_sign_in(host, username);
     wait_for(host, std::chrono::seconds(30), "online", [&] { return store.state() == ConnectionState::Online; });
     if (screen.showing_login(store) || screen.view() != gui::SocialView::Home) throw std::runtime_error("Home did not open");
 
@@ -372,7 +383,7 @@ void social_live_login(ScenarioHost& host, bool capture) {
     host.log("milestone sound_off");
     if (capture) host.capture("settings");
 
-    // Sign out deletes license.bin and returns to the sign-in screen.
+    // Sign out preserves account.bin and returns to the sign-in screen.
     const auto sign_out = screen.sign_out_rect();
     social_click(host, (sign_out.min.x + sign_out.max.x) * 0.5F, (sign_out.min.y + sign_out.max.y) * 0.5F);
     wait_for(host, std::chrono::seconds(30), "logged_out", [&] {
@@ -381,7 +392,7 @@ void social_live_login(ScenarioHost& host, bool capture) {
     // Let the driver look at the folder before signing in again.
     const auto pause = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
     while (std::chrono::steady_clock::now() < pause) host.frame();
-    social_sign_in(host, key);
+    social_sign_in(host, username);
     wait_for(host, std::chrono::seconds(30), "online_again", [&] { return store.state() == ConnectionState::Online; });
 }
 
@@ -389,7 +400,7 @@ void social_scenario(ScenarioHost& host, bool capture, const std::string& varian
     const bool online = variant == "home" || variant == "changelog" || variant == "empty" ||
                         variant == "many" || variant == "settings" || variant == "device";
     auto& channel = social_mock(host, online);
-    if (variant == "error") channel.events.push(social::LoginFinished{false, "invalid_key"});
+    if (variant == "error") channel.events.push(social::LoginFinished{false, "username_taken"});
     if (variant == "network") channel.events.push(social::LoginFinished{false, "unreachable"});
     if (online) {
         social_page(channel, social::NewsKind::News, variant == "empty" ? 0 : (variant == "many" ? 60 : 3));
@@ -397,9 +408,9 @@ void social_scenario(ScenarioHost& host, bool capture, const std::string& varian
     }
     social_settle(host);
     if (variant == "success") {
-        // Deliberately fictitious key: simulate typing and have the mock service
+        // Simulate username entry and have the mock service
         // answer only after a real Login command is emitted by the view.
-        for (const wchar_t ch : std::wstring(L"MDC-TEST-TEST-TEST-TEST")) host.send(WM_CHAR, ch, 1);
+        for (const wchar_t ch : std::wstring(L"Preview_User")) host.send(WM_CHAR, ch, 1);
         host.frame();
         host.send(WM_KEYDOWN, VK_RETURN, 1); host.frame();
         host.send(WM_KEYUP, VK_RETURN, static_cast<LPARAM>(0xC0000001)); host.frame();
@@ -733,7 +744,7 @@ void disconnect_recovery(ScenarioHost& host, bool capture) {
 void social_login_states(ScenarioHost& host, bool capture) {
     social_mock(host, false);
     social_settle(host);
-    for (const wchar_t ch : std::wstring(L"MDC-ABCD")) host.send(WM_CHAR, ch, 1);
+    for (const wchar_t ch : std::wstring(L"Preview")) host.send(WM_CHAR, ch, 1);
     for (int i = 0; i < 20; ++i) host.frame();
     if (capture) host.capture("focus");
     const auto button = host.overlay().social().screen().sign_in_rect();
@@ -887,12 +898,12 @@ void social_friend_remove(ScenarioHost& host, bool capture) {
 
 // Phases 4-6 against a running social-server: tools/social-chat-e2e.mjs plays
 // "bob", "cat" and "eve" over the WebSocket and answers each milestone below.
-// The key comes from MEDICON_SOCIAL_TEST_KEY and is never written to the log.
+// The username comes from MEDICON_SOCIAL_TEST_USERNAME.
 void social_live_chat(ScenarioHost& host, bool capture) {
     auto& social = host.overlay().social();
     if (!social.attached()) throw std::runtime_error("social_live_chat needs --social-dir");
-    const char* key_variable = std::getenv("MEDICON_SOCIAL_TEST_KEY");
-    if (!key_variable || !*key_variable) throw std::runtime_error("set MEDICON_SOCIAL_TEST_KEY");
+    const char* username_variable = std::getenv("MEDICON_SOCIAL_TEST_USERNAME");
+    if (!username_variable || !*username_variable) throw std::runtime_error("set MEDICON_SOCIAL_TEST_USERNAME");
     const auto& store = social.store();
     auto& screen = social.screen();
     const auto limit = std::chrono::seconds(60);
@@ -924,7 +935,7 @@ void social_live_chat(ScenarioHost& host, bool capture) {
     wait_for(host, limit, "no_license", [&] { return store.state() == ConnectionState::NoLicense; });
     social.open_screen();
     social_settle(host);
-    social_sign_in(host, key_variable);
+    social_sign_in(host, username_variable);
     wait_for(host, limit, "online", [&] { return store.state() == ConnectionState::Online; });
 
     // --- Phase 4: Global ------------------------------------------------------
@@ -1104,7 +1115,7 @@ void social_admin_focus(ScenarioHost& host, bool capture) {
 }
 
 // The injected client's startup sign-in: after the intro, no key means the
-// sign-in panel, which Esc cannot close; an accepted key goes to the Main Menu
+// sign-in panel, which Esc cannot close; a verified account goes to the Main Menu
 // and greets with "Welcome to {name}".
 void social_sign_in_gate(ScenarioHost& host, bool capture) {
     auto& channel = social_mock(host, false, false);
@@ -1121,7 +1132,7 @@ void social_sign_in_gate(ScenarioHost& host, bool capture) {
     host.frame();
     if (!ui.screen_open()) throw std::runtime_error("the sign-in gate was closed without a key");
     if (capture) host.capture("gate");
-    type_text(host, L"MDC-TEST-TEST-TEST-TEST");
+    type_text(host, L"Preview_User");
     press_enter(host);
     auto command = channel.commands.pop(std::chrono::steady_clock::now());
     if (!command || !std::holds_alternative<social::Login>(*command)) throw std::runtime_error("the gate did not sign in");
@@ -1131,7 +1142,7 @@ void social_sign_in_gate(ScenarioHost& host, bool capture) {
     channel.events.push(social::StateChanged{social::ConnectionState::Online, {}});
     wait_frames(host, 0.5F);
     if (ui.screen_open() || ui.sign_in_gate_active() || !host.overlay().main_menu().active())
-        throw std::runtime_error("an accepted key did not go to the Main Menu");
+        throw std::runtime_error("a verified account did not go to the Main Menu");
     const auto welcomed = [&] {
         for (const auto& entry : ui.toasts().visible())
             if (entry.toast.body == "Welcome to Preview User") return true;
@@ -1220,7 +1231,7 @@ void social_update_notice(ScenarioHost& host, bool capture) {
     ui.set_update_notice("1.0.5");
     channel.events.push(social::StateChanged{social::ConnectionState::NoLicense, {}});
     social_settle(host);
-    type_text(host, L"MDC-TEST-TEST-TEST-TEST");
+    type_text(host, L"Preview_User");
     press_enter(host);
     channel.commands.pop(std::chrono::steady_clock::now());
     channel.events.push(social::LoginFinished{true, {}});
@@ -1777,6 +1788,7 @@ const std::map<std::string, Runner>& scenarios() {
         {"toasts", [](ScenarioHost& h, bool c) { toasts(h, c, false); }},
         {"toasts_menu", [](ScenarioHost& h, bool c) { toasts(h, c, true); }},
         {"social_live", social_live},
+        {"social_account_resume", social_account_resume},
         {"social_live_login", social_live_login},
         {"social_login", [](ScenarioHost& h, bool c) { social_scenario(h, c, "login"); }},
         {"social_login_success", [](ScenarioHost& h, bool c) { social_scenario(h, c, "success"); }},

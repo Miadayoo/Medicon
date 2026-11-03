@@ -118,7 +118,7 @@ public:
     bool showing_login(const social::SocialStore& store) const noexcept;
     // The sign-in gate: Esc and the close button do nothing while locked.
     void set_locked(bool locked) noexcept { locked_ = locked; }
-    SocialTextInput& key_field() noexcept { return key_input_; }
+    SocialTextInput& username_field() noexcept { return username_input_; }
     const std::string& login_error() const noexcept { return login_error_; }
 
 private:
@@ -168,7 +168,7 @@ private:
     Reversible animation_;
     SocialView view_ = SocialView::Home;
     SocialInput input_;
-    SocialTextInput key_input_{64, true};
+    SocialTextInput username_input_{16, false};
     bool ctrl_ = false;
     bool login_busy_ = false;
     std::string login_error_;

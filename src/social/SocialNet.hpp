@@ -3,6 +3,7 @@
 #include "Core.hpp"
 
 #include <medicon/social/Backoff.hpp>
+#include <medicon/social/AccountStore.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -37,7 +38,7 @@ private:
         unsigned long error = 0;
         std::string kicked;        // reason of a preceding "kicked" frame
     };
-    enum class SignIn { Success, Rejected, Retry };
+    enum class SignIn { Success, Rejected, Retry, RateLimited };
 
     void run_connection();
     void run_sender();
@@ -56,8 +57,8 @@ private:
     // Sends a request frame; answers `nonce` with "offline" when there is no connection.
     void send_request(const std::string& nonce, const std::string& frame);
     // Connection thread.
-    SignIn sign_in(const Endpoint& endpoint, const std::string& key, std::uint64_t generation);
-    bool try_login(const Endpoint& endpoint, const std::string& key, std::uint64_t generation);
+    SignIn sign_in(const Endpoint& endpoint, const AccountCredential& account, std::uint64_t generation);
+    bool try_login(const Endpoint& endpoint, const std::string& username, std::uint64_t generation);
     Ending receive_loop(net::WebSocket& socket, Backoff& backoff, int& quick_retries);
     void publish(ConnectionState state, std::string reason = {});
     // Sleeps until stop, or until a command changes what to connect with.
@@ -77,7 +78,7 @@ private:
     std::condition_variable wake_;
     std::condition_variable done_;
     std::atomic_bool stopping_{false};
-    std::string key_;
+    std::optional<AccountCredential> account_;
     std::optional<std::string> pending_login_;
     std::uint64_t generation_ = 0; // bumped by every command that changes the connection
     bool connection_done_ = false, sender_done_ = false;

@@ -6,13 +6,13 @@
 // -DMEDICON_SOCIAL_SERVER_URL=http://127.0.0.1:18787; social.json never sets the URL.
 //
 // Run A (scenario social_live_login): sign in through the Social screen while the
-// server is down, with an unknown key, then with the real one; read Home (25 news
+// server is down, with an occupied username, then with a new one; read Home (25 news
 // items over two pages, Change Log), turn Sound off, sign out and back in.
-// Run B (scenario social_live): sign in again from license.bin alone, receive a
-// notification, survive a server restart, and get revoked.
+// Run B (scenario social_live): sign in again from account.bin alone, receive a
+// notification, survive a server restart, and get banned.
 //
-// The license key is passed to the Preview in MEDICON_SOCIAL_TEST_KEY and is
-// never printed. Nothing here touches %APPDATA%\Medicon.
+// The username is passed in MEDICON_SOCIAL_TEST_USERNAME. Secrets are generated
+// by the client. Nothing here touches %APPDATA%\Medicon.
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -107,10 +107,10 @@ async function stopServer() {
   await waitExit(server, 10000)
 }
 
-function runPreview(scenario, shots) {
-  return start(preview, ['--social-dir', socialDir, '--scenario', scenario, '--size', '1280x720', '--screenshot', join(out, shots)], {
+function runPreview(scenario, shots, directory = socialDir) {
+  return start(preview, ['--social-dir', directory, '--scenario', scenario, '--size', '1280x720', '--screenshot', join(out, shots)], {
     cwd: repo,
-    env: { ...process.env, MEDICON_SOCIAL_TEST_KEY: key },
+    env: { ...process.env, MEDICON_SOCIAL_TEST_USERNAME: 'e2e_client' },
   })
 }
 
@@ -131,12 +131,12 @@ try {
   await waitFor(a, /milestone login_unreachable/)
   check('server down: "Cannot reach the server"', true)
   await startServer()
-  await waitFor(a, /milestone login_invalid_key/)
-  check('unknown key: "That license key is not valid"', true)
+  await waitFor(a, /milestone login_username_taken/)
+  check('an existing name cannot be claimed', true)
   await waitFor(a, /milestone online\b/)
-  const sealed = readFileSync(join(socialDir, 'license.bin'))
-  check('license.bin written after signing in', sealed.length > 0)
-  check('license.bin does not hold the key in plain text', !sealed.includes(Buffer.from(key)) && !sealed.includes(Buffer.from(key, 'utf16le')))
+  const sealed = readFileSync(join(socialDir, 'account.bin'))
+  check('account.bin written after signing in', sealed.length > 0)
+  check('account.bin is encrypted', !sealed.includes(Buffer.from('e2e_client')) && !sealed.includes(Buffer.from('"secret"')))
   await waitFor(a, /milestone home_news/)
   await waitFor(a, /milestone news_all/)
   const loaded = (await waitFor(a, /news loaded: (\d+)/))[1]
@@ -145,19 +145,21 @@ try {
   check('Home shows News and Change Log, newest first', true)
   await waitFor(a, /milestone sound_off/)
   await waitFor(a, /milestone logged_out/)
-  check('Sign out deletes license.bin', !existsSync(join(socialDir, 'license.bin')))
+  check('Sign out preserves account.bin', existsSync(join(socialDir, 'account.bin')))
   await waitFor(a, /milestone online_again/)
   const codeA = await waitExit(a)
   check('run A finished', codeA === 0, `exit=${codeA}`)
   const settings = JSON.parse(readFileSync(join(socialDir, 'social.json'), 'utf8'))
   check('social.json does not store the server URL', !Object.hasOwn(settings, 'serverUrl'))
   check('the Sound toggle was saved to social.json', settings.notify?.sound === false, JSON.stringify(settings.notify))
-  check('license.bin is back after signing in again', existsSync(join(socialDir, 'license.bin')))
+  const users = await fetch('http://127.0.0.1:18788/users', { headers: { 'X-Admin-Secret': env.ADMIN_SECRET } }).then((r) => r.json())
+  const accounts = users.items.filter((user) => user.hasAccount)
+  check('signing in again keeps one account and the same ID', accounts.length === 1 && accounts[0].id === 2 && accounts[0].name === 'e2e_client')
 
-  // --- Run B: sign in from license.bin, notification, restart, revoke ----------
+  // --- Run B: sign in from account.bin, notification, restart, ban ------------
   const b = runPreview('social_live', 'live.png')
   await waitFor(b, /milestone online\b/)
-  check('a restart signs in from license.bin alone', true)
+  check('a restart signs in from account.bin alone', true)
   admin('news:post', '--kind', 'news', '--title', 'Live notification', '--body-file', body)
   await waitFor(b, /milestone toast\b/)
   check('a news:post shows a notification', true)
@@ -167,11 +169,31 @@ try {
   await startServer()
   await waitFor(b, /milestone reconnected/)
   check('reconnects after a server restart', true)
-  admin('license:revoke', '--name', 'e2e')
-  await waitFor(b, /milestone revoked_toast/)
-  check('revoke: "This license key has been revoked"', true)
+  admin('user:ban', '--name', 'e2e_client')
+  await waitFor(b, /milestone banned_toast/)
+  check('ban: "This account is suspended"', true)
   const codeB = await waitExit(b)
   check('run B finished', codeB === 0, `exit=${codeB}`)
+
+  // --- Run C: migrate an actual old Windows DPAPI license fixture -------------
+  const legacyDir = join(work, 'legacy-social')
+  mkdirSync(legacyDir, { recursive: true })
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+    Add-Type -AssemblyName System.Security
+    $fixture = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $bytes = [Text.Encoding]::UTF8.GetBytes($fixture.key)
+    $entropy = [Text.Encoding]::UTF8.GetBytes('Medicon.Social.License.v1')
+    $sealed = [Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [IO.File]::WriteAllBytes($fixture.path, $sealed)
+  `], { input: JSON.stringify({ key, path: join(legacyDir, 'license.bin') }), windowsHide: true })
+  const c = runPreview('social_account_resume', 'migration.png', legacyDir)
+  await waitFor(c, /milestone account_resumed/)
+  check('an old license migrates automatically', (await waitExit(c)) === 0)
+  check('migration saves account.bin and removes license.bin only afterwards', existsSync(join(legacyDir, 'account.bin')) && !existsSync(join(legacyDir, 'license.bin')))
+  const migratedUsers = await fetch('http://127.0.0.1:18788/users', { headers: { 'X-Admin-Secret': env.ADMIN_SECRET } }).then((r) => r.json())
+  check('migration preserves the original user ID', migratedUsers.items.some((user) => user.id === 1 && user.name === 'e2e' && user.hasAccount))
+  const oldLogin = await fetch('http://127.0.0.1:18787/auth/license', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) })
+  check('migrated legacy keys no longer sign in', oldLogin.status === 403)
 } catch (err) {
   failures++
   console.log(`FAIL  ${masked(err.message)}`)

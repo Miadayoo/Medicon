@@ -11,7 +11,8 @@ namespace medicon::social {
 // user. Never logs the key; errors describe the failure only.
 class LicenseStore {
 public:
-    explicit LicenseStore(std::filesystem::path file) : file_(std::move(file)) {}
+    explicit LicenseStore(std::filesystem::path file, std::string purpose = "Medicon.Social.License.v1")
+        : file_(std::move(file)), purpose_(std::move(purpose)) {}
 
     // nullopt without an error when no key is stored.
     std::optional<std::string> load(std::string& error) const;
@@ -23,6 +24,7 @@ public:
 
 private:
     std::filesystem::path file_;
+    std::string purpose_;
 };
 
 } // namespace medicon::social

@@ -9,3 +9,8 @@
 *.log
 imgui.ini
 /claude.exe
+/docs
+/social-server
+/test
+/tools
+*.md

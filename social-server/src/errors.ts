@@ -4,6 +4,7 @@ export type ErrorCode =
   | 'revoked'
   | 'banned'
   | 'unauthorized'
+  | 'username_taken'
   | 'rate_limited'
   | 'empty'
   | 'too_long'

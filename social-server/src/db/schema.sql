@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS licenses (
 );
 CREATE INDEX IF NOT EXISTS licenses_user ON licenses (user_id);
 
+-- Public IDs identify accounts; only proof of this random secret signs in.
+CREATE TABLE IF NOT EXISTS account_credentials (
+  user_id     INTEGER PRIMARY KEY REFERENCES users (id),
+  secret_hash TEXT NOT NULL UNIQUE CHECK (length(secret_hash) = 64),
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT    PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users (id),

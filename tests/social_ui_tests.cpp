@@ -8,6 +8,7 @@
 #include <medicon/gui/Textures.hpp>
 #include <medicon/gui/Toasts.hpp>
 #include <medicon/social/LicenseStore.hpp>
+#include <medicon/social/AccountStore.hpp>
 #include <medicon/social/Service.hpp>
 
 #include <imgui.h>
@@ -495,6 +496,37 @@ void test_license_store() {
     std::filesystem::remove_all(directory);
 }
 
+void test_account_store() {
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("medicon-account-test-" + std::to_string(GetCurrentProcessId()));
+    std::filesystem::create_directories(directory);
+    const social::AccountStore store(directory / "account.bin");
+    std::string error;
+    check(!store.load(error) && error.empty(), "a missing account is first-run onboarding");
+    const auto first = social::AccountStore::generate_secret(error);
+    const auto second = social::AccountStore::generate_secret(error);
+    check(first && second && first->size() == 64 && first != second, "account secrets are independent 256-bit random values");
+    social::AccountCredential pending{0, "Alice", *first, {}};
+    check(store.save(pending, error), "pending registration is durable before contacting the server");
+    check(store.load(error)->user_id == 0 && store.load(error)->secret == first, "pending registration retains its secret across restarts");
+    std::ifstream stream(directory / "account.bin", std::ios::binary);
+    const std::string sealed((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    stream.close();
+    check(sealed.find(*first) == std::string::npos && sealed.find("Alice") == std::string::npos, "account file contains no plaintext secret or username");
+    check(!social::LicenseStore(directory / "account.bin").load(error), "account and license blobs use distinct DPAPI purposes");
+    pending.user_id = 42;
+    check(store.save(pending, error) && store.load(error)->user_id == 42, "confirmed account retains its server ID");
+    pending.secret = "public-id-42";
+    check(!store.save(pending, error) && store.load(error)->secret == first, "invalid credentials do not replace an account");
+    social::LicenseStore protected_file(directory / "account.bin", "Medicon.Social.Account.v1");
+    check(protected_file.save("{broken-private-data", error), "store damaged credential fixture");
+    check(!store.load(error) && !error.empty() && error.find("private-data") == std::string::npos,
+          "damaged account reports a generic error without disclosing secret data");
+    check(protected_file.load(error) == "{broken-private-data", "damaged account remains available for recovery");
+    check(store.clear(error), "account fixture can be removed");
+    std::filesystem::remove(directory);
+}
+
 
 double fake_now = 100.0;
 double fake_clock() { return fake_now; }
@@ -914,6 +946,7 @@ int main() {
         test_text_input_drawing();
         test_background_cache();
         test_license_store();
+        test_account_store();
         test_alt_service();
         test_alt_sign_in_persistence();
         test_music_setting_persistence();

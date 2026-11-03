@@ -17,13 +17,15 @@
     },
     "abi_reference": "https://github.com/microsoft/libHttpClient/blob/main/Include/httpClient/httpClient.h",
     "root_cause": "connect_auth looked up libHttpClient.GDK.dll only; the 1.26.60 game imports libHttpClient.dll, so session.available remained false and Use was disabled",
-    "runtime_dll_sha256": "dfa2e902232a874c4df20ae010927ff3a0285f144573d3e47394eea09986f1ff",
+    "runtime_validated": true,
+    "initial_use_dll_sha256": "dfa2e902232a874c4df20ae010927ff3a0285f144573d3e47394eea09986f1ff",
+    "runtime_dll_sha256": "bf091fb733f326d7bd6fb3ef8ab74ed67b9e54e195cf297cd68adb09d5c27658",
     "shipping_dll_sha256": "bf091fb733f326d7bd6fb3ef8ab74ed67b9e54e195cf297cd68adb09d5c27658",
-    "shipping_delta": "Fail closed when the preferred loaded HTTP runtime has incomplete exports; successful current-runtime path unchanged",
+    "shipping_dll_runtime_tested": true,
     "bridge_hooks_installed": true,
-    "bridge_ready_time_jst": "16:30:31",
+    "bridge_ready_time_jst": "16:38:30",
     "user_pressed_use": true,
-    "selected_session_ready_time_jst": "16:30:50",
+    "selected_session_ready_time_jst": "16:38:32",
     "prepare_session_http_status": {
       "microsoft_refresh": 200,
       "xbox_user_auth": 200,
@@ -31,10 +33,14 @@
       "playfab_login": 200,
       "minecraft_session": 200
     },
-    "native_multiplayer_request_observed": false,
-    "selected_server_login_serialized": false,
-    "server_connection_user_confirmed": false,
-    "scope": "Bridge installation and real Use session authentication confirmed. Game exited before a server reconnect was observed; server identity and successful join remain unverified. No credentials, request bodies, or account identifiers recorded."
+    "native_multiplayer_request_observed": true,
+    "native_multiplayer_request_time_jst": "16:38:45",
+    "native_multiplayer_http_status": 200,
+    "selected_server_login_serialized": true,
+    "selected_server_login_time_jst": "16:38:46",
+    "user_confirmed_selected_button": true,
+    "server_connection_user_confirmed": true,
+    "scope": "Shipping DLL confirmed loaded in game. Use authentication, native multiplayer request using the selected session, HTTP 200, and login serialization with the selected valid identity confirmed. User confirmed Selected and successful server connection. This validates the exercised bridge path, not every research signature listed below. No credentials, request bodies, or account identifiers recorded."
   },
   "functions": [
     {

@@ -16,17 +16,32 @@ Medicon Social のクライアント側です。ログイン、ホームのお�
 
 画面の文字はすべて英語です。サーバーから届く本文（お知らせ、名前）は日本語でも表示できます。見た目はメインメニューだけを基準にしています（下の「見た目」）。
 
+## アカウント認証
+
+初回 inject 後に入力するのは username だけです（3〜16文字の ASCII 英数字と `_`、大文字小文字を区別せず一意）。サーバーが固定の数値 ID を採番し、フレンド・DM・ランク・BAN はその ID に結び付きます。設定画面にも ID を表示します。
+
+クライアントは `BCryptGenRandom` で256-bitのランダム秘密情報を作り、**通信前**に `%APPDATA%\Medicon\account.bin` へ現在の Windows ユーザー用 DPAPI で暗号化保存します。サーバーの `account_credentials` には SHA-256 ハッシュだけを保存します。公開 ID・username から秘密情報を作りません。DB 内のハッシュ自体でもログインできません。通信は組み込みの HTTPS/WSS 接続先を使います。
+
+- 初回: `POST /auth/register` に `{username, secret, clientVersion?}`。同じ username と秘密情報による再試行は同じ ID を返し、応答の紛失でもアカウントを失いません。他の秘密情報で既存名を取得することはできません（409 `username_taken`）。
+- 次回以降: `POST /auth/account` に `{userId, secret, clientVersion?}`。ID だけは拒否し、秘密情報の不一致は401 `unauthorized`。成功すると24時間のセッショントークンを返し、REST/WS は従来どおり Bearer 認証します。
+- 旧 `license.bin` がある端末: `POST /auth/migrate` に `{key, secret, clientVersion?}`。ID・名前・履歴・フレンド・ランクを維持し、旧ライセンスとセッションを無効化します。移行済みアカウントへのキーだけのログインは拒否します。保存に成功した後だけ `license.bin` を削除します。
+- Sign out は接続とメモリ上のセッションを終了し、`account.bin` を保持します。同じ username で再開でき、次回 inject は自動ログインします。保存済みファイルがある状態で別 username に上書きしません。壊れたファイルも自動削除しません。
+
+`account.bin` はアカウントへのアクセスに必要です。削除・紛失や Windows 環境の変更に対する復旧／別端末への移行 UI は未実装です。username や ID だけで元のアカウントには戻れません。DPAPI は同じ Windows ユーザー権限で動くプログラムから秘密情報を守るものではありません。
+
+サーバーとクライアントの両方を更新してください。サーバー再起動時に `account_credentials` テーブルを自動追加し、既存の users を維持します。管理は `npm run admin -- user:list` と `user:ban --id <id>` / `user:unban --id <id>` / `user:rank --id <id> --rank owner` で行います（旧 `--name` も利用可）。
+
 ## 構成
 
 | 場所 | 中身 | 動くスレッド |
 |---|---|---|
 | `medicon_social_core`（`src/social/Protocol.cpp`、`Config.cpp`、`Store.cpp`） | 通信の形式、`social.json` の解釈、SocialStore、スレッド間キュー、再接続の待ち時間 | どこでも（WinHTTP・ImGui に依存しない） |
-| `medicon_social_net`（`SocialNet.cpp`、`SocialApi.cpp`、`WinHttp.cpp`、`LicenseStore.cpp`、`Service.cpp`、`Sound.cpp`） | WinHTTP の REST と WebSocket、DPAPI での鍵の保存、通知音 | ネット側 |
+| `medicon_social_net`（`SocialNet.cpp`、`SocialApi.cpp`、`WinHttp.cpp`、`AccountStore.cpp`、`LicenseStore.cpp`、`Service.cpp`、`Sound.cpp`） | WinHTTP の REST と WebSocket、DPAPI での秘密情報の保存、通知音 | ネット側 |
 | `medicon_gui`（`SocialUi.cpp`、`SocialScreen.cpp`、`SocialBackground.cpp`、`SocialFonts.cpp`、`SocialWidgets.cpp`、`Toasts.cpp`） | イベントの反映、画面管理と描画、通知ポップアップ | 描画スレッドのみ（画像・フォント・影の準備はワーカー） |
 
 スレッドは3本です。
 
-- 接続スレッド：`social.json` と `license.bin` を読み、サインイン → WebSocket 接続 → `WinHttpWebSocketReceive` で待機します。受信した JSON はここで解析し、イベントにしてキューに積みます。
+- 接続スレッド：`social.json` と `account.bin`（旧端末では `license.bin`）を読み、サインイン → WebSocket 接続 → `WinHttpWebSocketReceive` で待機します。受信した JSON はここで解析し、イベントにしてキューに積みます。
 - 送信スレッド：条件変数で待ち、30秒ごとに `{"t":"ping"}` を送ります。
 - REST ワーカー：UI からの依頼（今はお知らせ一覧の取得）を1件ずつ処理します。
 
@@ -38,7 +53,7 @@ Medicon Social のクライアント側です。ログイン、ホームのお�
 - `MediconStopOverlay()` では、close フレームを送ってサーバーの応答を待ち、スレッドを最大2秒で join します。終わらないスレッドは切り離します（スレッドが使うオブジェクトは自分で保持しているので解放後に触れることはありません）。
 - ゲームを終了したときは、プロセスの終了と同時に OS がソケットを閉じ、サーバー側は即座に切断として扱います。ウィンドウの破棄は終了の合図として確実ではないため（作り直される可能性がある）、ここでは明示的な close をしません。
 
-接続状態は `NoLicense → Authenticating → Connecting → Online` と進みます。通信の失敗は `Reconnecting`（1, 2, 4, 8, 16, 30秒、±20%）、キーの拒否・revoke・BAN は `AuthFailed`、別の場所での接続（close 4009）は `Replaced` になり、後の2つは再接続しません。close 4001 はトークンを取り直してすぐに再接続します。75秒何も受信しなければ切れたものとして再接続します。
+接続状態は `NoLicense → Authenticating → Connecting → Online` と進みます。通信の失敗は `Reconnecting`（1, 2, 4, 8, 16, 30秒、±20%）、認証情報の拒否・BAN は `AuthFailed`、別の場所での接続（close 4009）は `Replaced` になり、後の2つは再接続しません。close 4001 はトークンを取り直してすぐに再接続します。75秒何も受信しなければ切れたものとして再接続します。
 
 ## 設定ファイル
 
@@ -56,9 +71,9 @@ Medicon Social のクライアント側です。ログイン、ホームのお�
 | `debugTiming` | `false` | `inject.log` の Perf 行（2秒ごと）に、Social の処理時間 `social n=… avg=…us max=…us` を追加します |
 | `debugToastSlowMotion` | `false` | 通知の変形アニメーション（出入り、幅の変化、繰り上がり）を 0.25 倍速で再生します。表示時間は変わりません |
 
-`license.bin` は同じフォルダに置き、DPAPI（現在の Windows ユーザー）で暗号化します。キーは画面から入力します。旧 `debugLicenseKey` は認証には使われず、有効な設定ファイルの読み込み時または設定保存時に削除されます。
+`account.bin` は同じフォルダに置き、DPAPI（現在の Windows ユーザー）で暗号化します。画面には username だけ入力します。旧 `license.bin` は上記の手順で自動移行します。旧 `debugLicenseKey` は認証には使われず、有効な設定ファイルの読み込み時または設定保存時に削除されます。
 
-テストやプレビューでは、環境変数 `MEDICON_SOCIAL_DIR` で `social.json` と `license.bin` の場所を変えられます。
+テストやプレビューでは、環境変数 `MEDICON_SOCIAL_DIR` で `social.json` と `account.bin` の場所を変えられます。
 
 ## 画面
 
@@ -120,21 +135,24 @@ Medicon Social のクライアント側です。ログイン、ホームのお�
 
 ### ログイン、ホーム、設定
 
-ログイン画面は `Login` コマンドを送信スレッドに渡し、`SocialNet` が認証します。成功後に `LicenseStore` で暗号化保存し、結果と接続イベントを返します。ホームは `FetchNews` を REST ワーカーへ送り、`SocialApi` が取得・解析した `NewsPage`（20件ずつ）をイベントとして返します。一番下近くまでスクロールすると続き（`before` = 最後の ID）を取得します。設定変更とログアウトもコマンド経由で処理します。
+ログイン画面は `Login` コマンドを送信スレッドに渡し、`SocialNet` が認証します。`AccountStore` で秘密情報を事前に暗号化保存し、成功後に確定した ID を保存して、結果と接続イベントを返します。ホームは `FetchNews` を REST ワーカーへ送り、`SocialApi` が取得・解析した `NewsPage`（20件ずつ）をイベントとして返します。一番下近くまでスクロールすると続き（`before` = 最後の ID）を取得します。設定変更とログアウトもコマンド経由で処理します。
 
 | エラー | 表示 |
 |---|---|
-| `invalid_key` | That license key is not valid |
+| `invalid_username` | Use 3-16 letters, numbers or underscores |
+| `username_taken` | That username is already taken |
+| `credential_load_failed` | Saved account could not be read |
+| `credential_save_failed` | Could not save the account |
 | `revoked` | This license key has been revoked |
 | `banned` | This account is suspended |
-| `unauthorized` | Could not sign in. Check your key |
+| `unauthorized` | Account verification failed |
 | `rate_limited` | Too many attempts. Try again later |
 | `bad_server_url` | This client's server URL is invalid |
 | 通信できない | Cannot reach the server |
 
 ### 入力欄
 
-`SocialTextInput` が Social の入力欄の共通部品です（今はライセンスキー欄。Global と DM の入力欄もこれを使います）。
+`SocialTextInput` が Social の入力欄の共通部品です（username、Global と DM の入力欄で使います）。
 
 - 文字はグラフェムクラスタ（サロゲートペア、結合文字、異体字セレクタ、肌の色、ZWJ でつないだ絵文字、国旗）単位で扱い、カーソル移動と削除もその単位です。
 - **入力アニメーション**：入力した文字だけが、少しグレー（`#8A8A8A` へ 30%、不透明度 0.85）で始まり、60 ms で文字サイズ×0.12（1.5〜3 px）沈み、120 ms で元の位置と色に戻ります（計 180 ms、行き過ぎなし）。時間は QueryPerformanceCounter の実時間で、FPS に依存しません。
@@ -273,12 +291,12 @@ Minecraft なしで確かめられます。`--size 1920x1080 --screenshot out.pn
 social-server/.tools/node-v24.22.1-win-x64/node.exe tools/social-e2e.mjs --preview out/build/social-e2e/bin/MediconPreview.exe
 ```
 
-使い捨てのサーバー（ポート 18787/18788、一時フォルダの DB）を立て、Preview を2回動かします。キーは環境変数 `MEDICON_SOCIAL_TEST_KEY` で Preview に渡し、どこにも表示しません。`%APPDATA%\Medicon` には触れません。
+使い捨てのサーバー（ポート 18787/18788、一時フォルダの DB）を立て、Preview を2回動かします。username は環境変数 `MEDICON_SOCIAL_TEST_USERNAME` で Preview に渡します。秘密情報はクライアント側で生成します。`%APPDATA%\Medicon` には触れません。
 
-1. サーバー停止中にサインイン（Cannot reach the server）→ サーバー起動 → 知らないキー（That license key is not valid）→ 本当のキーで Online。`license.bin` ができ、キーが平文で入っていないこと。
+1. サーバー停止中にサインイン（Cannot reach the server）→ サーバー起動 → 登録済みの username（That username is already taken）→ 新しい username で Online。`account.bin` ができ、平文で入っていないこと。
 2. Home：25件のお知らせが新しい順に出て、スクロールで20件目より先も読み込むこと。Change Log タブ。
-3. 設定で Sound を OFF → `social.json` に保存されること。Sign out で `license.bin` が消えること。もう一度サインイン。
-4. 2回目の起動：`license.bin` だけで Online。news:post で通知、サーバー再起動で再接続、revoke で This license key has been revoked。
+3. 設定で Sound を OFF → `social.json` に保存されること。Sign out でも `account.bin` が残ること。同じ username で同じ ID に再サインイン。
+4. 2回目の起動：`account.bin` だけで Online。news:post で通知、サーバー再起動で再接続、BAN で This account is suspended。
 5. すべてのログにキーとお知らせの本文が出ていないこと。
 
 Global・フレンド・DM（フェーズ4〜6）は別のスクリプトで確かめます。
@@ -316,10 +334,10 @@ Preview が1人（dll）、スクリプトが bob・cat・eve として WebSocke
 
 ## ゲーム内での確認手順
 
-1. `social-server` を起動し、`npm run admin -- license:create --name <name>` でキーを発行する。
+1. `social-server` を更新して起動する。新規ユーザーへのキーの事前発行は不要。
 2. Cloudflare Tunnel で `medicon.auau1000.com` をサーバーの `http://127.0.0.1:8787` に転送する。クライアント側で接続先を設定する必要はない。
 3. Minecraft に DLL を読み込み、`inject.log` に `Social:` の行が出ることを確認する。
-4. inject のアニメーションの後に出るサインイン画面で、発行したキーを入力して Sign in。メインメニューに戻り、`Welcome to {名前}` の通知が出ることを確認する。Social ボタンで画面を開き、ホームにお知らせと Change Log が出ることを確認する。
+4. inject のアニメーションの後に出るサインイン画面で、username だけを入力して Sign in。メインメニューに戻り、`Welcome to {名前}` の通知が出ることを確認する。Social ボタンで画面を開き、ホームにお知らせと Change Log が出ることを確認する。
 5. `npm run admin -- news:post ...` で、メインメニューとゲーム中のそれぞれで通知が出ること、メニュー中に通知をクリックすると該当するタブが開くことを確認する。
 6. サーバーを止めて起動し直し、`Social: reconnecting` → `Social: online` になることを確認する。
 7. `debugTiming` を `true` にして、上の FPS の比較をする。

@@ -13,7 +13,6 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <cctype>
 #include <cstdio>
 #include <ctime>
 
@@ -38,7 +37,7 @@ enum : std::uint32_t {
     id_news_retry,
     id_news_scroll,
     id_friends_scroll,
-    id_key_field,
+    id_username_field,
     id_login,
     id_logout,
     id_offset,
@@ -87,12 +86,16 @@ const char* chat_error_text(std::string_view error, bool global) {
 }
 
 const char* login_message(std::string_view error) {
+    if (error == "invalid_username") return "Use 3-16 letters, numbers or underscores";
+    if (error == "username_taken") return "That username is already taken";
+    if (error == "account_saved") return "Use this device's saved username";
+    if (error == "credential_load_failed") return "Saved account could not be read";
     if (error == "invalid_key") return "That license key is not valid";
     if (error == "revoked") return "This license key has been revoked";
     if (error == "banned") return "This account is suspended";
-    if (error == "unauthorized") return "Could not sign in. Check your key";
-    if (error == "logout_failed") return "Could not remove the saved license";
-    if (error == "credential_save_failed") return "Could not save the license";
+    if (error == "unauthorized") return "Account verification failed";
+    if (error == "logout_failed") return "Could not sign out";
+    if (error == "credential_save_failed") return "Could not save the account";
     if (error == "rate_limited") return "Too many attempts. Try again later";
     if (error == "bad_server_url") return "This client's server URL is invalid";
     return "Cannot reach the server";
@@ -141,12 +144,12 @@ void SocialScreen::request_glyphs(SocialFonts& fonts) {
         fonts.request(SocialText::Heading, text);
     for (const char* text : {"News", "Change Log", "Sign in", "Signing in…", "Sign out", "Medicon", "Global"})
         fonts.request(SocialText::Title, text);
-    for (const char* text : {"Enter your license key to sign in", "Direct messages", "Friend requests", "News", "Show music",
+    for (const char* text : {"Choose your username to continue", "Direct messages", "Friend requests", "News", "Show music",
                              "Show while playing", "Sound", "Position while playing", "Signed in as ", "Coming soon",
                              "No news yet", "No change log yet", "Loading…", "Could not load",
-                             "Settings could not be saved (social.json is invalid)", "MDC-XXXX-XXXX-XXXX-XXXX*"})
+                             "Settings could not be saved (social.json is invalid)", "Username"})
         fonts.request(SocialText::Body, text);
-    for (const auto* error : {"invalid_key", "revoked", "banned", "unauthorized", "logout_failed", "credential_save_failed", "rate_limited", "bad_server_url", ""})
+    for (const auto* error : {"invalid_username", "username_taken", "account_saved", "credential_load_failed", "invalid_key", "revoked", "banned", "unauthorized", "logout_failed", "credential_save_failed", "rate_limited", "bad_server_url", ""})
         fonts.request(SocialText::Body, login_message(error));
     for (const char* text : {"Search by name", "Find friends by their name", "No users found", "Remove friend", "Remove",
                              "Cancel", "You're no longer friends", "Coming soon"})
@@ -168,7 +171,7 @@ void SocialScreen::request_glyphs(SocialFonts& fonts) {
         fonts.request(SocialText::Small, text);
     for (const char* text : {"DM", "NOTIFICATIONS", "MUSIC", "ACCOUNT", "No friends yet", "SEARCH", "REQUESTS", "SENT", "99+", "Online", "Connecting…", "Reconnecting…",
                              "Signed in elsewhere", "Offline", "Reconnect", "Retry", "+0123456789 px",
-                             "Keys start with MDC- and are issued by an admin"})
+                             "3-16 letters, numbers or underscores"})
         fonts.request(SocialText::Small, text);
 }
 
@@ -218,7 +221,7 @@ SocialChatView& SocialScreen::chat(social::ConversationId conversation) {
 }
 
 SocialTextInput* SocialScreen::focused_input() noexcept {
-    if (key_input_.focused()) return &key_input_;
+    if (username_input_.focused()) return &username_input_;
     if (view_ == SocialView::Friends && search_input_.focused()) return &search_input_;
     if (view_ == SocialView::Home && admin_tab_) {
         for (auto* input : {&admin_title_, &admin_version_, &admin_body_})
@@ -307,8 +310,8 @@ void SocialScreen::on_event(const social::Event& event) {
         login_busy_ = false;
         if (login->ok) {
             login_error_.clear();
-            key_input_.clear();
-            key_input_.set_focused(false);
+            username_input_.clear();
+            username_input_.set_focused(false);
             view_ = SocialView::Home;
         } else {
             login_error_ = login->error;
@@ -319,8 +322,8 @@ void SocialScreen::on_event(const social::Event& event) {
         news_failed_[slot(page->kind)] = page->failed;
     } else if (const auto* logout = std::get_if<social::LogoutFinished>(&event)) {
         login_busy_ = false;
-        key_input_.clear();
-        key_input_.set_focused(false);
+        username_input_.clear();
+        username_input_.set_focused(false);
         login_error_ = logout->credential_removed ? "" : "logout_failed";
     } else if (const auto* state = std::get_if<social::StateChanged>(&event)) {
         // A key revoked or banned while connected is explained on the login screen.
@@ -401,20 +404,15 @@ void SocialScreen::save_settings(Context& context) {
 }
 
 void SocialScreen::submit_login(Context& context) {
-    if (login_busy_ || key_input_.length() == 0 || !context.channel) return;
-    const std::string key = key_input_.utf8();
-    bool valid = key.size() == 23 && key.substr(0, 4) == "MDC-";
-    for (std::size_t i = 4; valid && i < key.size(); ++i) {
-        const bool separator = i == 8 || i == 13 || i == 18;
-        valid = separator ? key[i] == '-' : std::isalnum(static_cast<unsigned char>(key[i])) != 0;
-    }
-    if (!valid) {
-        login_error_ = "invalid_key";
+    if (login_busy_ || username_input_.length() == 0 || !context.channel) return;
+    const std::string username = username_input_.utf8();
+    if (!social::valid_username(username)) {
+        login_error_ = "invalid_username";
         return;
     }
     login_busy_ = true;
     login_error_.clear();
-    context.channel->commands.push(social::Login{key});
+    context.channel->commands.push(social::Login{username});
 }
 
 const SocialScreen::Card& SocialScreen::card(Context& context, const social::NewsItem& item, float width) {
@@ -822,7 +820,8 @@ void SocialScreen::draw_settings(Context& context, const SocialRect& area, float
     fonts.draw(list, SocialText::Small, x0 + 4.0F * s, y, to_u32(style::text_secondary, alpha), "ACCOUNT");
     y += fonts.line_height(SocialText::Small) + 4.0F * s;
     const auto& me = store.me();
-    const std::string account = std::string("Signed in as ") + (me ? me->name : std::string("-"));
+    const std::string account = std::string("Signed in as ") + (me ? me->name + " (#" + std::to_string(me->id) + ")" : std::string("-"));
+    context.fonts.request(SocialText::Body, account);
     fonts.draw(list, SocialText::Body, x0 + 10.0F * s, y + (row - fonts.line_height(SocialText::Body)) * 0.5F,
                to_u32(style::text, alpha), account);
     const float logout_width = fonts.measure(SocialText::Title, "Sign out") + 44.0F * s;
@@ -831,7 +830,7 @@ void SocialScreen::draw_settings(Context& context, const SocialRect& area, float
     sign_out_rect_ = logout;
     draw_social_button(list, fonts, &context.shadows, logout, "Sign out", SocialButton::Danger,
                        motion(id_logout, logout, context.frame.dt), true, s, alpha);
-    // Spec 4.6: delete license.bin, disconnect, and go back to the login screen.
+    // Disconnect while preserving the only credential for this account.
     if (input_.click(id_logout, logout) && context.channel) {
         context.channel->commands.push(social::Logout{});
         view_ = SocialView::Home;
@@ -1426,30 +1425,30 @@ void SocialScreen::draw_login(Context& context, const SocialRect& panel, float s
     draw_title(list, fonts, row(display), s, alpha, "Medicon");
     y += display + 8.0F * s;
     draw_centered(list, fonts, SocialText::Body, row(body), to_u32(style::description, alpha),
-                  "Enter your license key to sign in");
+                  "Choose your username to continue");
     y += body + 26.0F * s;
 
     const SocialRect field = row(input_height);
     // The field takes the keyboard as soon as the login screen appears.
-    if (!key_input_.focused() && !login_busy_ && key_input_.length() == 0 && login_error_.empty()) key_input_.set_focused(true);
-    if (input_.click(id_key_field, field)) key_input_.set_focused(true);
-    key_input_.draw(list, fonts, field, s, alpha, "MDC-XXXX-XXXX-XXXX-XXXX", !login_busy_, ImGui::GetTime(), &context.shadows);
+    if (!username_input_.focused() && !login_busy_ && username_input_.length() == 0 && login_error_.empty()) username_input_.set_focused(true);
+    if (input_.click(id_username_field, field)) username_input_.set_focused(true);
+    username_input_.draw(list, fonts, field, s, alpha, "Username", !login_busy_, ImGui::GetTime(), &context.shadows);
     y += input_height + 16.0F * s;
 
     // Like the Main Menu's Play button: glass, accent line, glow, a light press.
     const SocialRect button = row(button_height);
     sign_in_rect_ = button;
-    const bool enabled = !login_busy_ && key_input_.length() > 0;
+    const bool enabled = !login_busy_ && username_input_.length() > 0;
     draw_social_button(list, fonts, &context.shadows, button, login_busy_ ? "Signing in…" : "Sign in", SocialButton::Primary,
                        motion(id_login, button, context.frame.dt), enabled, s, alpha);
-    if ((input_.click(id_login, button) && enabled) || key_input_.consume_submit()) submit_login(context);
+    if ((input_.click(id_login, button) && enabled) || username_input_.consume_submit()) submit_login(context);
     y += button_height + 14.0F * s;
 
     if (!login_error_.empty() && !login_busy_)
         draw_centered(list, fonts, SocialText::Body, row(body), to_u32(style::error, alpha), login_message(login_error_));
     y += body + 6.0F * s;
     draw_centered(list, fonts, SocialText::Small, row(small), to_u32(style::text_secondary, alpha),
-                  "Keys start with MDC- and are issued by an admin");
+                  "3-16 letters, numbers or underscores");
 }
 
 void SocialScreen::render(Context& context) {
@@ -1475,7 +1474,7 @@ void SocialScreen::render(Context& context) {
     const bool popup = menu_for_ != 0 || confirm_remove_ != 0 || confirm_post_;
     input_.begin(pointer);
     input_.set_blocked(popup);
-    for (auto* input : {&key_input_, &search_input_, &admin_title_, &admin_version_, &admin_body_, &admin_dll_path_}) {
+    for (auto* input : {&username_input_, &search_input_, &admin_title_, &admin_version_, &admin_body_, &admin_dll_path_}) {
         input->update();
         input->set_animation(input_animation_);
     }
@@ -1529,7 +1528,7 @@ void SocialScreen::render(Context& context) {
         if (login) {
             draw_login(context, panel, s, 1.0F);
         } else {
-            key_input_.set_focused(false);
+            username_input_.set_focused(false);
             draw_sidebar(context, {panel.min, {panel.min.x + sidebar, panel.max.y}}, s, 1.0F);
             const SocialRect content{{panel.min.x + sidebar, panel.min.y}, panel.max};
             switch (view_) {

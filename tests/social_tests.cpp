@@ -199,6 +199,16 @@ void test_chat_store() {
 }
 
 void test_rest_bodies() {
+    for (const auto name : {"Alice", "abc", "player_123", "A123456789012345"})
+        check(valid_username(name), "valid username");
+    for (const auto name : {"", "ab", "a1234567890123456", "bad name", "日本語", "MDC-AAAA-BBBB-CCCC-DDDD"})
+        check(!valid_username(name), "invalid username");
+    const std::string secret(64, 'a');
+    check(nlohmann::json::parse(register_body("Alice", secret, "test")) ==
+        nlohmann::json{{"username", "Alice"}, {"secret", secret}, {"clientVersion", "test"}}, "registration contains username and random secret");
+    const auto account = nlohmann::json::parse(account_login_body(42, secret, "test"));
+    check(account["userId"] == 42 && account["secret"] == secret && !account.contains("username"), "login identifies by ID and proves secret");
+    check(nlohmann::json::parse(migrate_body("legacy", secret, "test"))["key"] == "legacy", "migration requires old credential");
     check(ping_frame() == R"({"t":"ping"})", "ping frame");
     check(login_body("MDC-AAAA-BBBB-CCCC-DDDD", "0.1.0") == R"({"clientVersion":"0.1.0","key":"MDC-AAAA-BBBB-CCCC-DDDD"})",
           "login body");

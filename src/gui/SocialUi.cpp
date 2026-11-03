@@ -33,6 +33,10 @@ const char* state_message(const social::StateChanged& change) {
     if (change.reason == "invalid_key") return "Invalid license key";
     if (change.reason == "revoked") return "This license key has been revoked";
     if (change.reason == "banned") return "This account is suspended";
+    if (change.reason == "unauthorized") return "Account verification failed";
+    if (change.reason == "username_taken") return "That username is already taken";
+    if (change.reason == "credential_load_failed") return "Saved account could not be read";
+    if (change.reason == "credential_save_failed") return "Could not save the account";
     if (change.reason == "bad_server_url") return "This client's server URL is invalid";
     return "Could not sign in";
 }
@@ -227,12 +231,11 @@ void SocialUi::draw(ImDrawList* list, IShadowRenderer& shadows, const FrameInfo&
 void SocialUi::update_sign_in_gate() {
     if (!startup_sign_in_ || !channel_ || !store_.state_known()) return;
     using social::ConnectionState;
-    // A saved key that is still being tried, or a server that cannot be reached,
-    // does not gate: only no key, or a key the server refused.
+    // Gate only when no credential is saved or authentication was refused.
     const auto state = store_.state();
     if (state == ConnectionState::NoLicense || state == ConnectionState::AuthFailed) gate_ = true;
     if (!gate_) return;
-    // Keep it up whatever closed it; showing_login() draws the key form.
+    // Keep it up whatever closed it; showing_login() draws the username form.
     if (!screen_.opened()) open_screen(SocialView::Home);
     screen_.set_locked(true);
 }
@@ -247,7 +250,7 @@ void SocialUi::on_event(const social::Event& event, FontManager& fonts, bool in_
     const bool changed = store_.apply(event);
     screen_.on_event(event);
     if (const auto* login = std::get_if<social::LoginFinished>(&event); login && login->ok && gate_) {
-        // The key was accepted: on to the Main Menu (or the game) under the panel.
+        // The account was verified: on to the Main Menu (or game) under the panel.
         gate_ = false;
         screen_.set_locked(false);
         screen_.close();

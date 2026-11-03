@@ -280,6 +280,7 @@ public:
     std::atomic_bool rotation_override_enabled{};
     std::atomic_bool rotation_vector_fix_enabled{};
     std::atomic_bool disabler_move_fix_enabled{};
+    std::atomic_bool disabler_move_fix_reported{};
     std::atomic_bool disabler_layout_error_reported{};
     std::atomic<std::uintptr_t> rotation_override_actor{};
     std::atomic_bool rotation_render_pitch_reported{};
@@ -2818,9 +2819,11 @@ void apply_disabler_move_fix(Runtime& state, void* packet) {
     const bool enabled = state.disabler_move_fix_enabled.load(std::memory_order_acquire) &&
         !state.input_open() && state.window_focused_cached.load(std::memory_order_acquire);
     const auto result = state.gameplay.rewrite_move_fix_input(packet, enabled);
+    if (enabled && !state.disabler_move_fix_reported.exchange(true, std::memory_order_acq_rel))
+        state.report("Disabler MoveFix v2 enabled: rotation input compensation; native walking, device mode and sprint flags preserved.");
     if (result == sdk::MoveFixInputRewrite::layout_rejected &&
         !state.disabler_layout_error_reported.exchange(true, std::memory_order_acq_rel))
-        state.report("Disabler MoveFix PlayerAuthInput layout check failed; packet left unchanged.", true);
+        state.report("Disabler MoveFix movement-packet layout check failed; packet left unchanged.", true);
 }
 
 void hook_send_server_packet(void* sender, void* packet) {
@@ -2849,7 +2852,10 @@ void hook_send_packet(void* sender, void* packet) {
         if (!state.input_open() && state.window_focused_cached.load(std::memory_order_acquire)) {
             sdk::RotationMovementSample movement_before{};
             (void)state.gameplay.read_rotation_movement(packet, movement_before);
-            const bool vector_fix = state.rotation_vector_fix_enabled.load(std::memory_order_acquire);
+            // Compensate before replacing the source yaw, including when only
+            // Disabler owns movement correction and Rotations rendering is off.
+            const bool vector_fix = state.rotation_vector_fix_enabled.load(std::memory_order_acquire) ||
+                state.disabler_move_fix_enabled.load(std::memory_order_acquire);
             const auto result = state.gameplay.rewrite_rotation_input(packet, vector_fix);
             if (result == sdk::RotationInputRewrite::rewritten && movement_before.recognized &&
                 !movement_before.valid) {
@@ -2911,8 +2917,9 @@ void hook_send_packet(void* sender, void* packet) {
             !state.sprint_packet_layout_error_reported.exchange(true, std::memory_order_acq_rel))
             state.report("Sprint PlayerAuthInput layout check failed; packet left unchanged.", true);
     }
-    // MoveFix must see the final yaw and Sprint flags. It also works when no
-    // module has requested a silent rotation. Direct sendToServer is covered above.
+    // The first rotation rewrite already compensated input when MoveFix is on.
+    // A repeated route uses the current yaw, so its compensation is an identity.
+    // With no requested rotation, MoveFix leaves native walking untouched.
     apply_disabler_move_fix(state, packet);
     // Observe both validated entries. General send is not assumed to forward
     // every movement packet through slot 4; route/pointer identify nested calls.

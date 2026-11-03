@@ -5,7 +5,7 @@ namespace medicon {
 DisablerModule::DisablerModule()
     : Module(module_id, "Disabler", "Adjusts outgoing movement input using the selected mode.", Category::Misc),
       mode(add_setting({"mode", "Mode", "Movement packet mode.", Choice{0, {"Flareon"}}})),
-      move_fix(add_setting({"move_fix", "MoveFix", "Align movement input with horizontal motion and stop sprinting when it is not forward.", true})) {}
+      move_fix(add_setting({"move_fix", "MoveFix", "Preserve movement direction and input strength when outgoing rotation changes.", true})) {}
 
 bool DisablerModule::move_fix_enabled() const noexcept {
     const auto* selection = std::get_if<Choice>(&mode.value);

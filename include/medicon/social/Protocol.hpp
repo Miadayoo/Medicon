@@ -141,6 +141,10 @@ std::optional<ServerFrame> parse_server_frame(std::string_view text);
 std::string ping_frame();
 std::string model_sync_frame(const std::optional<PlayerModel>& self, const std::vector<ModelIdentity>& watching);
 std::string login_body(std::string_view key, std::string_view client_version);
+bool valid_username(std::string_view username) noexcept;
+std::string register_body(std::string_view username, std::string_view secret, std::string_view client_version);
+std::string account_login_body(std::int64_t user_id, std::string_view secret, std::string_view client_version);
+std::string migrate_body(std::string_view key, std::string_view secret, std::string_view client_version);
 // `nonce` comes back in the ack.
 std::string global_send_frame(std::string_view nonce, std::string_view body);
 std::string dm_send_frame(std::string_view nonce, std::int64_t to, std::string_view body);

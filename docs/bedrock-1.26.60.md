@@ -174,8 +174,11 @@ Use が無効だった原因は、`connect_auth()` が旧 `libHttpClient.GDK.dll
 その後ユーザーが Use を押し、16:30:48–50 に Microsoft refresh、Xbox user auth、
 Xbox PlayFab token、PlayFab login、Minecraft session の全5段階で HTTP 200 を確認した。
 `selected account authenticated for Minecraft; reconnect to apply` と Use 完了イベントも記録された。
-その後ゲームが終了したため、再接続時の native multiplayer 要求・選択アカウントの
-server login と接続成功は未確認。
+初回確認後はゲームが終了したが、最終版を読み込んだ次の起動で再接続まで確認した。
+16:38:30 に bridge ready、16:38:32 に Use 認証が完了。
+16:38:45 に native multiplayer 要求が選択セッションを使用し、HTTP 200 を返した。
+16:38:46 に選択アカウントと一致する有効な認証 token が server login にシリアライズされた。
+ユーザーもボタンが `Selected` になったことと、サーバーに接続できたことを確認した。
 証拠は [認証 JSON](bedrock-1.26.60.05-auth-evidence.json) の `http_bridge_runtime` に保存した。
 認証情報・アカウント識別子・HTTP body は記録していない。
 
@@ -186,9 +189,10 @@ server login と接続成功は未確認。
 現在の成果物は `out/build/local/bin/Medicon.dll` と
 `out/build/local/bin/Medicon-AltManager-1.26.60.dll`（同一 bytes）。
 SHA-256 は `bf091fb733f326d7bd6fb3ef8ab74ed67b9e54e195cf297cd68adb09d5c27658`。
-実機で Use を確認した版の SHA-256 は
+最終版の `Medicon.dll` がゲーム内に読み込まれていることと、上記の再接続処理を確認済み。
+初回に Use を確認した版の SHA-256 は
 `dfa2e902232a874c4df20ae010927ff3a0285f144573d3e47394eea09986f1ff`。
-最終版との差分は現行 HTTP DLL の export 欠落時の判定と診断だけで、正常系の経路は同じ。
+初回版から最終版への差分は現行 HTTP DLL の export 欠落時の判定と診断だけ。
 
 ## 再確認
 

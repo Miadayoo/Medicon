@@ -267,6 +267,25 @@ std::string login_body(std::string_view key, std::string_view client_version) {
     return dump(Json{{"key", key}, {"clientVersion", client_version}});
 }
 
+bool valid_username(std::string_view username) noexcept {
+    if (username.size() < 3 || username.size() > 16) return false;
+    return std::all_of(username.begin(), username.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+}
+
+std::string register_body(std::string_view username, std::string_view secret, std::string_view client_version) {
+    return dump(Json{{"username", username}, {"secret", secret}, {"clientVersion", client_version}});
+}
+
+std::string account_login_body(std::int64_t user_id, std::string_view secret, std::string_view client_version) {
+    return dump(Json{{"userId", user_id}, {"secret", secret}, {"clientVersion", client_version}});
+}
+
+std::string migrate_body(std::string_view key, std::string_view secret, std::string_view client_version) {
+    return dump(Json{{"key", key}, {"secret", secret}, {"clientVersion", client_version}});
+}
+
 std::optional<LoginResult> parse_login(std::string_view body) {
     const auto json = parse_object(body);
     if (!json) return std::nullopt;

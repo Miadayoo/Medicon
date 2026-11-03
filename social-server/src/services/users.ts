@@ -20,7 +20,8 @@ export interface User extends UserRef {
 }
 
 // Spec 2.1: 3-16 ASCII letters, digits or underscores. Uniqueness ignores case (COLLATE NOCASE).
-export const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,16}$/
+// The final assertion requires the actual end (JS `$` also accepts a final LF).
+export const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,16}(?![\s\S])/
 
 interface UserRow {
   id: number
@@ -31,6 +32,11 @@ interface UserRow {
 
 export function findUserByName(db: Db, name: string): User | undefined {
   const row = db.prepare<[string], UserRow>('SELECT id, name, banned, rank FROM users WHERE name = ?').get(name)
+  return row && { id: row.id, name: row.name, banned: row.banned === 1, rank: row.rank }
+}
+
+export function findUserById(db: Db, id: number): User | undefined {
+  const row = db.prepare<[number], UserRow>('SELECT id, name, banned, rank FROM users WHERE id = ?').get(id)
   return row && { id: row.id, name: row.name, banned: row.banned === 1, rank: row.rank }
 }
 

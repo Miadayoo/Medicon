@@ -14,7 +14,8 @@
 // Phase 6: bob's DMs show an unread badge and a notification; opening the DM
 //   reads them (bob gets dm.read); bob reading the reply shows "Read"; bob's
 //   next DM while it is open notifies nothing; "eve" (not a friend) is refused.
-// Keys and message bodies are never printed.
+// Client onboarding uses only a username. Peer license keys and message bodies
+// are never printed.
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -159,7 +160,7 @@ const pauseFrames = (ms) => new Promise((r) => setTimeout(r, ms))
 try {
   if (!existsSync(preview)) throw new Error(`MediconPreview not found: ${preview}`)
   await startServer()
-  for (const name of ['dll', 'bob', 'cat', 'eve']) {
+  for (const name of ['bob', 'cat', 'eve']) {
     keys[name] = admin('license:create', '--name', name).match(/MDC(-[0-9A-Z]{4}){4}/)?.[0] ?? ''
   }
   check('licenses issued', Object.values(keys).every((k) => k !== ''))
@@ -181,7 +182,7 @@ try {
 
   const p = start(preview, ['--social-dir', socialDir, '--scenario', 'social_live_chat', '--size', '1280x720', '--screenshot', join(out, 'chat.png')], {
     cwd: repo,
-    env: { ...process.env, MEDICON_SOCIAL_TEST_KEY: keys.dll },
+    env: { ...process.env, MEDICON_SOCIAL_TEST_USERNAME: 'dll' },
   })
 
   // Phase 4.

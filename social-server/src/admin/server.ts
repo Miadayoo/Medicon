@@ -10,12 +10,15 @@ import { installErrorHandlers, sendError } from '../http/common.ts'
 import { publishRelease, RELEASE_BODY_LIMIT, registerReleaseParser } from '../http/routes/releases.ts'
 import { createNews, newsInput } from '../services/news.ts'
 import { parseReleaseUpload } from '../services/releases.ts'
-import { createUser, findUserByName, setBanned, setRank, USERNAME_PATTERN, type User, type UserRef } from '../services/users.ts'
+import { createUser, findUserById, findUserByName, setBanned, setRank, USERNAME_PATTERN, type User, type UserRef } from '../services/users.ts'
 
 const nameBody = z.object({ name: z.string().regex(USERNAME_PATTERN) })
+const idBody = z.strictObject({ id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) })
+const userBody = z.union([idBody, z.strictObject({ name: z.string().regex(USERNAME_PATTERN) })])
 
 const newsBody = newsInput
-const rankBody = z.object({ name: z.string().regex(USERNAME_PATTERN), rank: z.enum(['user', 'owner']) })
+const rank = z.enum(['user', 'owner'])
+const rankBody = z.union([idBody.extend({ rank }), z.strictObject({ name: z.string().regex(USERNAME_PATTERN), rank })])
 
 // Admin API for admin/cli.ts. It listens on 127.0.0.1 only and the tunnel never
 // forwards to it. The CLI calls this instead of writing the DB so that kicks and
@@ -47,6 +50,13 @@ export function createAdminApp(ctx: AppContext, secret: string): FastifyInstance
   })
 
   app.get('/licenses', async () => ({ items: listLicenses(ctx.db) }))
+
+  // Includes self-registered accounts without licenses. No credential material.
+  app.get('/users', async () => ({ items: ctx.db.prepare(
+    `SELECT u.id, u.name, u.rank, u.banned, u.created_at AS createdAt,
+     EXISTS(SELECT 1 FROM account_credentials c WHERE c.user_id = u.id) AS hasAccount
+     FROM users u ORDER BY u.id`,
+  ).all() }))
 
   app.post('/licenses/revoke', async (request, reply) => {
     const found = lookupUser(ctx.db, request.body)
@@ -83,10 +93,12 @@ export function createAdminApp(ctx: AppContext, secret: string): FastifyInstance
   app.post('/users/rank', async (request, reply) => {
     const body = rankBody.safeParse(request.body)
     if (!body.success) return sendError(reply, 400, 'bad_request')
-    const user = findUserByName(ctx.db, body.data.name)
-    if (!user) return sendError(reply, 404, 'user_not_found')
-    setRank(ctx.db, user.id, body.data.rank)
-    return { user: toRef(user), rank: body.data.rank, reconnected: ctx.hub.refresh(user.id) }
+    const { rank, ...selector } = body.data
+    const found = lookupUser(ctx.db, selector)
+    if (!found.ok) return sendError(reply, found.status, found.error)
+    const { user } = found
+    setRank(ctx.db, user.id, rank)
+    return { user: toRef(user), rank, reconnected: ctx.hub.refresh(user.id) }
   })
 
   app.post('/news', async (request, reply) => {
@@ -120,9 +132,9 @@ export function createAdminApp(ctx: AppContext, secret: string): FastifyInstance
 type Lookup = { ok: true; user: User } | { ok: false; status: number; error: ErrorCode }
 
 function lookupUser(db: Db, body: unknown): Lookup {
-  const parsed = nameBody.safeParse(body)
+  const parsed = userBody.safeParse(body)
   if (!parsed.success) return { ok: false, status: 400, error: 'bad_request' }
-  const user = findUserByName(db, parsed.data.name)
+  const user = 'id' in parsed.data ? findUserById(db, parsed.data.id) : findUserByName(db, parsed.data.name)
   return user ? { ok: true, user } : { ok: false, status: 404, error: 'user_not_found' }
 }
 

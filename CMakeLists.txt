@@ -244,9 +244,10 @@ if(MEDICON_BUILD_WINDOWS)
     target_compile_definitions(medicon_gui PRIVATE MEDICON_VERSION="${PROJECT_VERSION}")
     target_link_libraries(medicon_gui PUBLIC medicon_core medicon_scripts medicon_social_core medicon_music medicon_imgui d3d11 d3dcompiler d2d1 windowscodecs ole32 imm32 comdlg32 shell32)
 
-    # Social networking (spec 4.2): WinHTTP REST/WebSocket, DPAPI license, notification sound.
+    # Social networking: WinHTTP REST/WebSocket, DPAPI account storage and CSPRNG, notification sound.
     add_library(medicon_social_net STATIC
         src/alt/AltService.cpp
+        src/social/AccountStore.cpp
         src/social/Files.cpp
         src/social/LicenseStore.cpp
         src/social/Service.cpp
@@ -255,7 +256,7 @@ if(MEDICON_BUILD_WINDOWS)
         src/social/Sound.cpp
         src/social/WinHttp.cpp)
     medicon_target(medicon_social_net)
-    target_link_libraries(medicon_social_net PUBLIC medicon_social_core winhttp crypt32 winmm shell32 ole32)
+    target_link_libraries(medicon_social_net PUBLIC medicon_social_core winhttp crypt32 bcrypt winmm shell32 ole32)
 
     add_library(medicon_bedrock STATIC src/sdk/BedrockReconnect.cpp src/sdk/BedrockAuth.cpp src/sdk/BedrockChat.cpp src/sdk/BedrockInput.cpp src/sdk/BedrockMenu.cpp src/sdk/VanillaNavigation.cpp src/sdk/Gameplay.cpp src/sdk/CustomModelProbe.cpp src/sdk/CustomModelBox.cpp src/sdk/CustomModelStatic.cpp src/sdk/CustomModelAnimation.cpp src/sdk/CustomModelView.cpp)
     medicon_target(medicon_bedrock)

@@ -144,25 +144,22 @@ bool SocialNet::superseded(std::uint64_t seen) const {
 void SocialNet::handle(const Login& command) {
     {
         std::lock_guard lock(mutex_);
-        pending_login_ = command.key;
+        pending_login_ = command.username;
         ++generation_;
     }
     wake_.notify_all();
 }
 
 void SocialNet::handle(const Logout&) {
-    std::string error;
     {
         std::lock_guard lock(mutex_);
-        key_.clear();
+        account_.reset();
         pending_login_.reset();
         ++generation_;
-        // Coordinate deletion with loading and saving the credential.
-        LicenseStore(directory_ / L"license.bin").clear(error);
+        // Account credentials are the only way back in: keep the encrypted file.
         core_->clear_token();
     }
-    if (!error.empty()) core_->report("Social: " + error + ".");
-    core_->channel().events.push(LogoutFinished{error.empty()});
+    core_->channel().events.push(LogoutFinished{true});
     // The server answers with its own close frame, which ends the receive loop.
     if (const auto current = socket()) current->shutdown(1000, "logout");
     wake_.notify_all();
@@ -226,74 +223,95 @@ void SocialNet::handle(const RemoveFriend& command) {
     send_request(command.nonce, friend_remove_frame(command.nonce, command.user_id));
 }
 
-SocialNet::SignIn SocialNet::sign_in(const Endpoint& endpoint, const std::string& key, std::uint64_t generation) {
-    const auto response = core_->http().request(endpoint, L"POST", "/auth/license",
-                                                login_body(key, core_->client_version()), {});
+SocialNet::SignIn SocialNet::sign_in(const Endpoint& endpoint, const AccountCredential& account, std::uint64_t generation) {
+    const auto path = !account.legacy_key.empty() ? "/auth/migrate" : account.user_id ? "/auth/account" : "/auth/register";
+    const auto body = !account.legacy_key.empty() ? migrate_body(account.legacy_key, account.secret, core_->client_version())
+        : account.user_id ? account_login_body(account.user_id, account.secret, core_->client_version())
+        : register_body(account.username, account.secret, core_->client_version());
+    const auto response = core_->http().request(endpoint, L"POST", path, body, {});
     if (response.status == 200) {
         if (auto login = parse_login(response.body)) {
             std::lock_guard lock(mutex_);
             if (generation_ != generation || stopping_) return SignIn::Retry;
+            if (login->user.id <= 0 || (account.user_id && login->user.id != account.user_id)) return SignIn::Retry;
+            auto confirmed = account;
+            confirmed.user_id = login->user.id;
+            confirmed.username = login->user.name;
+            confirmed.legacy_key.clear();
+            std::string error;
+            if (!AccountStore(directory_ / L"account.bin").save(confirmed, error)) {
+                core_->report("Social: " + error + ".");
+                publish(ConnectionState::AuthFailed, "credential_save_failed");
+                return SignIn::Rejected;
+            }
+            account_ = std::move(confirmed);
+            if (!account.legacy_key.empty() && !LicenseStore(directory_ / L"license.bin").clear(error))
+                core_->report("Social: " + error + ".");
             core_->set_token(std::move(login->token));
             return SignIn::Success;
         }
         core_->report("Social: sign-in response could not be read.");
         return SignIn::Retry;
     }
-    if (response.status == 401 || response.status == 403) {
+    if (response.status == 400 || response.status == 401 || response.status == 403 || response.status == 409) {
         auto code = parse_error_code(response.body);
-        if (code.empty()) code = response.status == 401 ? "invalid_key" : "revoked";
+        if (code.empty()) code = "unauthorized";
         std::lock_guard lock(mutex_);
         if (generation_ != generation || stopping_) return SignIn::Retry;
+        if (code == "username_taken" && account.user_id == 0 && account.legacy_key.empty()) {
+            std::string error;
+            if (AccountStore(directory_ / L"account.bin").clear(error)) account_.reset();
+            else core_->report("Social: " + error + ".");
+        }
         publish(ConnectionState::AuthFailed, std::move(code));
         return SignIn::Rejected;
     }
-    // 429, 5xx and network errors are temporary.
+    if (response.status == 429) return SignIn::RateLimited;
+    // 5xx and network errors are temporary.
     core_->report("Social: sign-in failed (" + describe_failure(response.status, response.error) + ").");
     return SignIn::Retry;
 }
 
-bool SocialNet::try_login(const Endpoint& endpoint, const std::string& key, std::uint64_t generation) {
-    // A key typed on the login screen: one attempt, answered with LoginFinished,
-    // and stored only once the server accepted it (spec 4.6).
-    const auto previous = published_;
-    const auto previous_reason = published_reason_;
-    publish(ConnectionState::Authenticating);
-    const auto response = core_->http().request(endpoint, L"POST", "/auth/license",
-                                                login_body(key, core_->client_version()), {});
-    if (superseded(generation)) return false;
+bool SocialNet::try_login(const Endpoint& endpoint, const std::string& username, std::uint64_t generation) {
     std::string error;
-    if (response.status == 200) {
-        if (auto login = parse_login(response.body)) {
-            {
-                std::lock_guard lock(mutex_);
-                // Serialize saving against Logout: an old response must never
-                // recreate credentials after the user has signed out.
-                if (generation_ != generation || stopping_) return false;
-                std::string store_error;
-                if (!LicenseStore(directory_ / L"license.bin").save(key, store_error)) {
-                    core_->report("Social: " + store_error + ".");
-                    publish(previous, previous_reason);
-                    core_->channel().events.push(LoginFinished{false, "credential_save_failed"});
-                    return false;
+    std::optional<AccountCredential> account;
+    {
+        std::lock_guard lock(mutex_);
+        if (generation_ != generation || stopping_) return false;
+        if (!valid_username(username)) error = "invalid_username";
+        else {
+            account = AccountStore(directory_ / L"account.bin").load(error);
+            if (!error.empty()) error = "credential_load_failed";
+            else if (account && !account->username.empty() && account->legacy_key.empty() &&
+                     _stricmp(account->username.c_str(), username.c_str()) != 0) error = "account_saved";
+            else if (!account) {
+                const auto secret = AccountStore::generate_secret(error);
+                if (!secret) error = "credential_save_failed";
+                else {
+                    account = AccountCredential{0, username, *secret, {}};
+                    // Save before registration: no lost response can orphan an account.
+                    if (!AccountStore(directory_ / L"account.bin").save(*account, error)) error = "credential_save_failed";
                 }
-                key_ = key;
-                core_->set_token(std::move(login->token));
-                core_->channel().events.push(LoginFinished{true, {}});
             }
+        }
+        if (error.empty()) account_ = account;
+    }
+    if (error.empty()) {
+        publish(ConnectionState::Authenticating);
+        const auto outcome = sign_in(endpoint, *account, generation);
+        if (superseded(generation) || stopping_) return false;
+        if (outcome == SignIn::Success) {
+            std::lock_guard lock(mutex_);
+            if (generation_ != generation || stopping_) return false;
+            core_->channel().events.push(LoginFinished{true, {}});
             return true;
         }
-        error = "unreachable";
-    } else if (response.status == 401 || response.status == 403 || response.status == 429) {
-        error = parse_error_code(response.body);
-        if (error.empty()) error = response.status == 401 ? "invalid_key" : response.status == 429 ? "rate_limited" : "revoked";
-    } else {
-        error = "unreachable";
-        core_->report("Social: sign-in failed (" + describe_failure(response.status, response.error) + ").");
+        error = outcome == SignIn::Rejected ? published_reason_ : outcome == SignIn::RateLimited ? "rate_limited" : "unreachable";
     }
     {
         std::lock_guard lock(mutex_);
         if (generation_ != generation || stopping_) return false;
-        publish(previous, previous_reason);
+        publish(ConnectionState::AuthFailed, error);
         core_->channel().events.push(LoginFinished{false, std::move(error)});
     }
     return false;
@@ -374,9 +392,21 @@ void SocialNet::run_connection() {
     {
         std::string error;
         std::lock_guard lock(mutex_);
-        auto stored = LicenseStore(directory_ / L"license.bin").load(error);
-        if (!error.empty()) core_->report("Social: " + error + ".");
-        if (stored) key_ = std::move(*stored);
+        account_ = AccountStore(directory_ / L"account.bin").load(error);
+        if (!account_ && error.empty()) {
+            const auto legacy = LicenseStore(directory_ / L"license.bin").load(error);
+            if (legacy) {
+                const auto secret = AccountStore::generate_secret(error);
+                if (secret) {
+                    AccountCredential pending{0, {}, *secret, *legacy};
+                    if (AccountStore(directory_ / L"account.bin").save(pending, error)) account_ = std::move(pending);
+                }
+            }
+        }
+        if (!error.empty()) {
+            core_->report("Social: " + error + ".");
+            publish(ConnectionState::AuthFailed, "credential_load_failed");
+        }
     }
 
     Backoff backoff;
@@ -390,12 +420,12 @@ void SocialNet::run_connection() {
     // keeps rejecting fresh tokens must not be hammered.
     int quick_retries = 0;
     while (!stopping_) {
-        std::string key;
+        std::optional<AccountCredential> account;
         std::optional<std::string> login;
         std::uint64_t seen = 0;
         {
             std::lock_guard lock(mutex_);
-            key = key_;
+            account = account_;
             login = std::exchange(pending_login_, std::nullopt);
             seen = generation_;
         }
@@ -403,24 +433,24 @@ void SocialNet::run_connection() {
             if (!try_login(*endpoint, *login, seen)) wait_for_change(std::chrono::steady_clock::duration::max(), seen);
             continue;
         }
-        if (key.empty()) {
-            publish(ConnectionState::NoLicense);
+        if (!account) {
+            if (published_ != ConnectionState::AuthFailed) publish(ConnectionState::NoLicense);
             wait_for_change(std::chrono::steady_clock::duration::max(), seen);
             continue;
         }
         if (core_->token().empty()) {
             publish(ConnectionState::Authenticating);
-            const auto outcome = sign_in(*endpoint, key, seen);
+            const auto outcome = sign_in(*endpoint, *account, seen);
             if (superseded(seen)) {
-                // Logged out or signed in with another key meanwhile.
+                // Logged out or changed credentials meanwhile.
                 core_->clear_token();
                 continue;
             }
             if (outcome == SignIn::Rejected) {
-                wait_for_change(std::chrono::steady_clock::duration::max(), seen); // until a new key, a reconnect or stop
+                wait_for_change(std::chrono::steady_clock::duration::max(), seen); // until login, reconnect or stop
                 continue;
             }
-            if (outcome == SignIn::Retry) {
+            if (outcome == SignIn::Retry || outcome == SignIn::RateLimited) {
                 retry_later(seen);
                 continue;
             }
@@ -457,7 +487,7 @@ void SocialNet::run_connection() {
             return result;
         }();
         if (stopping_) break;
-        if (superseded(seen)) continue; // a logout or another key ended this connection
+        if (superseded(seen)) continue; // logout or a new login ended this connection
 
         switch (ending.code) {
         case close_token_invalid:

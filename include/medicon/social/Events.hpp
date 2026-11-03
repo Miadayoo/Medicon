@@ -25,7 +25,7 @@ const char* connection_state_name(ConnectionState state) noexcept;
 
 struct StateChanged {
     ConnectionState state = ConnectionState::NoLicense;
-    std::string reason; // server error code for AuthFailed: invalid_key, revoked, banned
+    std::string reason; // server error code for AuthFailed: unauthorized, username_taken, banned, ...
 };
 struct SessionStarted {
     UserRef me;
@@ -50,10 +50,10 @@ struct SettingsLoaded {
 // The answer to a Login command.
 struct LoginFinished {
     bool ok = false;
-    std::string error; // invalid_key, revoked, banned, rate_limited, unreachable, bad_server_url
+    std::string error; // username_taken, unauthorized, banned, rate_limited, credential_* or unreachable
 };
-// A failed deletion leaves the encrypted license on disk and must be shown to
-// the user; no credential or filesystem error text is included in the event.
+// No credential or filesystem error text is included. Account sign-out retains
+// the encrypted credential; this flag also supports older deletion failures.
 struct LogoutFinished {
     bool credential_removed = false;
 };
@@ -146,12 +146,13 @@ using ApiRequest = std::variant<FetchNews, FetchMessages, FetchFriends, SearchUs
 
 // --- Render thread -> send thread --------------------------------------------
 
-// Signs in with a key typed on the login screen; saved to license.bin only once
-// the server accepts it.
+// Only the username is typed. Account secrets are generated and stored by the
+// connection thread before contacting the server.
 struct Login {
-    std::string key;
+    std::string username;
 };
-// Deletes license.bin and disconnects.
+// Disconnects for this session. Keep account.bin so sign-out cannot destroy the
+// only way to access the account. The next injection signs in automatically.
 struct Logout {};
 // Tries again after "connected elsewhere" (close 4009).
 struct Reconnect {};
